@@ -1,0 +1,18 @@
+{
+  "line": {
+    "channelSecret": "",
+    "channelAccessToken": ""
+  },
+  "server": {
+    "port": 3100,
+    "webhookPath": "/line/webhook"
+  },
+  "plugins": {
+    "dir": "./plugins",
+    "enabled": []
+  },
+  "scheduler": {
+    "httpTrigger": true,
+    "httpPath": "/api/cron"
+  }
+}
