@@ -17,6 +17,6 @@
   },
   "providers": {
     "db": { "type": "sqlite", "dir": "./data", "mode": "isolated" },
-    "_llm_example": "設定 LLM provider 啟用 AI 對話 fallback（gemini / openai / luna）"
+    "llm": { "type": "luna", "baseUrl": "http://192.168.68.60:3456", "timeout": 30000 }
   }
 }

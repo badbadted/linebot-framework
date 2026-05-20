@@ -6,7 +6,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:luna": "CONFIG=config/luna.json node src/index.js",
     "dev": "node --watch src/index.js",
+    "dev:luna": "CONFIG=config/luna.json node --watch src/index.js",
     "setup": "node bin/setup.js"
   },
   "dependencies": {

@@ -98,10 +98,22 @@ async function main() {
     onUnmatched: async ({ userId, text, replyToken }) => {
       if (llm) {
         try {
-          const reply = await llm.chat(text);
-          await lineApi.reply(replyToken, reply);
+          // 用 userId 作為 sessionId，每個 LINE 使用者有獨立對話上下文
+          const reply = await llm.chat(text, { sessionId: `line-${userId}` });
+          if (reply) {
+            try {
+              await lineApi.reply(replyToken, reply);
+            } catch {
+              // replyToken 可能已過期（30s），改用 push
+              await lineApi.push(userId, reply);
+            }
+          }
         } catch (err) {
           console.error(`[llm-fallback] error: ${err.message}`);
+          // 錯誤時給使用者一個提示
+          try {
+            await lineApi.reply(replyToken, '抱歉，目前無法處理你的訊息，請稍後再試。');
+          } catch { /* replyToken 過期就算了 */ }
         }
       } else {
         console.log(`[fallback] unmatched: ${text.slice(0, 60)}`);

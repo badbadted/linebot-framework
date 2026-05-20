@@ -8,6 +8,7 @@
 import { createSQLiteProvider } from './db-sqlite.js';
 import { createGeminiProvider } from './llm-gemini.js';
 import { createOpenAIProvider } from './llm-openai.js';
+import { createLunaProvider } from './llm-luna.js';
 import { createMemoryCacheProvider } from './cache-memory.js';
 
 export function registerBuiltinProviders(registry) {
@@ -20,6 +21,7 @@ export function registerBuiltinProviders(registry) {
   // ── LLM ──
   registry.registerFactory('llm', 'gemini', createGeminiProvider);
   registry.registerFactory('llm', 'openai', createOpenAIProvider);
+  registry.registerFactory('llm', 'luna', createLunaProvider);
   // openai provider 也相容 Claude（設 baseUrl: 'https://api.anthropic.com/v1'）
   // 未來：
   // registry.registerFactory('llm', 'claude', createClaudeProvider);
