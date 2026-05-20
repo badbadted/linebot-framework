@@ -6,9 +6,19 @@
  * - 支援 text message 事件（其他類型可擴充）
  */
 
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, logger }) {
+  // 事件去重：防止同一 webhookEventId 被重複處理
+  const recentEventIds = new Map(); // eventId → timestamp
+  const DEDUP_WINDOW = 5 * 60_000;  // 5 分鐘
+  setInterval(() => {
+    const cutoff = Date.now() - DEDUP_WINDOW;
+    for (const [id, ts] of recentEventIds) {
+      if (ts < cutoff) recentEventIds.delete(id);
+    }
+  }, 60_000);
+
   return async function handleWebhook(req, res) {
     // 立即回 200（LINE 要求 1 秒內回應）
     res.status(200).end();
@@ -22,7 +32,10 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
     const hmac = createHmac('sha256', channelSecret)
       .update(req.rawBody)
       .digest('base64');
-    if (hmac !== signature) {
+    // timing-safe compare 防止逐 byte 暴力破解簽章
+    const hmacBuf = Buffer.from(hmac);
+    const sigBuf = Buffer.from(signature);
+    if (hmacBuf.length !== sigBuf.length || !timingSafeEqual(hmacBuf, sigBuf)) {
       console.log('[webhook] invalid signature');
       return;
     }
@@ -44,6 +57,16 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       if (Math.abs(Date.now() - eventTs) > 5 * 60_000) {
         console.log(`[webhook] rejected stale event: ${eventTs}`);
         continue;
+      }
+
+      // 事件去重：同一 webhookEventId 只處理一次
+      const eventId = event.webhookEventId;
+      if (eventId) {
+        if (recentEventIds.has(eventId)) {
+          console.log(`[webhook] deduplicated event: ${eventId.slice(0, 8)}`);
+          continue;
+        }
+        recentEventIds.set(eventId, Date.now());
       }
 
       const userId = event.source?.userId;

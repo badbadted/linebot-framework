@@ -16,6 +16,7 @@
 import Database from 'better-sqlite3';
 import { resolve, dirname } from 'path';
 import { mkdirSync } from 'fs';
+import { maskUserId } from './api-auth.js';
 
 const MAX_RESPONSE_LENGTH = 500;  // response 截斷長度
 const MAX_TEXT_LENGTH = 2000;     // text 截斷長度
@@ -213,12 +214,23 @@ export function createLogger(dataDir) {
         route: req.query.route,
         hasError: req.query.errors === 'true',
       });
+      // 遮蔽 PII：userId 只顯示前 8 碼
+      result.logs = result.logs.map(row => ({
+        ...row,
+        user_id: maskUserId(row.user_id),
+      }));
       res.json(result);
     });
 
     app.get('/api/logs/stats', (req, res) => {
       const days = parseInt(req.query.days) || 7;
-      res.json(stats(days));
+      const result = stats(days);
+      // 遮蔽 topUsers 的 userId
+      result.topUsers = result.topUsers.map(u => ({
+        ...u,
+        user_id: maskUserId(u.user_id),
+      }));
+      res.json(result);
     });
   }
 

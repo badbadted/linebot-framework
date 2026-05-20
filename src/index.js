@@ -21,6 +21,7 @@ import { loadPlugins } from './core/plugin-loader.js';
 import { createProviderRegistry } from './core/provider-registry.js';
 import { registerBuiltinProviders } from './providers/index.js';
 import { createLogger } from './core/logger.js';
+import { createApiAuth } from './core/api-auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -49,6 +50,7 @@ function loadConfig() {
       httpPath: config.scheduler?.httpPath || '/api/cron',
     },
     providers: config.providers || {},
+    apiAuth: config.server?.apiAuth || {},
   };
 }
 
@@ -90,6 +92,10 @@ async function main() {
   app.use(express.json({
     verify: (req, _res, buf) => { req.rawBody = buf; },
   }));
+
+  // API 驗證：保護 /api/* 管理端點（webhook 路徑不受限）
+  const apiAuth = createApiAuth(config.apiAuth);
+  app.use('/api', apiAuth);
 
   // LLM fallback：若有設定 LLM provider，未匹配指令時用 LLM 回覆
   const llm = registry.get('llm');
