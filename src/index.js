@@ -20,6 +20,7 @@ import { createWebhookHandler } from './core/webhook.js';
 import { loadPlugins } from './core/plugin-loader.js';
 import { createProviderRegistry } from './core/provider-registry.js';
 import { registerBuiltinProviders } from './providers/index.js';
+import { createLogger } from './core/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -70,6 +71,8 @@ async function main() {
   const lineApi = createLineAPI(config.line.channelAccessToken);
   const router = createRouter();
   const scheduler = createScheduler({ lineApi });
+  const dataDir = config.providers.db?.dir || resolve(ROOT, './data');
+  const logger = createLogger(dataDir);
 
   // 載入 plugins（傳入所有 providers）
   const loaded = await loadPlugins(config.plugins.dir, {
@@ -95,6 +98,7 @@ async function main() {
     channelSecret: config.line.channelSecret,
     router,
     lineApi,
+    logger,
     onUnmatched: async ({ userId, text, replyToken }) => {
       if (llm) {
         try {
@@ -127,6 +131,9 @@ async function main() {
     app.post(`${config.scheduler.httpPath}/:jobName`, scheduler.httpHandler);
   }
 
+  // Log API
+  logger.registerRoutes(app);
+
   // 管理 API
   app.get('/api/routes', (_req, res) => res.json(router.list()));
   app.get('/api/schedules', (_req, res) => res.json(scheduler.list()));
@@ -142,6 +149,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log('[linebot-framework] shutting down...');
+    logger.close();
     await registry.closeAll();
     process.exit(0);
   };

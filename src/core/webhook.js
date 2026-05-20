@@ -8,7 +8,7 @@
 
 import { createHmac } from 'crypto';
 
-export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched }) {
+export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, logger }) {
   return async function handleWebhook(req, res) {
     // 立即回 200（LINE 要求 1 秒內回應）
     res.status(200).end();
@@ -67,23 +67,43 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       console.log(`[webhook] ${sourceLabel}...: ${text.slice(0, 80)}`);
 
       // Router 比對
+      const t0 = Date.now();
       const matchResult = router.match(text);
       if (matchResult.matched) {
         try {
           const ctx = { userId, groupId, roomId, sourceType, replyToken, lineApi, event };
           const { type, result } = await router.execute(matchResult, ctx);
+          const responseText = result ? String(result) : '';
 
           // query 類型：回覆結果
           if (type === 'query' && result) {
             try {
-              await lineApi.reply(replyToken, String(result));
+              await lineApi.reply(replyToken, responseText);
             } catch {
-              await lineApi.push(userId, String(result));
+              await lineApi.push(userId, responseText);
             }
           }
           // action 類型：靜默執行，不回覆
+
+          // 記錄
+          if (logger) logger.log({
+            userId, sourceType, text,
+            route: matchResult.name || matchResult.pattern?.toString(),
+            plugin: matchResult.plugin,
+            type,
+            response: responseText,
+            durationMs: Date.now() - t0,
+          });
         } catch (err) {
           console.error(`[webhook] handler error: ${err.message}`);
+          if (logger) logger.log({
+            userId, sourceType, text,
+            route: matchResult.name || matchResult.pattern?.toString(),
+            plugin: matchResult.plugin,
+            type: matchResult.type,
+            durationMs: Date.now() - t0,
+            error: err.message,
+          });
         }
         continue;
       }
@@ -92,9 +112,29 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       if (onUnmatched) {
         try {
           await onUnmatched({ userId, groupId, roomId, sourceType, text, replyToken, event });
+          if (logger) logger.log({
+            userId, sourceType, text,
+            route: 'unmatched',
+            type: 'fallback',
+            durationMs: Date.now() - t0,
+          });
         } catch (err) {
           console.error(`[webhook] unmatched handler error: ${err.message}`);
+          if (logger) logger.log({
+            userId, sourceType, text,
+            route: 'unmatched',
+            type: 'fallback',
+            durationMs: Date.now() - t0,
+            error: err.message,
+          });
         }
+      } else {
+        if (logger) logger.log({
+          userId, sourceType, text,
+          route: 'unmatched',
+          type: 'ignored',
+          durationMs: Date.now() - t0,
+        });
       }
     }
   };
