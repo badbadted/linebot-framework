@@ -15,7 +15,7 @@ import { readdir } from 'fs/promises';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 
-export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, enabledList }) {
+export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, dbProvider, enabledList }) {
   const loaded = [];
 
   let entries;
@@ -70,9 +70,12 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, enab
         }
       }
 
+      // 提供 db 連線
+      const db = dbProvider ? dbProvider.getDatabase(plugin.name) : null;
+
       // 呼叫 init hook
       if (plugin.init) {
-        await plugin.init({ lineApi, router, scheduler });
+        await plugin.init({ lineApi, router, scheduler, db });
       }
 
       loaded.push(plugin.name);

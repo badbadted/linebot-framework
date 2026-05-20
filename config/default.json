@@ -14,5 +14,9 @@
   "scheduler": {
     "httpTrigger": true,
     "httpPath": "/api/cron"
+  },
+  "database": {
+    "dir": "./data",
+    "mode": "isolated"
   }
 }

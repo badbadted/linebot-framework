@@ -17,6 +17,7 @@ import { createLineAPI } from './core/line-api.js';
 import { createScheduler } from './core/scheduler.js';
 import { createWebhookHandler } from './core/webhook.js';
 import { loadPlugins } from './core/plugin-loader.js';
+import { createDatabaseProvider } from './core/database.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -44,6 +45,10 @@ function loadConfig() {
       httpTrigger: config.scheduler?.httpTrigger !== false,
       httpPath: config.scheduler?.httpPath || '/api/cron',
     },
+    database: {
+      dir: resolve(ROOT, config.database?.dir || './data'),
+      mode: config.database?.mode || 'isolated',
+    },
   };
 }
 
@@ -55,12 +60,14 @@ async function main() {
   const lineApi = createLineAPI(config.line.channelAccessToken);
   const router = createRouter();
   const scheduler = createScheduler({ lineApi });
+  const dbProvider = createDatabaseProvider(config.database.dir, { mode: config.database.mode });
 
   // 載入 plugins
   const loaded = await loadPlugins(config.plugins.dir, {
     router,
     scheduler,
     lineApi,
+    dbProvider,
     enabledList: config.plugins.enabled,
   });
 
