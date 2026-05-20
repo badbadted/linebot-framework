@@ -18,6 +18,7 @@ export function createRouter() {
    * @param {string} opts.type - 'action' | 'query'（預設 'query'）
    * @param {string} opts.name - 路由名稱（debug 用）
    * @param {string} opts.plugin - 來源 plugin 名稱
+   * @param {string} opts.scope - 'all' | 'private' | 'group'（預設 'all'）
    */
   function add(pattern, handler, opts = {}) {
     routes.push({
@@ -27,20 +28,32 @@ export function createRouter() {
       name: opts.name || pattern.source,
       plugin: opts.plugin || 'unknown',
       describe: opts.describe || '',
+      scope: opts.scope || 'all',
     });
   }
 
   /**
    * 比對訊息
    * @param {string} text - 使用者訊息
-   * @returns {{ matched, route, match }} | { matched: false }
+   * @param {object} [opts] - { sourceType: 'user'|'group'|'room' }
+   * @returns {{ matched, route, match, scopeBlocked }} | { matched: false }
    */
-  function match(text) {
+  function match(text, opts = {}) {
     const trimmed = text.trim();
+    const sourceType = opts.sourceType || 'user';
+    const isGroup = sourceType === 'group' || sourceType === 'room';
+
     for (const route of routes) {
       const m = trimmed.match(route.pattern);
       if (m) {
-        return { matched: true, route, match: m };
+        // scope 過濾
+        if (route.scope === 'private' && isGroup) {
+          return { matched: true, route, match: m, scopeBlocked: true };
+        }
+        if (route.scope === 'group' && !isGroup) {
+          return { matched: true, route, match: m, scopeBlocked: true };
+        }
+        return { matched: true, route, match: m, scopeBlocked: false };
       }
     }
     return { matched: false };
@@ -65,6 +78,7 @@ export function createRouter() {
       name: r.name,
       plugin: r.plugin,
       describe: r.describe,
+      scope: r.scope,
     }));
   }
 

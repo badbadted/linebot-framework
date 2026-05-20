@@ -7,12 +7,14 @@
  *     name: string,
  *     prefix?: string,           // 可選：指令前綴（如 'todo'）
  *     defaultCommand?: string,   // 可選：裸 /<prefix> 時觸發的 command name
+ *     scope?: 'all'|'private'|'group',  // 可選：plugin 層級預設場景
  *     commands: [{
  *       name: string,
  *       command?: string,        // prefix 模式：動作名（如 'add' → /todo_add）
  *       pattern: RegExp,         // prefix 模式：只比對參數部分
  *       handler: fn,
  *       type: 'action'|'query',
+ *       scope?: 'all'|'private'|'group',  // 可選：覆蓋 plugin 層級
  *     }],
  *     schedules: [{ name: string, cron: string, handler: fn }],
  *     init?: async (ctx) => void,
@@ -108,6 +110,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
             name: cmd.name || `${prefix}_${cmd.command}`,
             plugin: plugin.name,
             describe: cmd.describe || '',
+            scope: cmd.scope || plugin.scope || 'all',
           });
         }
 
@@ -121,6 +124,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
               name: `${plugin.defaultCommand} (default)`,
               plugin: plugin.name,
               describe: defaultCmd.describe || '',
+              scope: defaultCmd.scope || plugin.scope || 'all',
             });
           }
         }

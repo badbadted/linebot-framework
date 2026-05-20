@@ -89,12 +89,32 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       const sourceLabel = groupId ? `group:${groupId.slice(0, 8)}` : userId.slice(0, 8);
       console.log(`[webhook] ${sourceLabel}...: ${text.slice(0, 80)}`);
 
-      // Router 比對
+      // scopeId：私訊 = userId，群組 = groupId，聊天室 = roomId
+      const scopeId = groupId || roomId || userId;
+
+      // Router 比對（帶 sourceType 做 scope 過濾）
       const t0 = Date.now();
-      const matchResult = router.match(text);
+      const matchResult = router.match(text, { sourceType });
       if (matchResult.matched) {
+        // scope 限制：指令不適用於此對話場景
+        if (matchResult.scopeBlocked) {
+          const scopeLabel = matchResult.route.scope === 'private' ? '私訊' : '群組';
+          try {
+            await lineApi.reply(replyToken, `此指令僅限${scopeLabel}使用`);
+          } catch { /* ignore */ }
+          if (logger) logger.log({
+            userId, sourceType, text,
+            route: matchResult.route.name,
+            plugin: matchResult.route.plugin,
+            type: 'scope-blocked',
+            response: `scope: ${matchResult.route.scope}`,
+            durationMs: Date.now() - t0,
+          });
+          continue;
+        }
+
         try {
-          const ctx = { userId, groupId, roomId, sourceType, replyToken, lineApi, event };
+          const ctx = { userId, groupId, roomId, sourceType, scopeId, replyToken, lineApi, event };
           const { type, result } = await router.execute(matchResult, ctx);
           const responseText = result ? String(result) : '';
 

@@ -81,6 +81,7 @@ export default {
   name: 'todo',
   prefix: 'todo',
   defaultCommand: 'list-todos',
+  scope: 'private',  // 待辦清單限私訊使用（個人資料）
 
   commands: [
     {
