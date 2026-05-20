@@ -82,6 +82,55 @@ export function createScheduler({ lineApi }) {
     }));
   }
 
+  /**
+   * 動態新增 cron 排程（runtime 使用，如 plugin handler 中新增）
+   * 與 add() 相同，但語意上用於 runtime 動態建立
+   */
+  function addDynamic(name, schedule, handler, opts = {}) {
+    return add(name, schedule, handler, opts);
+  }
+
+  /**
+   * 一次性排程：在指定時間觸發一次後自動移除
+   * @param {string} name - 任務名稱（唯一）
+   * @param {Date|string|number} datetime - 觸發時間（Date 物件、ISO 字串、timestamp）
+   * @param {Function} handler - async (ctx) => void
+   * @param {Object} opts - { plugin }
+   */
+  function addOnce(name, datetime, handler, opts = {}) {
+    const targetTime = new Date(datetime).getTime();
+    const now = Date.now();
+    const delay = targetTime - now;
+
+    if (delay <= 0) {
+      console.warn(`[scheduler] once "${name}" is in the past, firing immediately`);
+      handler({ lineApi, jobName: name }).catch(err => {
+        console.error(`[scheduler] once error in "${name}": ${err.message}`);
+      });
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      console.log(`[scheduler] firing once: ${name}`);
+      try {
+        await handler({ lineApi, jobName: name });
+      } catch (err) {
+        console.error(`[scheduler] once error in "${name}": ${err.message}`);
+      }
+      jobs.delete(name);
+    }, delay);
+
+    // 存入 jobs（stop/list 時可管理）
+    jobs.set(name, {
+      task: { stop: () => clearTimeout(timer) },
+      schedule: `once@${new Date(targetTime).toISOString()}`,
+      handler,
+      plugin: opts.plugin || 'dynamic',
+    });
+
+    console.log(`[scheduler] once registered: ${name} → ${new Date(targetTime).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}`);
+  }
+
   function stop(name) {
     const job = jobs.get(name);
     if (job) {
@@ -97,5 +146,5 @@ export function createScheduler({ lineApi }) {
     jobs.clear();
   }
 
-  return { add, trigger, httpHandler, list, stop, stopAll };
+  return { add, addDynamic, addOnce, trigger, httpHandler, list, stop, stopAll };
 }

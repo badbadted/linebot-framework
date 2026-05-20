@@ -51,20 +51,26 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       const replyToken = event.replyToken;
       if (!userId || !text || !replyToken) continue;
 
-      // 白名單檢查（可選）
-      if (allowlist && !allowlist.has(userId)) {
+      // 來源類型：user / group / room
+      const sourceType = event.source?.type || 'user';
+      const groupId = event.source?.groupId || null;
+      const roomId = event.source?.roomId || null;
+
+      // 白名單檢查（可選，僅對個人訊息生效）
+      if (allowlist && sourceType === 'user' && !allowlist.has(userId)) {
         console.log(`[webhook] blocked ${userId.slice(0, 8)}...`);
         await lineApi.reply(replyToken, `你好！\n你的 LINE ID：\n${userId}\n\n請聯繫管理員加入白名單。`);
         continue;
       }
 
-      console.log(`[webhook] ${userId.slice(0, 8)}...: ${text.slice(0, 80)}`);
+      const sourceLabel = groupId ? `group:${groupId.slice(0, 8)}` : userId.slice(0, 8);
+      console.log(`[webhook] ${sourceLabel}...: ${text.slice(0, 80)}`);
 
       // Router 比對
       const matchResult = router.match(text);
       if (matchResult.matched) {
         try {
-          const ctx = { userId, replyToken, lineApi, event };
+          const ctx = { userId, groupId, roomId, sourceType, replyToken, lineApi, event };
           const { type, result } = await router.execute(matchResult, ctx);
 
           // query 類型：回覆結果
@@ -85,7 +91,7 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       // 未匹配 → 交給 fallback（如 LLM）
       if (onUnmatched) {
         try {
-          await onUnmatched({ userId, text, replyToken, event });
+          await onUnmatched({ userId, groupId, roomId, sourceType, text, replyToken, event });
         } catch (err) {
           console.error(`[webhook] unmatched handler error: ${err.message}`);
         }
