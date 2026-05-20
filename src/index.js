@@ -3,9 +3,10 @@
  *
  * 啟動流程：
  * 1. 讀取設定
- * 2. 初始化核心模組（router, scheduler, line-api）
- * 3. 載入 plugins
- * 4. 啟動 Express server
+ * 2. 初始化 Provider Registry（DB、LLM、Cache 等外接服務）
+ * 3. 初始化核心模組（router, scheduler, line-api）
+ * 4. 載入 plugins（傳入 providers）
+ * 5. 啟動 Express server
  */
 
 import express from 'express';
@@ -17,7 +18,8 @@ import { createLineAPI } from './core/line-api.js';
 import { createScheduler } from './core/scheduler.js';
 import { createWebhookHandler } from './core/webhook.js';
 import { loadPlugins } from './core/plugin-loader.js';
-import { createDatabaseProvider } from './core/database.js';
+import { createProviderRegistry } from './core/provider-registry.js';
+import { registerBuiltinProviders } from './providers/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -45,10 +47,7 @@ function loadConfig() {
       httpTrigger: config.scheduler?.httpTrigger !== false,
       httpPath: config.scheduler?.httpPath || '/api/cron',
     },
-    database: {
-      dir: resolve(ROOT, config.database?.dir || './data'),
-      mode: config.database?.mode || 'isolated',
-    },
+    providers: config.providers || {},
   };
 }
 
@@ -56,18 +55,28 @@ function loadConfig() {
 async function main() {
   const config = loadConfig();
 
+  // 初始化 Provider Registry
+  const registry = createProviderRegistry();
+  registerBuiltinProviders(registry);
+
+  // 解析 providers config 中的相對路徑
+  if (config.providers.db?.dir) {
+    config.providers.db.dir = resolve(ROOT, config.providers.db.dir);
+  }
+
+  await registry.initFromConfig(config.providers);
+
   // 初始化核心
   const lineApi = createLineAPI(config.line.channelAccessToken);
   const router = createRouter();
   const scheduler = createScheduler({ lineApi });
-  const dbProvider = createDatabaseProvider(config.database.dir, { mode: config.database.mode });
 
-  // 載入 plugins
+  // 載入 plugins（傳入所有 providers）
   const loaded = await loadPlugins(config.plugins.dir, {
     router,
     scheduler,
     lineApi,
-    dbProvider,
+    providers: registry,
     enabledList: config.plugins.enabled,
   });
 
@@ -79,15 +88,24 @@ async function main() {
     verify: (req, _res, buf) => { req.rawBody = buf; },
   }));
 
-  // LINE webhook
+  // LLM fallback：若有設定 LLM provider，未匹配指令時用 LLM 回覆
+  const llm = registry.get('llm');
+
   const webhookHandler = createWebhookHandler({
     channelSecret: config.line.channelSecret,
     router,
     lineApi,
     onUnmatched: async ({ userId, text, replyToken }) => {
-      // 預設 fallback：回覆「不認識這個指令」
-      // Plugin 或使用者可覆蓋這個行為（如接 LLM）
-      console.log(`[fallback] unmatched: ${text.slice(0, 60)}`);
+      if (llm) {
+        try {
+          const reply = await llm.chat(text);
+          await lineApi.reply(replyToken, reply);
+        } catch (err) {
+          console.error(`[llm-fallback] error: ${err.message}`);
+        }
+      } else {
+        console.log(`[fallback] unmatched: ${text.slice(0, 60)}`);
+      }
     },
   });
   app.post(config.server.webhookPath, webhookHandler);
@@ -105,14 +123,25 @@ async function main() {
     plugins: loaded,
     routes: router.list().length,
     schedules: scheduler.list().length,
+    providers: registry.list(),
     uptime: process.uptime(),
   }));
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    console.log('[linebot-framework] shutting down...');
+    await registry.closeAll();
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 
   // 啟動
   app.listen(config.server.port, () => {
     console.log(`[linebot-framework] running on :${config.server.port}`);
     console.log(`[linebot-framework] webhook: ${config.server.webhookPath}`);
     console.log(`[linebot-framework] plugins: ${loaded.join(', ') || '(none)'}`);
+    console.log(`[linebot-framework] providers: ${registry.list().join(', ') || '(none)'}`);
     console.log(`[linebot-framework] routes: ${router.list().length}, schedules: ${scheduler.list().length}`);
   });
 }

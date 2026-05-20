@@ -15,8 +15,7 @@
     "httpTrigger": true,
     "httpPath": "/api/cron"
   },
-  "database": {
-    "dir": "./data",
-    "mode": "isolated"
+  "providers": {
+    "db": { "type": "sqlite", "dir": "./data", "mode": "isolated" }
   }
 }

@@ -15,7 +15,7 @@ import { readdir } from 'fs/promises';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 
-export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, dbProvider, enabledList }) {
+export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, providers, enabledList }) {
   const loaded = [];
 
   let entries;
@@ -70,12 +70,17 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, dbPr
         }
       }
 
-      // 提供 db 連線
+      // 提供 providers 給 plugin
+      const dbProvider = providers?.get('db');
       const db = dbProvider ? dbProvider.getDatabase(plugin.name) : null;
 
-      // 呼叫 init hook
+      // 呼叫 init hook（傳入所有 providers）
       if (plugin.init) {
-        await plugin.init({ lineApi, router, scheduler, db });
+        await plugin.init({
+          lineApi, router, scheduler,
+          db,                              // 向後相容：直接拿 db
+          providers: providers?.getAll(),  // 完整 providers（llm, cache, ...）
+        });
       }
 
       loaded.push(plugin.name);
