@@ -25,7 +25,7 @@
 ## 安裝
 
 ```bash
-git clone https://github.com/anthropic-ted/linebot-framework.git
+git clone https://github.com/badbadted/linebot-framework.git
 cd linebot-framework
 npm install
 ```
