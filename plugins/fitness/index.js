@@ -1,9 +1,14 @@
 /**
  * Fitness Plugin — 運動追蹤範例（示範 DB 用法）
  *
+ * 前綴：/fit
+ *
  * 指令：
- *   「跑步 5km」「騎車 30km」「游泳 1km」 → 記錄運動
- *   「本週運動」                             → 查詢本週統計
+ *   /fit_log 跑步 5km  → 記錄運動
+ *   /fit_log 騎車 30km → 記錄運動
+ *   /fit_log 游泳 1km  → 記錄運動
+ *   /fit_week           → 查詢本週統計
+ *   /fit                → 查詢本週統計（default）
  *
  * 排程：
  *   每週日 20:00 推播週報（需設定 PUSH_USER_ID）
@@ -44,11 +49,15 @@ function formatStats(rows) {
 
 export default {
   name: 'fitness',
+  prefix: 'fit',
+  defaultCommand: 'weekly-stats',
 
   commands: [
     {
       name: 'log-exercise',
+      command: 'log',
       pattern: /^(跑步?|慢跑|騎車|騎腳踏車|單車|自行車|游泳?|走路|散步|健走|重訓|健身)\s*(\d+(?:\.\d+)?)\s*(?:km|公里)?$/,
+      describe: '/fit_log <運動> <公里> — 記錄運動',
       type: 'query',
       handler: async (match, ctx) => {
         const sportName = match[1];
@@ -70,7 +79,8 @@ export default {
     },
     {
       name: 'weekly-stats',
-      pattern: /^本週運動$/,
+      command: 'week',
+      describe: '/fit — 本週運動統計',
       type: 'query',
       handler: async (_match, ctx) => {
         const weekStart = getWeekStart();

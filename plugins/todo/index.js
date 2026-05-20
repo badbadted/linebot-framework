@@ -1,15 +1,16 @@
 /**
  * Todo Plugin — 待辦記錄 + 定時提醒
  *
+ * 前綴：/todo
+ *
  * 指令：
- *   「新增 買牛奶」           → 建立待辦
- *   「待辦」「列表」          → 顯示未完成清單
- *   「完成 1」               → 標記 #1 完成
- *   「刪除 1」               → 刪除 #1
- *   「編輯 1 買豆漿」        → 修改 #1 內容
- *   「提醒 1 18:00」         → 今天 18:00 提醒
- *   「提醒 1 明天 09:00」    → 明天 09:00 提醒
- *   「提醒 1 12/25 10:00」   → 12/25 10:00 提醒
+ *   /todo_add 買牛奶          → 建立待辦
+ *   /todo                     → 顯示未完成清單
+ *   /todo_done 1              → 標記 #1 完成
+ *   /todo_del 1               → 刪除 #1
+ *   /todo_edit 1 買豆漿       → 修改 #1 內容
+ *   /todo_remind 1 18:00      → 今天 18:00 提醒
+ *   /todo_remind 1 明天 09:00 → 明天 09:00 提醒
  *
  * 排程：
  *   每天早上 9 點推播未完成待辦摘要
@@ -70,7 +71,7 @@ function scheduleReminder(id, userId, content, remindAt) {
       title: '⏰ 待辦提醒',
       body: `#${id}  ${content}`,
       color: '#f59e0b',
-      actions: [{ label: '已完成', text: `完成 ${id}` }],
+      actions: [{ label: '已完成', text: `/todo_done ${id}` }],
     }));
   });
 }
@@ -78,11 +79,15 @@ function scheduleReminder(id, userId, content, remindAt) {
 // ── Plugin 定義 ──────────────────────────────────────
 export default {
   name: 'todo',
+  prefix: 'todo',
+  defaultCommand: 'list-todos',
 
   commands: [
     {
       name: 'add-todo',
-      pattern: /^新增\s+(.+)/,
+      command: 'add',
+      pattern: /^(.+)/,
+      describe: '/todo_add <內容> — 新增待辦',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -98,14 +103,15 @@ export default {
           body: `#${id}  ${content}`,
           color: '#10b981',
           actions: [
-            { label: '查看列表', text: '待辦' },
+            { label: '查看列表', text: '/todo' },
           ],
         });
       },
     },
     {
       name: 'list-todos',
-      pattern: /^(待辦|列表|todo)$/i,
+      command: 'list',
+      describe: '/todo — 顯示待辦清單',
       type: 'query',
       handler: async (_match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -115,7 +121,7 @@ export default {
            ORDER BY id`,
           ctx.userId
         );
-        if (!todos.length) return '📋 沒有待辦事項！輸入「新增 xxx」建立';
+        if (!todos.length) return '📋 沒有待辦事項！輸入 /todo_add 建立';
 
         return flex.list('📋 待辦列表', todos.map(t => ({
           label: `#${t.id}  ${t.content}`,
@@ -125,7 +131,9 @@ export default {
     },
     {
       name: 'done-todo',
-      pattern: /^完成\s+(\d+)$/,
+      command: 'done',
+      pattern: /^(\d+)$/,
+      describe: '/todo_done <編號> — 標記完成',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -142,7 +150,9 @@ export default {
     },
     {
       name: 'delete-todo',
-      pattern: /^刪除\s+(\d+)$/,
+      command: 'del',
+      pattern: /^(\d+)$/,
+      describe: '/todo_del <編號> — 刪除待辦',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -159,7 +169,9 @@ export default {
     },
     {
       name: 'edit-todo',
-      pattern: /^編輯\s+(\d+)\s+(.+)/,
+      command: 'edit',
+      pattern: /^(\d+)\s+(.+)/,
+      describe: '/todo_edit <編號> <新內容> — 修改待辦',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -176,7 +188,9 @@ export default {
     },
     {
       name: 'remind-todo',
-      pattern: /^提醒\s+(\d+)\s+(.+)/,
+      command: 'remind',
+      pattern: /^(\d+)\s+(.+)/,
+      describe: '/todo_remind <編號> <時間> — 設定提醒',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';

@@ -26,6 +26,7 @@ export function createRouter() {
       type: opts.type || 'query',
       name: opts.name || pattern.source,
       plugin: opts.plugin || 'unknown',
+      describe: opts.describe || '',
     });
   }
 
@@ -63,6 +64,7 @@ export function createRouter() {
       type: r.type,
       name: r.name,
       plugin: r.plugin,
+      describe: r.describe,
     }));
   }
 

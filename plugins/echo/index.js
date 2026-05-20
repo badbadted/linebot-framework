@@ -16,12 +16,14 @@ export default {
     {
       name: 'echo',
       pattern: /^\/echo\s+(.+)/i,
+      describe: '/echo <文字> — 回傳原文',
       type: 'query',
       handler: async (match) => match[1],
     },
     {
       name: 'ping',
       pattern: /^\/ping$/i,
+      describe: '/ping — 測試連線',
       type: 'query',
       handler: async () => 'pong 🏓',
     },
