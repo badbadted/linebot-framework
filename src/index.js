@@ -165,6 +165,41 @@ async function main() {
   // 管理 API
   app.get('/api/routes', (_req, res) => res.json(router.list()));
   app.get('/api/schedules', (_req, res) => res.json(scheduler.list()));
+
+  // LINE Profile 查詢（Dashboard 用）
+  const profileCache = new Map(); // id → { data, ts }
+  const PROFILE_TTL = 10 * 60_000; // 10 分鐘快取
+
+  app.get('/api/line/profile/:id', async (req, res) => {
+    const { id } = req.params;
+    if (!id || id.startsWith('(')) return res.json({ error: 'invalid id' });
+
+    // 快取
+    const cached = profileCache.get(id);
+    if (cached && Date.now() - cached.ts < PROFILE_TTL) {
+      return res.json(cached.data);
+    }
+
+    try {
+      let data;
+      if (id.startsWith('C') || id.startsWith('R')) {
+        // groupId / roomId
+        data = await lineApi.getGroupSummary(id);
+        if (data) data._type = 'group';
+      } else {
+        // userId
+        data = await lineApi.getProfile(id);
+        if (data) data._type = 'user';
+      }
+      if (data) {
+        profileCache.set(id, { data, ts: Date.now() });
+        return res.json(data);
+      }
+      res.json({ error: 'not found' });
+    } catch (err) {
+      res.json({ error: err.message });
+    }
+  });
   app.get('/api/health', (_req, res) => res.json({
     status: 'ok',
     plugins: loaded,

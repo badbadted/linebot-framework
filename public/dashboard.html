@@ -240,14 +240,50 @@ async function loadRoutes() {
   } catch (e) { document.getElementById('route-body').innerHTML = `<tr><td colspan="5" class="loading">載入失敗</td></tr>`; }
 }
 
+// LINE Profile 快取（前端）
+const profileMap = new Map();
+
+async function resolveProfile(id) {
+  if (!id || id.startsWith('(')) return null;
+  if (profileMap.has(id)) return profileMap.get(id);
+  try {
+    const data = await api('/api/line/profile/' + encodeURIComponent(id));
+    if (data && !data.error) { profileMap.set(id, data); return data; }
+  } catch {}
+  return null;
+}
+
 function formatPushTo(targets) {
   if (!targets || targets.length === 0) return '<span style="color:var(--t2)">-</span>';
   return targets.map(t => {
     const icon = t.type === 'user' ? '👤' : t.type === 'group' ? '👥' : '🔄';
     const idShort = t.id ? (t.id.startsWith('(') ? t.id : t.id.slice(0, 10) + '...') : '';
     const tip = t.id ? ` title="${esc(t.id)}"` : '';
-    return `<span${tip}>${icon} ${esc(t.label || t.type)}${idShort ? ' <code style="font-size:10px;color:var(--t2)">' + esc(idShort) + '</code>' : ''}</span>`;
+    const spanId = t.id && !t.id.startsWith('(') ? ` id="pt-${t.id.slice(0,12)}"` : '';
+    return `<span${tip}${spanId}>${icon} ${esc(t.label || t.type)}${idShort ? ' <code style="font-size:10px;color:var(--t2)">' + esc(idShort) + '</code>' : ''}</span>`;
   }).join('<br>');
+}
+
+async function enrichPushTargets(scheds) {
+  const ids = new Set();
+  for (const s of scheds) {
+    for (const t of (s.pushTo || [])) {
+      if (t.id && !t.id.startsWith('(')) ids.add(t.id);
+    }
+  }
+  for (const id of ids) {
+    const profile = await resolveProfile(id);
+    if (!profile) continue;
+    const el = document.getElementById('pt-' + id.slice(0, 12));
+    if (!el) continue;
+    const name = profile.displayName || profile.groupName || '';
+    const pic = profile.pictureUrl || '';
+    const icon = profile._type === 'group' ? '👥' : '👤';
+    el.innerHTML = (pic ? `<img src="${esc(pic)}" style="width:20px;height:20px;border-radius:50%;vertical-align:middle;margin-right:4px">` : `${icon} `)
+      + `<strong>${esc(name)}</strong>`
+      + (profile.memberCount ? ` <span style="color:var(--t2);font-size:11px">(${profile.memberCount}人)</span>` : '');
+    el.title = `${name}\n${id}`;
+  }
 }
 
 async function loadSchedules() {
@@ -264,6 +300,8 @@ async function loadSchedules() {
       <td style="color:var(--t2);font-size:12px">${esc(s.describe || '')}</td>
       <td><button class="trigger-btn" onclick="triggerJob(this, '${esc(s.name)}')">▶ 執行</button></td>
     </tr>`).join('');
+    // 非同步載入 LINE Profile（名字+頭貼）
+    enrichPushTargets(scheds);
   } catch (e) { document.getElementById('sched-body').innerHTML = `<tr><td colspan="6" class="loading">載入失敗</td></tr>`; }
 }
 

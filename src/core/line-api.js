@@ -58,5 +58,27 @@ export function createLineAPI(channelAccessToken) {
     if (!res.ok) throw new Error(`LINE multicast failed: ${res.status} ${body}`);
   }
 
-  return { reply, push, multicast };
+  /**
+   * 查詢使用者 Profile
+   * @returns {{ displayName, userId, pictureUrl, statusMessage }}
+   */
+  async function getProfile(userId) {
+    const res = await fetch(`https://api.line.me/v2/bot/profile/${userId}`, { headers });
+    const body = await res.text();
+    if (!res.ok) return null;
+    return JSON.parse(body);
+  }
+
+  /**
+   * 查詢群組摘要
+   * @returns {{ groupId, groupName, pictureUrl, memberCount }}
+   */
+  async function getGroupSummary(groupId) {
+    const res = await fetch(`https://api.line.me/v2/bot/group/${groupId}/summary`, { headers });
+    const body = await res.text();
+    if (!res.ok) return null;
+    return JSON.parse(body);
+  }
+
+  return { reply, push, multicast, getProfile, getGroupSummary };
 }
