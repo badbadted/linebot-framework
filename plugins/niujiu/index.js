@@ -258,6 +258,10 @@ export default {
       name: 'niujiu-event-remind',
       cron: '0 8 * * *',  // 每天早上 8 點
       handler: remindUpcomingEvents,
+      describe: '每日活動提醒：查詢未來 24 小時內的活動，推播摘要',
+      pushTo: [
+        { type: 'user', id: ADMIN_USER_ID || '(env: NJ_ADMIN_USER_ID)', label: '管理員' },
+      ],
     },
   ],
 

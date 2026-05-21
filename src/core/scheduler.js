@@ -39,6 +39,8 @@ export function createScheduler({ lineApi }) {
       schedule,
       handler,
       plugin: opts.plugin || 'unknown',
+      describe: opts.describe || '',
+      pushTo: opts.pushTo || [],   // [{ type: 'user'|'group', id, label }]
     });
 
     console.log(`[scheduler] registered: ${name} (${schedule})`);
@@ -79,6 +81,8 @@ export function createScheduler({ lineApi }) {
       name,
       schedule: job.schedule,
       plugin: job.plugin,
+      describe: job.describe || '',
+      pushTo: job.pushTo || [],
     }));
   }
 

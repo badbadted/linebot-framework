@@ -136,6 +136,8 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
           scheduler.add(sched.name, sched.cron, sched.handler, {
             plugin: plugin.name,
             timezone: sched.timezone,
+            describe: sched.describe || '',
+            pushTo: sched.pushTo || [],
           });
         }
       }

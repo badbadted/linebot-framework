@@ -33,6 +33,10 @@ export default {
     {
       name: 'echo-morning',
       cron: '0 9 * * *',  // 每天早上 9 點
+      describe: '每日早安推播',
+      pushTo: [
+        { type: 'user', id: PUSH_USER_ID || '(env: PUSH_USER_ID)', label: '預設使用者' },
+      ],
       handler: async ({ lineApi }) => {
         if (!PUSH_USER_ID) return;
         await lineApi.push(PUSH_USER_ID, '早安！☀️ 新的一天開始了。');

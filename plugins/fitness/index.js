@@ -101,6 +101,10 @@ export default {
     {
       name: 'fitness-weekly-report',
       cron: '0 20 * * 0',  // 每週日 20:00
+      describe: '每週日運動週報推播',
+      pushTo: [
+        { type: 'user', id: PUSH_USER_ID || '(env: PUSH_USER_ID)', label: '預設使用者' },
+      ],
       handler: async ({ lineApi }) => {
         if (!PUSH_USER_ID || !db) return;
         const weekStart = getWeekStart();

@@ -222,6 +222,10 @@ export default {
     {
       name: 'todo-daily-digest',
       cron: '0 9 * * *',
+      describe: '每日待辦提醒：推播未完成數量給所有使用者',
+      pushTo: [
+        { type: 'dynamic', label: '所有有未完成待辦的使用者' },
+      ],
       handler: async ({ lineApi }) => {
         if (!db) return;
         const users = db.all('SELECT DISTINCT user_id FROM todos WHERE done = 0');
