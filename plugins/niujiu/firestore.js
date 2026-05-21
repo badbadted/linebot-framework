@@ -174,6 +174,40 @@ export async function joinEvent(db, event, user) {
 }
 
 /**
+ * 取得即將到來的活動及其參與者（用於提醒推播）
+ * @param {number} withinHours - 幾小時內的活動（預設 24）
+ */
+export async function getUpcomingEventsWithParticipants(db, withinHours = 24) {
+  const snap = await db.collection('events')
+    .where('status', 'in', ['upcoming', 'ongoing'])
+    .get();
+
+  const now = Date.now();
+  const cutoff = now + withinHours * 60 * 60 * 1000;
+
+  const events = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+  // 篩選：startDate 在 now ~ cutoff 之間
+  const upcoming = events.filter(e => {
+    const ts = getTimestamp(e.startDate);
+    if (!ts) return false;
+    return ts >= now && ts <= cutoff;
+  });
+
+  // 查每個活動的參與者
+  const results = [];
+  for (const event of upcoming) {
+    const partSnap = await db.collection('participants')
+      .where('eventId', '==', event.id)
+      .get();
+    const userIds = partSnap.docs.map(d => d.data().userId).filter(Boolean);
+    results.push({ event, userIds });
+  }
+
+  return results;
+}
+
+/**
  * 平台統計
  */
 export async function getPlatformStats(db) {

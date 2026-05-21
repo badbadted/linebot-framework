@@ -5,7 +5,7 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getMyEvents, getUser, hasJoined, joinEvent, getPlatformStats } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getMyEvents, getUser, hasJoined, joinEvent, getPlatformStats, getUpcomingEventsWithParticipants } from './firestore.js';
 
 let db = null;
 
@@ -248,6 +248,52 @@ async function handleStats(match, ctx) {
   }
 }
 
+// ── 排程：活動提醒推播 ──────────────────────────────────
+
+/**
+ * 查詢未來 24 小時內的活動，推播提醒給已報名的參與者
+ */
+async function remindUpcomingEvents({ lineApi }) {
+  try {
+    const items = await getUpcomingEventsWithParticipants(db, 24);
+
+    if (items.length === 0) {
+      console.log('[niujiu] remind: 未來 24 小時沒有活動');
+      return;
+    }
+
+    for (const { event, userIds } of items) {
+      if (userIds.length === 0) continue;
+
+      const time = formatTimeRange(event.startTime, event.endTime);
+      const lines = [
+        '🔔 活動提醒',
+        '',
+        `📌 ${event.title}`,
+        `📅 ${formatDate(event.startDate)}${time ? ' ' + time : ''}`,
+        event.location ? `📍 ${event.location}` : '',
+        '',
+        '記得準時出席喔！',
+      ].filter(Boolean);
+
+      const msg = lines.join('\n');
+
+      // 逐一推播（避免 multicast 500 人上限問題）
+      for (const userId of userIds) {
+        try {
+          await lineApi.push(userId, msg);
+        } catch (err) {
+          console.error(`[niujiu] remind push failed for ${userId}: ${err.message}`);
+        }
+      }
+
+      console.log(`[niujiu] remind: 「${event.title}」推播 ${userIds.length} 人`);
+    }
+  } catch (err) {
+    console.error('[niujiu] remind error:', err);
+  }
+}
+
 // ── Plugin 定義 ──────────────────────────────────────
 
 export default {
@@ -297,6 +343,14 @@ export default {
   ],
 
   defaultCommand: 'list',
+
+  schedules: [
+    {
+      name: 'niujiu-event-remind',
+      cron: '0 8 * * *',  // 每天早上 8 點
+      handler: remindUpcomingEvents,
+    },
+  ],
 
   async init() {
     try {
