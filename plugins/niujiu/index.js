@@ -5,7 +5,9 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getMyEvents, getPlatformStats, getUpcomingEventsWithParticipants } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants } from './firestore.js';
+
+const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
 let db = null;
 
@@ -135,33 +137,6 @@ async function handleInfo(match, ctx) {
 }
 
 /**
- * /nj_my — 我的活動
- */
-async function handleMyEvents(match, ctx) {
-  const userId = ctx.event.source.userId;
-
-  try {
-    const events = await getMyEvents(db, userId);
-
-    if (events.length === 0) {
-      return '你還沒有報名任何活動 📭\n輸入 /nj 看看有什麼好玩的！';
-    }
-
-    const lines = ['📋 我的活動：', ''];
-    events.forEach((event, i) => {
-      lines.push(`${i + 1}. ${event.title}`);
-      lines.push(`   ${formatEventStatus(event.status)} | ${formatDate(event.startDate) || '日期未定'}`);
-      lines.push('');
-    });
-
-    return lines.join('\n');
-  } catch (err) {
-    console.error('[niujiu] handleMyEvents error:', err);
-    return '⚠️ 查詢活動時發生錯誤，請稍後再試';
-  }
-}
-
-/**
  * /nj_stats — 平台統計（管理員）
  */
 async function handleStats(match, ctx) {
@@ -190,46 +165,43 @@ async function handleStats(match, ctx) {
 // ── 排程：活動提醒推播 ──────────────────────────────────
 
 /**
- * 查詢未來 N 小時內的活動，推播提醒給已報名的參與者
+ * 查詢未來 N 小時內的活動，推播摘要給管理員
  * 預設 24 小時，測試時可用 /nj_remind <hours> 指定
  */
-async function remindUpcomingEvents({ lineApi, hours }) {
+async function remindUpcomingEvents({ lineApi, hours, replyUserId }) {
+  const pushTo = replyUserId || ADMIN_USER_ID;
+  if (!pushTo) {
+    console.error('[niujiu] remind: 沒有設定 NJ_ADMIN_USER_ID，無法推播');
+    return;
+  }
+
   try {
     const lookAhead = hours || 24;
     const items = await getUpcomingEventsWithParticipants(db, lookAhead);
 
     if (items.length === 0) {
-      console.log(`[niujiu] remind: 未來 ${lookAhead} 小時沒有活動`);
+      const msg = `📭 未來 ${lookAhead} 小時沒有活動`;
+      console.log(`[niujiu] remind: ${msg}`);
+      if (replyUserId) return msg; // 指令呼叫時回傳文字
+      await lineApi.push(pushTo, msg);
       return;
     }
 
+    const lines = ['🔔 活動提醒', ''];
     for (const { event, userIds } of items) {
-      if (userIds.length === 0) continue;
-
       const time = formatTimeRange(event.startTime, event.endTime);
-      const lines = [
-        '🔔 活動提醒',
-        '',
-        `📌 ${event.title}`,
-        `📅 ${formatDate(event.startDate)}${time ? ' ' + time : ''}`,
-        event.location ? `📍 ${event.location}` : '',
-        '',
-        '記得準時出席喔！',
-      ].filter(Boolean);
-
-      const msg = lines.join('\n');
-
-      // 逐一推播（避免 multicast 500 人上限問題）
-      for (const userId of userIds) {
-        try {
-          await lineApi.push(userId, msg);
-        } catch (err) {
-          console.error(`[niujiu] remind push failed for ${userId}: ${err.message}`);
-        }
-      }
-
-      console.log(`[niujiu] remind: 「${event.title}」推播 ${userIds.length} 人`);
+      lines.push(`📌 ${event.title}`);
+      lines.push(`📅 ${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
+      if (event.location) lines.push(`📍 ${event.location}`);
+      lines.push(`👥 已報名 ${userIds.length} 人`);
+      lines.push('');
     }
+
+    const msg = lines.join('\n').trim();
+    console.log(`[niujiu] remind: ${items.length} 個活動，推播給 ${pushTo.slice(0, 8)}...`);
+
+    if (replyUserId) return msg; // 指令呼叫時直接回傳
+    await lineApi.push(pushTo, msg);
   } catch (err) {
     console.error('[niujiu] remind error:', err);
   }
@@ -260,13 +232,6 @@ export default {
       scope: 'all',
     },
     {
-      name: 'my',
-      command: 'my',
-      describe: '/nj_my — 我的已報名活動',
-      handler: handleMyEvents,
-      scope: 'all',
-    },
-    {
       name: 'stats',
       command: 'stats',
       describe: '/nj_stats — 平台統計（管理員）',
@@ -277,11 +242,10 @@ export default {
       name: 'remind',
       command: 'remind',
       pattern: /^(\d+)?/,
-      describe: '/nj_remind [小時] — 手動觸發活動提醒（管理員測試）',
+      describe: '/nj_remind [小時] — 查看即將到來的活動提醒',
       handler: async (match, ctx) => {
         const hours = parseInt(match[1]) || 240;
-        await remindUpcomingEvents({ lineApi: ctx.lineApi, hours });
-        return `✅ 提醒推播已觸發（查詢未來 ${hours} 小時的活動）`;
+        return await remindUpcomingEvents({ lineApi: ctx.lineApi, hours, replyUserId: ctx.userId });
       },
       scope: 'private',
     },
