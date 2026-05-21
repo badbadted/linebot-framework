@@ -44,25 +44,25 @@ export async function initFirestore() {
 export async function getActiveEvents(db, limit = 5) {
   const snap = await db.collection('events')
     .where('status', 'in', ['voting', 'upcoming', 'ongoing'])
-    .orderBy('createdAt', 'desc')
-    .limit(limit)
     .get();
 
-  return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const events = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  // client 端排序，避免需要 Firestore 複合索引
+  events.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return events.slice(0, limit);
 }
 
 /**
  * 用名稱模糊搜尋活動
  */
 export async function findEventByTitle(db, keyword) {
-  // Firestore 不支援 contains，先取全部活躍的再 client 端 filter
+  // Firestore 不支援 contains，先取活躍的再 client 端 filter
   const snap = await db.collection('events')
     .where('status', 'in', ['voting', 'upcoming', 'ongoing', 'ended'])
-    .orderBy('createdAt', 'desc')
-    .limit(50)
     .get();
 
   const events = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  events.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
   // 完全比對優先
   const exact = events.find(e => e.title === keyword);
