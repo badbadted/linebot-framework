@@ -87,6 +87,7 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       }
 
       const sourceLabel = groupId ? `group:${groupId.slice(0, 8)}` : userId.slice(0, 8);
+      if (groupId) console.log(`[webhook] groupId: ${groupId}`);
       console.log(`[webhook] ${sourceLabel}...: ${text.slice(0, 80)}`);
 
       // scopeId：私訊 = userId，群組 = groupId，聊天室 = roomId
