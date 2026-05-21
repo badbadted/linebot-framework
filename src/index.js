@@ -93,6 +93,10 @@ async function main() {
     verify: (req, _res, buf) => { req.rawBody = buf; },
   }));
 
+  // Dashboard 靜態頁面（/public/dashboard.html）
+  app.use('/public', express.static(resolve(ROOT, 'public')));
+  app.get('/dashboard', (_req, res) => res.redirect('/public/dashboard.html'));
+
   // API 驗證：保護 /api/* 管理端點（webhook 路徑不受限）
   const apiAuth = createApiAuth(config.apiAuth);
   app.use('/api', apiAuth);

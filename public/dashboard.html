@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>linebot-framework Dashboard</title>
+<style>
+  :root {
+    --bg: #ffffff; --s1: #f8fafc; --s2: #e2e8f0;
+    --t1: #1e293b; --t2: #64748b; --accent: #3b82f6;
+    --green: #22c55e; --red: #ef4444; --orange: #f59e0b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--s1); color: var(--t1); }
+
+  /* ── Top Bar ── */
+  .topbar { background: var(--bg); border-bottom: 1px solid var(--s2); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+  .topbar h1 { font-size: 16px; font-weight: 600; }
+  .topbar .meta { font-size: 12px; color: var(--t2); display: flex; gap: 16px; align-items: center; }
+  .topbar .meta .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
+  .topbar .meta .dot.err { background: var(--red); }
+  .refresh-btn { background: none; border: 1px solid var(--s2); border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; color: var(--t2); }
+  .refresh-btn:hover { background: var(--s1); }
+
+  /* ── Layout ── */
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+
+  /* ── Stat Cards ── */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat-card { background: var(--bg); border-radius: 8px; padding: 16px; border: 1px solid var(--s2); }
+  .stat-card .label { font-size: 11px; color: var(--t2); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+  .stat-card .sub { font-size: 11px; color: var(--t2); margin-top: 2px; }
+
+  /* ── Section ── */
+  .section { background: var(--bg); border-radius: 8px; border: 1px solid var(--s2); margin-bottom: 16px; overflow: hidden; }
+  .section-header { padding: 12px 16px; border-bottom: 1px solid var(--s2); display: flex; align-items: center; justify-content: space-between; }
+  .section-header h2 { font-size: 14px; font-weight: 600; }
+  .section-header .badge { font-size: 11px; background: var(--s1); border: 1px solid var(--s2); border-radius: 12px; padding: 2px 8px; color: var(--t2); }
+
+  /* ── Table ── */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 16px; font-weight: 500; color: var(--t2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; background: var(--s1); }
+  td { padding: 8px 16px; border-top: 1px solid var(--s2); vertical-align: top; }
+  tr:hover td { background: #f1f5f9; }
+
+  /* ── Tags ── */
+  .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; font-weight: 500; }
+  .tag-query { background: #dbeafe; color: #1d4ed8; }
+  .tag-action { background: #fef3c7; color: #92400e; }
+  .tag-all { background: #e0e7ff; color: #4338ca; }
+  .tag-private { background: #fce7f3; color: #9d174d; }
+  .tag-group { background: #d1fae5; color: #065f46; }
+  .tag-fallback { background: #f3e8ff; color: #6b21a8; }
+  .tag-error { background: #fee2e2; color: #991b1b; }
+  .tag-scope-blocked { background: #fef3c7; color: #92400e; }
+
+  /* ── Trigger Button ── */
+  .trigger-btn { background: var(--accent); color: white; border: none; border-radius: 4px; padding: 3px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+  .trigger-btn:hover { opacity: 0.85; }
+  .trigger-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .trigger-btn.ok { background: var(--green); }
+  .trigger-btn.fail { background: var(--red); }
+
+  /* ── Log rows ── */
+  .log-text { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-response { max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t2); font-size: 12px; }
+  .duration { color: var(--t2); font-size: 12px; }
+
+  /* ── Mini chart ── */
+  .chart-bar { display: flex; align-items: flex-end; gap: 2px; height: 50px; padding: 0 16px 12px; }
+  .chart-bar .bar { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; position: relative; }
+  .chart-bar .bar:hover::after { content: attr(data-tip); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--t1); color: white; font-size: 10px; padding: 2px 6px; border-radius: 3px; white-space: nowrap; margin-bottom: 4px; }
+  .chart-labels { display: flex; gap: 2px; padding: 0 16px 8px; }
+  .chart-labels span { flex: 1; text-align: center; font-size: 9px; color: var(--t2); }
+
+  /* ── Loading / Error ── */
+  .loading { text-align: center; padding: 40px; color: var(--t2); }
+  .error-banner { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
+
+  /* ── Responsive ── */
+  @media (max-width: 640px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    table { font-size: 12px; }
+    th, td { padding: 6px 10px; }
+    .hide-mobile { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>🤖 linebot-framework</h1>
+  <div class="meta">
+    <span><span class="dot" id="status-dot"></span> <span id="status-text">connecting...</span></span>
+    <span id="uptime-text"></span>
+    <button class="refresh-btn" onclick="loadAll()">↻ 重新整理</button>
+  </div>
+</div>
+
+<div class="container">
+  <div id="error-area"></div>
+
+  <!-- Stat Cards -->
+  <div class="stats" id="stats-area">
+    <div class="stat-card"><div class="label">Plugins</div><div class="value" id="s-plugins">-</div></div>
+    <div class="stat-card"><div class="label">Routes</div><div class="value" id="s-routes">-</div></div>
+    <div class="stat-card"><div class="label">Schedules</div><div class="value" id="s-schedules">-</div></div>
+    <div class="stat-card"><div class="label">7 日訊息</div><div class="value" id="s-messages">-</div><div class="sub" id="s-errors"></div></div>
+    <div class="stat-card"><div class="label">Providers</div><div class="value" id="s-providers">-</div><div class="sub" id="s-provider-list"></div></div>
+  </div>
+
+  <!-- 7-day chart -->
+  <div class="section" id="chart-section" style="display:none">
+    <div class="section-header"><h2>📊 7 日訊息量</h2></div>
+    <div class="chart-bar" id="chart-bars"></div>
+    <div class="chart-labels" id="chart-labels"></div>
+  </div>
+
+  <!-- Schedules -->
+  <div class="section">
+    <div class="section-header">
+      <h2>⏰ 排程任務</h2>
+      <span class="badge" id="sched-count">0</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>名稱</th><th>Cron</th><th>Plugin</th><th></th></tr></thead>
+        <tbody id="sched-body"><tr><td colspan="4" class="loading">載入中...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Routes -->
+  <div class="section">
+    <div class="section-header">
+      <h2>🛣️ 指令路由</h2>
+      <span class="badge" id="route-count">0</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>指令</th><th>類型</th><th>Scope</th><th>Plugin</th><th class="hide-mobile">說明</th></tr></thead>
+        <tbody id="route-body"><tr><td colspan="5" class="loading">載入中...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Top Commands -->
+  <div class="section" id="top-section" style="display:none">
+    <div class="section-header"><h2>🔥 熱門指令（7 日）</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>指令</th><th>次數</th></tr></thead>
+        <tbody id="top-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Recent Logs -->
+  <div class="section">
+    <div class="section-header">
+      <h2>📋 最近訊息</h2>
+      <span class="badge" id="log-count">0</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>時間</th><th>來源</th><th>訊息</th><th>路由</th><th>類型</th><th class="hide-mobile">耗時</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="6" class="loading">載入中...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';  // same origin
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function formatUptime(s) {
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function formatTime(ts) {
+  const d = new Date(ts);
+  return d.toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+function typeTag(type) {
+  const cls = { query: 'tag-query', action: 'tag-action', fallback: 'tag-fallback', 'scope-blocked': 'tag-scope-blocked' }[type] || 'tag-action';
+  return `<span class="tag ${cls}">${esc(type)}</span>`;
+}
+
+function scopeTag(scope) {
+  const cls = { all: 'tag-all', private: 'tag-private', group: 'tag-group' }[scope] || 'tag-all';
+  return `<span class="tag ${cls}">${esc(scope)}</span>`;
+}
+
+async function api(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+async function loadHealth() {
+  try {
+    const h = await api('/api/health');
+    document.getElementById('status-dot').className = 'dot';
+    document.getElementById('status-text').textContent = 'online';
+    document.getElementById('uptime-text').textContent = `uptime: ${formatUptime(h.uptime)}`;
+    document.getElementById('s-plugins').textContent = h.plugins?.length || 0;
+    document.getElementById('s-routes').textContent = h.routes || 0;
+    document.getElementById('s-schedules').textContent = h.schedules || 0;
+    document.getElementById('s-providers').textContent = h.providers?.length || 0;
+    document.getElementById('s-provider-list').textContent = h.providers?.join(', ') || '-';
+  } catch (e) {
+    document.getElementById('status-dot').className = 'dot err';
+    document.getElementById('status-text').textContent = 'offline';
+    showError('無法連線到 framework: ' + e.message);
+  }
+}
+
+async function loadRoutes() {
+  try {
+    const routes = await api('/api/routes');
+    document.getElementById('route-count').textContent = routes.length;
+    const body = document.getElementById('route-body');
+    if (routes.length === 0) { body.innerHTML = '<tr><td colspan="5" style="color:var(--t2)">尚無路由</td></tr>'; return; }
+    body.innerHTML = routes.map(r => `<tr>
+      <td><code>${esc(r.name || r.pattern)}</code></td>
+      <td>${typeTag(r.type)}</td>
+      <td>${scopeTag(r.scope)}</td>
+      <td>${esc(r.plugin || '-')}</td>
+      <td class="hide-mobile" style="color:var(--t2)">${esc(r.describe || '')}</td>
+    </tr>`).join('');
+  } catch (e) { document.getElementById('route-body').innerHTML = `<tr><td colspan="5" class="loading">載入失敗</td></tr>`; }
+}
+
+async function loadSchedules() {
+  try {
+    const scheds = await api('/api/schedules');
+    document.getElementById('sched-count').textContent = scheds.length;
+    const body = document.getElementById('sched-body');
+    if (scheds.length === 0) { body.innerHTML = '<tr><td colspan="4" style="color:var(--t2)">尚無排程</td></tr>'; return; }
+    body.innerHTML = scheds.map(s => `<tr>
+      <td><strong>${esc(s.name)}</strong></td>
+      <td><code>${esc(s.schedule || '-')}</code></td>
+      <td>${esc(s.plugin || '-')}</td>
+      <td><button class="trigger-btn" onclick="triggerJob(this, '${esc(s.name)}')">▶ 執行</button></td>
+    </tr>`).join('');
+  } catch (e) { document.getElementById('sched-body').innerHTML = `<tr><td colspan="4" class="loading">載入失敗</td></tr>`; }
+}
+
+async function loadLogs() {
+  try {
+    const data = await api('/api/logs?limit=30');
+    document.getElementById('log-count').textContent = data.total || data.logs?.length || 0;
+    const body = document.getElementById('log-body');
+    const logs = data.logs || [];
+    if (logs.length === 0) { body.innerHTML = '<tr><td colspan="6" style="color:var(--t2)">尚無紀錄</td></tr>'; return; }
+    body.innerHTML = logs.map(l => {
+      const hasError = l.error ? ' style="background:#fef2f2"' : '';
+      return `<tr${hasError}>
+        <td style="white-space:nowrap;font-size:12px">${formatTime(l.timestamp)}</td>
+        <td><span class="tag ${l.source_type === 'group' ? 'tag-group' : 'tag-private'}">${esc(l.source_type || 'user')}</span></td>
+        <td class="log-text" title="${esc(l.text || '')}">${esc(l.text || '')}</td>
+        <td><code>${esc(l.route || '-')}</code></td>
+        <td>${typeTag(l.type || 'unknown')}</td>
+        <td class="hide-mobile duration">${l.duration_ms != null ? l.duration_ms + 'ms' : '-'}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) { document.getElementById('log-body').innerHTML = `<tr><td colspan="6" class="loading">載入失敗</td></tr>`; }
+}
+
+async function loadStats() {
+  try {
+    const s = await api('/api/logs/stats');
+    document.getElementById('s-messages').textContent = s.total || 0;
+    document.getElementById('s-errors').textContent = s.errors ? `${s.errors} errors` : '';
+    if (s.errors > 0) document.getElementById('s-errors').style.color = 'var(--red)';
+
+    // Daily chart
+    if (s.daily && s.daily.length > 0) {
+      const max = Math.max(...s.daily.map(d => d.count), 1);
+      const bars = document.getElementById('chart-bars');
+      const labels = document.getElementById('chart-labels');
+      bars.innerHTML = s.daily.map(d => {
+        const h = Math.max((d.count / max) * 48, 2);
+        return `<div class="bar" style="height:${h}px" data-tip="${d.date}: ${d.count} 則"></div>`;
+      }).join('');
+      labels.innerHTML = s.daily.map(d => `<span>${d.date.slice(5)}</span>`).join('');
+      document.getElementById('chart-section').style.display = '';
+    }
+
+    // Top routes
+    if (s.topRoutes && s.topRoutes.length > 0) {
+      document.getElementById('top-body').innerHTML = s.topRoutes.slice(0, 10).map(r =>
+        `<tr><td><code>${esc(r.route)}</code></td><td>${r.count}</td></tr>`
+      ).join('');
+      document.getElementById('top-section').style.display = '';
+    }
+  } catch (e) { /* stats optional */ }
+}
+
+async function triggerJob(btn, name) {
+  btn.disabled = true;
+  btn.textContent = '⏳ 執行中...';
+  try {
+    const r = await fetch(API + '/api/cron/' + encodeURIComponent(name), { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      btn.textContent = '✓ 完成';
+      btn.className = 'trigger-btn ok';
+    } else {
+      btn.textContent = '✗ 失敗';
+      btn.className = 'trigger-btn fail';
+    }
+  } catch (e) {
+    btn.textContent = '✗ 錯誤';
+    btn.className = 'trigger-btn fail';
+  }
+  setTimeout(() => { btn.textContent = '▶ 執行'; btn.className = 'trigger-btn'; btn.disabled = false; }, 3000);
+}
+
+function showError(msg) {
+  document.getElementById('error-area').innerHTML = `<div class="error-banner">⚠️ ${esc(msg)}</div>`;
+}
+
+async function loadAll() {
+  document.getElementById('error-area').innerHTML = '';
+  await Promise.all([loadHealth(), loadRoutes(), loadSchedules(), loadLogs(), loadStats()]);
+}
+
+loadAll();
+// Auto-refresh every 60s
+setInterval(loadAll, 60000);
+</script>
+</body>
+</html>
