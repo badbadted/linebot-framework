@@ -13,8 +13,17 @@ let db = null;
 
 function formatDate(timestamp) {
   if (!timestamp) return '未定';
-  const d = typeof timestamp === 'number' ? new Date(timestamp) : timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+  const d = typeof timestamp === 'number' ? new Date(timestamp)
+    : timestamp.toDate ? timestamp.toDate()
+    : new Date(timestamp);
+  if (isNaN(d.getTime())) return '未定';
   return `${d.getMonth() + 1}/${d.getDate()}(${['日', '一', '二', '三', '四', '五', '六'][d.getDay()]})`;
+}
+
+function formatTimeRange(startTime, endTime) {
+  if (!startTime) return '';
+  if (endTime) return `${startTime}-${endTime}`;
+  return startTime;
 }
 
 function formatEventStatus(status) {
@@ -33,7 +42,10 @@ function formatEventCard(event) {
   const lines = [];
   lines.push(`📌 ${event.title}`);
   lines.push(`狀態：${formatEventStatus(event.status)}`);
-  if (event.startDate) lines.push(`日期：${formatDate(event.startDate)}`);
+  if (event.startDate) {
+    const time = formatTimeRange(event.startTime, event.endTime);
+    lines.push(`日期：${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
+  }
   if (event.location) lines.push(`地點：${event.location}`);
   if (event.maxParticipants) {
     lines.push(`人數：${event.currentParticipants || 0}/${event.maxParticipants}`);
@@ -63,7 +75,10 @@ async function handleList(match, ctx) {
     const lines = ['🎯 近期活動：', ''];
     events.forEach((event, i) => {
       lines.push(`${i + 1}. ${event.title}`);
-      lines.push(`   ${formatEventStatus(event.status)} | ${formatDate(event.startDate) || '日期未定'}`);
+      const date = formatDate(event.startDate);
+      const time = formatTimeRange(event.startTime, event.endTime);
+      const dateTime = time ? `${date} ${time}` : date;
+      lines.push(`   ${formatEventStatus(event.status)} | ${dateTime}`);
       if (event.location) lines.push(`   📍 ${event.location}`);
       lines.push('');
     });
