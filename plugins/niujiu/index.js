@@ -5,7 +5,7 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getMyEvents, getUser, hasJoined, joinEvent, getPlatformStats, getUpcomingEventsWithParticipants } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getMyEvents, getPlatformStats, getUpcomingEventsWithParticipants } from './firestore.js';
 
 let db = null;
 
@@ -162,67 +162,6 @@ async function handleMyEvents(match, ctx) {
 }
 
 /**
- * /nj_join <活動名稱> — 快速報名
- */
-async function handleJoin(match, ctx) {
-  const keyword = match[1]?.trim();
-  if (!keyword) {
-    return '請輸入要報名的活動名稱\n範例：/nj_join 親子露營';
-  }
-
-  const userId = ctx.event.source.userId;
-
-  try {
-    // 查活動
-    const event = await findEventByTitle(db, keyword);
-    if (!event) {
-      return `找不到「${keyword}」相關活動 🤔\n輸入 /nj 查看目前活動列表`;
-    }
-
-    // 檢查狀態
-    if (!['voting', 'upcoming'].includes(event.status)) {
-      return `「${event.title}」目前${formatEventStatus(event.status)}，無法報名`;
-    }
-
-    // 檢查人數上限
-    if (event.maxParticipants && event.currentParticipants >= event.maxParticipants) {
-      return `「${event.title}」已額滿（${event.currentParticipants}/${event.maxParticipants}）😢`;
-    }
-
-    // 檢查是否已報名
-    const already = await hasJoined(db, event.id, userId);
-    if (already) {
-      return `你已經報名「${event.title}」了 ✅\n輸入 /nj_my 查看你的活動`;
-    }
-
-    // 取得使用者資料
-    const user = await getUser(db, userId);
-    if (!user) {
-      return '尚未在妞揪平台建立帳號\n請先從 LINE 選單開啟妞揪 App 登入一次';
-    }
-
-    // 執行報名
-    await joinEvent(db, event, user);
-
-    const lines = [
-      `✅ 報名成功！`,
-      '',
-      `📌 ${event.title}`,
-      event.startDate ? `📅 ${formatDate(event.startDate)}` : '',
-      event.location ? `📍 ${event.location}` : '',
-      '',
-      '預設報名：大人 1 + 小孩 1',
-      '如需修改人數，請到妞揪 App 調整',
-    ].filter(Boolean);
-
-    return lines.join('\n');
-  } catch (err) {
-    console.error('[niujiu] handleJoin error:', err);
-    return '⚠️ 報名時發生錯誤，請稍後再試';
-  }
-}
-
-/**
  * /nj_stats — 平台統計（管理員）
  */
 async function handleStats(match, ctx) {
@@ -325,14 +264,6 @@ export default {
       command: 'my',
       describe: '/nj_my — 我的已報名活動',
       handler: handleMyEvents,
-      scope: 'all',
-    },
-    {
-      name: 'join',
-      command: 'join',
-      pattern: /^(.+)/,
-      describe: '/nj_join <活動名稱> — 快速報名活動',
-      handler: handleJoin,
       scope: 'all',
     },
     {
