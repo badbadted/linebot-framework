@@ -97,36 +97,54 @@ async function main() {
   const apiAuth = createApiAuth(config.apiAuth);
   app.use('/api', apiAuth);
 
-  // LLM fallback：若有設定 LLM provider，未匹配指令時用 LLM 回覆
+  // LLM：若有設定 LLM provider，註冊 /ask 指令供群組使用
   const llm = registry.get('llm');
+
+  if (llm) {
+    router.add(/^\/ask\s+(.+)/i, async (match, ctx) => {
+      const question = match[1];
+      const reply = await llm.chat(question, { sessionId: `line-${ctx.userId}` });
+      return reply || '🤔 沒有回應';
+    }, {
+      type: 'query',
+      name: 'ask-llm',
+      plugin: '_system',
+      describe: '/ask <問題> — 問 AI',
+      scope: 'all',
+    });
+  }
+
+  // LLM fallback：私訊未匹配指令時用 LLM 回覆（群組不觸發）
 
   const webhookHandler = createWebhookHandler({
     channelSecret: config.line.channelSecret,
     router,
     lineApi,
     logger,
-    onUnmatched: async ({ userId, text, replyToken }) => {
-      if (llm) {
-        try {
-          // 用 userId 作為 sessionId，每個 LINE 使用者有獨立對話上下文
-          const reply = await llm.chat(text, { sessionId: `line-${userId}` });
-          if (reply) {
-            try {
-              await lineApi.reply(replyToken, reply);
-            } catch {
-              // replyToken 可能已過期（30s），改用 push
-              await lineApi.push(userId, reply);
-            }
-          }
-        } catch (err) {
-          console.error(`[llm-fallback] error: ${err.message}`);
-          // 錯誤時給使用者一個提示
-          try {
-            await lineApi.reply(replyToken, '抱歉，目前無法處理你的訊息，請稍後再試。');
-          } catch { /* replyToken 過期就算了 */ }
-        }
-      } else {
+    onUnmatched: async ({ userId, sourceType, text, replyToken }) => {
+      if (!llm) {
         console.log(`[fallback] unmatched: ${text.slice(0, 60)}`);
+        return;
+      }
+
+      // 群組中只有 /ask 指令才觸發 LLM，私訊任何訊息都可以
+      const isGroup = sourceType === 'group' || sourceType === 'room';
+      if (isGroup) return; // 群組不回應未匹配訊息
+
+      try {
+        const reply = await llm.chat(text, { sessionId: `line-${userId}` });
+        if (reply) {
+          try {
+            await lineApi.reply(replyToken, reply);
+          } catch {
+            await lineApi.push(userId, reply);
+          }
+        }
+      } catch (err) {
+        console.error(`[llm-fallback] error: ${err.message}`);
+        try {
+          await lineApi.reply(replyToken, '抱歉，目前無法處理你的訊息，請稍後再試。');
+        } catch { /* replyToken 過期就算了 */ }
       }
     },
   });
