@@ -251,14 +251,16 @@ async function handleStats(match, ctx) {
 // ── 排程：活動提醒推播 ──────────────────────────────────
 
 /**
- * 查詢未來 24 小時內的活動，推播提醒給已報名的參與者
+ * 查詢未來 N 小時內的活動，推播提醒給已報名的參與者
+ * 預設 24 小時，測試時可用 /nj_remind <hours> 指定
  */
-async function remindUpcomingEvents({ lineApi }) {
+async function remindUpcomingEvents({ lineApi, hours }) {
   try {
-    const items = await getUpcomingEventsWithParticipants(db, 24);
+    const lookAhead = hours || 24;
+    const items = await getUpcomingEventsWithParticipants(db, lookAhead);
 
     if (items.length === 0) {
-      console.log('[niujiu] remind: 未來 24 小時沒有活動');
+      console.log(`[niujiu] remind: 未來 ${lookAhead} 小時沒有活動`);
       return;
     }
 
@@ -338,6 +340,18 @@ export default {
       command: 'stats',
       describe: '/nj_stats — 平台統計（管理員）',
       handler: handleStats,
+      scope: 'private',
+    },
+    {
+      name: 'remind',
+      command: 'remind',
+      pattern: /^(\d+)?/,
+      describe: '/nj_remind [小時] — 手動觸發活動提醒（管理員測試）',
+      handler: async (match, ctx) => {
+        const hours = parseInt(match[1]) || 240;
+        await remindUpcomingEvents({ lineApi: ctx.lineApi, hours });
+        return `✅ 提醒推播已觸發（查詢未來 ${hours} 小時的活動）`;
+      },
       scope: 'private',
     },
   ],
