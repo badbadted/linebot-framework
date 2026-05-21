@@ -46,10 +46,36 @@ export async function getActiveEvents(db, limit = 5) {
     .where('status', 'in', ['voting', 'upcoming', 'ongoing'])
     .get();
 
+  const now = Date.now();
   const events = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  // client 端排序，避免需要 Firestore 複合索引
-  events.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  return events.slice(0, limit);
+
+  // 過濾掉日期已過的活動（startDate 是 timestamp 或 Firestore Timestamp）
+  const active = events.filter(e => {
+    if (!e.startDate) return true; // 日期未定的保留
+    const ts = typeof e.startDate === 'number' ? e.startDate
+      : e.startDate.toMillis ? e.startDate.toMillis()
+      : new Date(e.startDate).getTime();
+    return ts >= now - 24 * 60 * 60 * 1000; // 允許當天的活動（寬限 24hr）
+  });
+
+  // 依活動日期升序（最近的在前）
+  active.sort((a, b) => {
+    const tsA = getTimestamp(a.startDate);
+    const tsB = getTimestamp(b.startDate);
+    // 無日期的排最後
+    if (!tsA) return 1;
+    if (!tsB) return -1;
+    return tsA - tsB;
+  });
+
+  return active.slice(0, limit);
+}
+
+function getTimestamp(d) {
+  if (!d) return null;
+  if (typeof d === 'number') return d;
+  if (d.toMillis) return d.toMillis();
+  return new Date(d).getTime() || null;
 }
 
 /**
