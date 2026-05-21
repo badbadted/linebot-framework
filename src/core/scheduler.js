@@ -24,6 +24,11 @@ export function createScheduler({ lineApi }) {
     }
 
     const task = cron.schedule(schedule, async () => {
+      const job = jobs.get(name);
+      if (job && !job.enabled) {
+        console.log(`[scheduler] skipped (disabled): ${name}`);
+        return;
+      }
       console.log(`[scheduler] firing: ${name}`);
       try {
         await handler({ lineApi, jobName: name });
@@ -41,6 +46,7 @@ export function createScheduler({ lineApi }) {
       plugin: opts.plugin || 'unknown',
       describe: opts.describe || '',
       pushTo: opts.pushTo || [],   // [{ type: 'user'|'group', id, label }]
+      enabled: opts.enabled !== false, // 預設啟用
     });
 
     console.log(`[scheduler] registered: ${name} (${schedule})`);
@@ -83,7 +89,19 @@ export function createScheduler({ lineApi }) {
       plugin: job.plugin,
       describe: job.describe || '',
       pushTo: job.pushTo || [],
+      enabled: job.enabled,
     }));
+  }
+
+  /**
+   * 開關排程（runtime toggle，不影響 cron task 本身，只控制是否執行 handler）
+   */
+  function setEnabled(name, enabled) {
+    const job = jobs.get(name);
+    if (!job) throw new Error(`job "${name}" not found`);
+    job.enabled = !!enabled;
+    console.log(`[scheduler] ${name} → ${job.enabled ? 'enabled' : 'disabled'}`);
+    return job.enabled;
   }
 
   /**
@@ -150,5 +168,5 @@ export function createScheduler({ lineApi }) {
     jobs.clear();
   }
 
-  return { add, addDynamic, addOnce, trigger, httpHandler, list, stop, stopAll };
+  return { add, addDynamic, addOnce, trigger, httpHandler, list, setEnabled, stop, stopAll };
 }

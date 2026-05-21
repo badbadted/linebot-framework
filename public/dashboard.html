@@ -125,8 +125,8 @@
     </div>
     <div style="overflow-x:auto">
       <table>
-        <thead><tr><th>名稱</th><th>Cron</th><th>Plugin</th><th>推播對象</th><th>說明</th><th></th></tr></thead>
-        <tbody id="sched-body"><tr><td colspan="6" class="loading">載入中...</td></tr></tbody>
+        <thead><tr><th>狀態</th><th>名稱</th><th>Cron</th><th>Plugin</th><th>推播對象</th><th>說明</th><th></th></tr></thead>
+        <tbody id="sched-body"><tr><td colspan="7" class="loading">載入中...</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -291,15 +291,21 @@ async function loadSchedules() {
     const scheds = await api('/api/schedules');
     document.getElementById('sched-count').textContent = scheds.length;
     const body = document.getElementById('sched-body');
-    if (scheds.length === 0) { body.innerHTML = '<tr><td colspan="6" style="color:var(--t2)">尚無排程</td></tr>'; return; }
-    body.innerHTML = scheds.map(s => `<tr>
+    if (scheds.length === 0) { body.innerHTML = '<tr><td colspan="7" style="color:var(--t2)">尚無排程</td></tr>'; return; }
+    body.innerHTML = scheds.map(s => {
+      const on = s.enabled !== false;
+      const dot = on ? '🟢' : '🔴';
+      const label = on ? '啟用' : '停用';
+      return `<tr style="${on ? '' : 'opacity:0.5'}">
+      <td><span class="tag ${on ? 'tag-all' : 'tag-error'}" style="cursor:pointer" onclick="toggleSched(this, '${esc(s.name)}')" title="點擊切換">${dot} ${label}</span></td>
       <td><strong>${esc(s.name)}</strong></td>
       <td><code>${esc(s.schedule || '-')}</code></td>
       <td>${esc(s.plugin || '-')}</td>
       <td>${formatPushTo(s.pushTo)}</td>
       <td style="color:var(--t2);font-size:12px">${esc(s.describe || '')}</td>
-      <td><button class="trigger-btn" onclick="triggerJob(this, '${esc(s.name)}')">▶ 執行</button></td>
-    </tr>`).join('');
+      <td><button class="trigger-btn" onclick="triggerJob(this, '${esc(s.name)}')" ${on ? '' : 'disabled'}>▶ 執行</button></td>
+    </tr>`;
+    }).join('');
     // 非同步載入 LINE Profile（名字+頭貼）
     enrichPushTargets(scheds);
   } catch (e) { document.getElementById('sched-body').innerHTML = `<tr><td colspan="6" class="loading">載入失敗</td></tr>`; }
@@ -354,6 +360,19 @@ async function loadStats() {
       document.getElementById('top-section').style.display = '';
     }
   } catch (e) { /* stats optional */ }
+}
+
+async function toggleSched(el, name) {
+  try {
+    const r = await fetch(API + '/api/schedules/' + encodeURIComponent(name) + '/toggle', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      // 整個排程表重新載入（狀態 + 樣式都會更新）
+      await loadSchedules();
+    }
+  } catch (e) {
+    alert('切換失敗: ' + e.message);
+  }
 }
 
 async function triggerJob(btn, name) {

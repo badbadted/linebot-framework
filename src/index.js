@@ -165,6 +165,18 @@ async function main() {
   // 管理 API
   app.get('/api/routes', (_req, res) => res.json(router.list()));
   app.get('/api/schedules', (_req, res) => res.json(scheduler.list()));
+  app.post('/api/schedules/:name/toggle', (req, res) => {
+    try {
+      const { name } = req.params;
+      const scheds = scheduler.list();
+      const current = scheds.find(s => s.name === name);
+      if (!current) return res.status(404).json({ error: 'not found' });
+      const enabled = scheduler.setEnabled(name, !current.enabled);
+      res.json({ ok: true, name, enabled });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
 
   // LINE Profile 查詢（Dashboard 用）
   const profileCache = new Map(); // id → { data, ts }
