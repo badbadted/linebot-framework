@@ -51,8 +51,22 @@ function loadConfig() {
     },
     providers: config.providers || {},
     apiAuth: config.server?.apiAuth || {},
-    groupPermissions: config.groupPermissions || {},
   };
+}
+
+function loadGroupPermissions() {
+  const groupsPath = resolve(ROOT, 'config/groups.json');
+  try {
+    const raw = JSON.parse(readFileSync(groupsPath, 'utf-8'));
+    // 過濾掉 _doc, _example 等說明欄位
+    const perms = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (!k.startsWith('_') && Array.isArray(v)) perms[k] = v;
+    }
+    return perms;
+  } catch {
+    return {};
+  }
 }
 
 // ── 主程式 ────────────────────────────────────────────
@@ -75,9 +89,10 @@ async function main() {
   const router = createRouter();
   const scheduler = createScheduler({ lineApi });
 
-  // 群組權限：預設全關，只有 config 列出的 plugin 可用
-  if (Object.keys(config.groupPermissions).length > 0) {
-    router.setGroupPermissions(config.groupPermissions);
+  // 群組權限：從 config/groups.json 載入，預設全關
+  const groupPerms = loadGroupPermissions();
+  if (Object.keys(groupPerms).length > 0) {
+    router.setGroupPermissions(groupPerms);
   }
   const dataDir = config.providers.db?.dir || resolve(ROOT, './data');
   const logger = createLogger(dataDir);
