@@ -286,6 +286,29 @@ async function enrichPushTargets(scheds) {
   }
 }
 
+// cron expression → 人類可讀時間
+function cronToHuman(expr) {
+  if (!expr || expr === '-') return '-';
+  if (expr.startsWith('once@')) { try { return new Date(expr.slice(5)).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false }); } catch { return '單次'; } }
+  const p = expr.split(' ');
+  if (p.length !== 5) return expr;
+  const [min, hr, dom, mon, dow] = p;
+  const DAYS = { '0':'日','1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日' };
+  let time = '';
+  if (hr !== '*' && min !== '*') time = `${hr.padStart(2,'0')}:${min.padStart(2,'0')}`;
+  else if (min === '*' && hr === '*') time = '每分鐘';
+  else if (hr === '*') time = `每小時 :${min.padStart(2,'0')}`;
+  else time = `${hr}:${min}`;
+  let day = '';
+  if (dom !== '*' && mon !== '*') day = `${mon}/${dom} `;
+  else if (dow !== '*') {
+    const days = dow.split(',').map(d => DAYS[d] || d).join('、');
+    day = dow === '0-6' || dow === '*' ? '每天 ' : `週${days} `;
+  } else if (dom !== '*') { day = `每月${dom}日 `; }
+  else { day = '每天 '; }
+  return day + time;
+}
+
 async function loadSchedules() {
   try {
     const scheds = await api('/api/schedules');
@@ -296,10 +319,11 @@ async function loadSchedules() {
       const on = s.enabled !== false;
       const dot = on ? '🟢' : '🔴';
       const label = on ? '啟用' : '停用';
+      const timeStr = cronToHuman(s.schedule);
       return `<tr style="${on ? '' : 'opacity:0.5'}">
       <td><span class="tag ${on ? 'tag-all' : 'tag-error'}" style="cursor:pointer" onclick="toggleSched(this, '${esc(s.name)}')" title="點擊切換">${dot} ${label}</span></td>
       <td><strong>${esc(s.name)}</strong></td>
-      <td><code>${esc(s.schedule || '-')}</code></td>
+      <td title="${esc(s.schedule || '')}">${esc(timeStr)}</td>
       <td>${esc(s.plugin || '-')}</td>
       <td>${formatPushTo(s.pushTo)}</td>
       <td style="color:var(--t2);font-size:12px">${esc(s.describe || '')}</td>
