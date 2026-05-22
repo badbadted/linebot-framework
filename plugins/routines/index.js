@@ -3,11 +3,10 @@
  *
  * 前綴：/rt
  *
- * 讀取 Mac mini 上的 routines.md，每分鐘比對時間：
- * - 例行事項：週一到五 07:20 | 內容 → 匹配星期+時間
- * - 單次事項：2026/03/19 13:35 | 內容 → 匹配日期+時間
+ * 啟動時讀取 routines.md，每筆例行事項轉成精確 cron 排程：
+ * - 週一到五 07:20 | 內容 → cron '20 7 * * 1-5'
+ * - 單次事項用 scheduler.addOnce()
  *
- * 匹配後透過 LINE Push API 推播給預設使用者。
  * TTS 語音播報仍由 routines-daemon.py 負責。
  */
 
@@ -18,17 +17,15 @@ import { homedir } from 'os';
 const ROUTINES_PATH = resolve(homedir(), '.openclaw/workspace/routines.md');
 const PUSH_USER_ID = process.env.PUSH_USER_ID || '';
 
-// 中文星期對照（getDay: 0=日, 1=一, ...）
+// 中文星期對照（cron: 0=日, 1=一, ...）
 const WEEKDAY_MAP = { '日': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6 };
 
-// 已推播記錄（防止重啟後同分鐘重複推）
-const firedSet = new Set();
+let scheduler;
 
 // ── 星期解析 ─────────────────────────────────────────
 
 /**
- * 解析星期字串，回傳 getDay() 數字陣列
- * 支援格式：
+ * 解析星期字串，回傳 cron 用的 dow 陣列
  *   週一到五 → [1,2,3,4,5]
  *   週一三五 → [1,3,5]
  *   每天     → [0,1,2,3,4,5,6]
@@ -36,7 +33,6 @@ const firedSet = new Set();
 function parseWeekdays(text) {
   if (text === '每天') return [0, 1, 2, 3, 4, 5, 6];
 
-  // 「到」表示範圍：週一到五
   const rangeMatch = text.match(/週(.)到(.)/);
   if (rangeMatch) {
     const start = WEEKDAY_MAP[rangeMatch[1]];
@@ -48,7 +44,6 @@ function parseWeekdays(text) {
     }
   }
 
-  // 列舉：週一三五
   const enumMatch = text.match(/週(.+)/);
   if (enumMatch) {
     return [...enumMatch[1]].map(c => WEEKDAY_MAP[c]).filter(d => d !== undefined);
@@ -79,10 +74,9 @@ function parseRoutinesFile() {
     if (trimmed === '## 單次') { section = 'oneshot'; continue; }
     if (trimmed.startsWith('## ')) { section = ''; continue; }
 
-    // 只處理已啟用的項目 [x]
     if (!trimmed.startsWith('- [x]')) continue;
 
-    const body = trimmed.slice(5).trim(); // 去掉 "- [x] "
+    const body = trimmed.slice(5).trim();
     const parts = body.split('|').map(s => s.trim());
     if (parts.length < 2) continue;
 
@@ -90,71 +84,26 @@ function parseRoutinesFile() {
     const message = parts.slice(1).join('|').trim();
 
     if (section === 'recurring') {
-      // 格式：週一到五 07:20
       const match = timePart.match(/^(.+?)\s+(\d{1,2}):(\d{2})$/);
       if (match) {
-        recurring.push({
-          weekdays: parseWeekdays(match[1]),
-          hour: parseInt(match[2]),
-          minute: parseInt(match[3]),
-          message,
-          raw: timePart,
-        });
+        const weekdays = parseWeekdays(match[1]);
+        const hour = parseInt(match[2]);
+        const minute = parseInt(match[3]);
+        // 轉成 cron: "20 7 * * 1-5" 或 "20 7 * * 1,3,5"
+        const dow = weekdays.join(',');
+        const cron = `${minute} ${hour} * * ${dow}`;
+        recurring.push({ cron, message, raw: timePart, weekdays, hour, minute });
       }
     } else if (section === 'oneshot') {
-      // 格式：2026/03/19 13:35
       const match = timePart.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})$/);
       if (match) {
-        oneshot.push({
-          year: parseInt(match[1]),
-          month: parseInt(match[2]),
-          day: parseInt(match[3]),
-          hour: parseInt(match[4]),
-          minute: parseInt(match[5]),
-          message,
-          raw: timePart,
-        });
+        const dt = new Date(+match[1], +match[2] - 1, +match[3], +match[4], +match[5]);
+        oneshot.push({ datetime: dt, message, raw: timePart });
       }
     }
   }
 
   return { recurring, oneshot };
-}
-
-// ── 時間比對 ─────────────────────────────────────────
-
-function getMatchingRoutines() {
-  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-  const currentDay = now.getDay();
-  const currentHour = now.getHours();
-  const currentMinute = now.getMinutes();
-  const currentDate = `${now.getFullYear()}/${now.getMonth() + 1}/${now.getDate()}`;
-
-  const { recurring, oneshot } = parseRoutinesFile();
-  const matched = [];
-
-  // 比對例行事項
-  for (const r of recurring) {
-    if (r.weekdays.includes(currentDay) && r.hour === currentHour && r.minute === currentMinute) {
-      const key = `recurring:${r.raw}:${currentDate}:${currentHour}:${currentMinute}`;
-      if (!firedSet.has(key)) {
-        matched.push({ type: 'recurring', ...r, key });
-      }
-    }
-  }
-
-  // 比對單次事項
-  for (const o of oneshot) {
-    if (o.year === now.getFullYear() && o.month === (now.getMonth() + 1) && o.day === now.getDate()
-        && o.hour === currentHour && o.minute === currentMinute) {
-      const key = `oneshot:${o.raw}`;
-      if (!firedSet.has(key)) {
-        matched.push({ type: 'oneshot', ...o, key });
-      }
-    }
-  }
-
-  return matched;
 }
 
 // ── 格式化顯示 ───────────────────────────────────────
@@ -170,7 +119,6 @@ function formatRoutinesList() {
   if (recurring.length > 0) {
     lines.push('', '📅 例行：');
     for (const r of recurring) {
-      const time = `${String(r.hour).padStart(2, '0')}:${String(r.minute).padStart(2, '0')}`;
       lines.push(`  ${r.raw} → ${r.message}`);
     }
   }
@@ -185,10 +133,23 @@ function formatRoutinesList() {
   return lines.join('\n');
 }
 
-// 定期清理 firedSet（保留 2 小時內的記錄）
-setInterval(() => {
-  if (firedSet.size > 100) firedSet.clear();
-}, 2 * 60 * 60 * 1000);
+// ── 推播 handler ─────────────────────────────────────
+
+function createPushHandler(message, emoji) {
+  return async ({ lineApi }) => {
+    if (!PUSH_USER_ID) {
+      console.warn('[routines] PUSH_USER_ID 未設定，跳過推播');
+      return;
+    }
+    const msg = `${emoji} ${message}`;
+    try {
+      await lineApi.push(PUSH_USER_ID, msg);
+      console.log(`[routines] pushed: ${message}`);
+    } catch (err) {
+      console.error(`[routines] push error: ${err.message}`);
+    }
+  };
+}
 
 // ── Plugin 定義 ──────────────────────────────────────
 
@@ -196,7 +157,7 @@ export default {
   name: 'routines',
   prefix: 'rt',
   description: '例行事項 — 定時推播提醒',
-  version: '1.0.0',
+  version: '1.1.0',
   defaultCommand: 'list-routines',
 
   commands: [
@@ -204,70 +165,40 @@ export default {
       name: 'list-routines',
       command: 'list',
       describe: '/rt — 查看例行事項清單',
-      handler: async (_match, _ctx) => {
-        return formatRoutinesList();
-      },
-      scope: 'private',
-    },
-    {
-      name: 'check-routines',
-      command: 'check',
-      describe: '/rt_check — 手動檢查現在是否有匹配的事項',
-      handler: async (_match, ctx) => {
-        const matched = getMatchingRoutines();
-        if (matched.length === 0) {
-          return '✅ 目前沒有匹配的例行事項';
-        }
-        const lines = ['🔔 目前匹配的事項：'];
-        for (const m of matched) {
-          lines.push(`  ${m.type === 'recurring' ? '📅' : '📌'} ${m.message}`);
-        }
-        return lines.join('\n');
-      },
+      handler: async (_match, _ctx) => formatRoutinesList(),
       scope: 'private',
     },
   ],
 
-  schedules: [
-    {
-      name: 'routines-check',
-      cron: '* * * * *',  // 每分鐘檢查
-      describe: '例行事項推播：每分鐘比對 routines.md，匹配就推 LINE',
-      pushTo: [
-        { type: 'user', id: PUSH_USER_ID || '(env: PUSH_USER_ID)', label: '預設使用者' },
-      ],
-      handler: async ({ lineApi }) => {
-        if (!PUSH_USER_ID) {
-          console.warn('[routines] PUSH_USER_ID 未設定，跳過推播');
-          return;
-        }
+  // 不用靜態 schedules — init 時動態註冊精確時間
+  schedules: [],
 
-        const matched = getMatchingRoutines();
-        if (matched.length === 0) return;
+  init: async (ctx) => {
+    scheduler = ctx.scheduler;
+    const { recurring, oneshot } = parseRoutinesFile();
 
-        for (const m of matched) {
-          const emoji = m.type === 'recurring' ? '📅' : '📌';
-          const msg = `${emoji} ${m.message}`;
-
-          try {
-            await lineApi.push(PUSH_USER_ID, msg);
-            firedSet.add(m.key);
-            console.log(`[routines] pushed: ${m.message}`);
-          } catch (err) {
-            console.error(`[routines] push error: ${err.message}`);
-          }
-        }
-      },
-    },
-  ],
-
-  init: async () => {
-    // 驗證 routines.md 是否可讀
-    try {
-      const { recurring, oneshot } = parseRoutinesFile();
-      console.log(`[routines] 載入成功：${recurring.length} 例行 + ${oneshot.length} 單次`);
-    } catch (err) {
-      console.warn(`[routines] 無法讀取 routines.md: ${err.message}`);
+    // 例行 → 精確 cron
+    for (let i = 0; i < recurring.length; i++) {
+      const r = recurring[i];
+      const name = `rt-${i}-${r.hour}${String(r.minute).padStart(2, '0')}`;
+      scheduler.add(name, r.cron, createPushHandler(r.message, '📅'), {
+        plugin: 'routines',
+        describe: `例行推播：${r.raw} → ${r.message}`,
+        pushTo: [{ type: 'user', id: PUSH_USER_ID || '(env: PUSH_USER_ID)', label: '預設使用者' }],
+      });
     }
+
+    // 單次 → addOnce
+    for (let i = 0; i < oneshot.length; i++) {
+      const o = oneshot[i];
+      if (o.datetime > new Date()) {
+        const name = `rt-once-${i}`;
+        scheduler.addOnce(name, o.datetime, createPushHandler(o.message, '📌'), {
+          plugin: 'routines',
+        });
+      }
+    }
+
+    console.log(`[routines] 註冊 ${recurring.length} 例行 + ${oneshot.filter(o => o.datetime > new Date()).length} 單次排程`);
   },
 };
