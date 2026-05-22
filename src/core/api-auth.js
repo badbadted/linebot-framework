@@ -19,6 +19,13 @@ export function createApiAuth(config = {}) {
   const apiKey = config.apiKey || process.env.API_KEY || null;
   const allowIPs = new Set(config.allowIPs || ['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
+  // 區網 CIDR 前綴（192.168.x.x / 10.x.x.x / 172.16-31.x.x）
+  function isPrivateIP(ip) {
+    const clean = ip.replace('::ffff:', '');
+    return clean.startsWith('192.168.') || clean.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(clean);
+  }
+
   return function apiAuth(req, res, next) {
     // 1. API Key 驗證
     if (apiKey) {
@@ -26,9 +33,9 @@ export function createApiAuth(config = {}) {
       if (key === apiKey) return next();
     }
 
-    // 2. IP 白名單
+    // 2. IP 白名單 + 區網自動放行
     const clientIP = req.ip || req.connection?.remoteAddress || '';
-    if (allowIPs.has(clientIP)) return next();
+    if (allowIPs.has(clientIP) || isPrivateIP(clientIP)) return next();
 
     // 都不過 → 403
     console.log(`[api-auth] blocked: ${clientIP} → ${req.path}`);
