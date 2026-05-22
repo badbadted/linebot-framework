@@ -11,6 +11,39 @@ export function createRouter() {
   const routes = [];
 
   /**
+   * 群組權限表
+   * { "C群組ID": ["plugin1", "plugin2"], "*": ["todo"] }
+   * 群組預設全關，只有列出的 plugin 可用。私訊不受限。
+   */
+  let groupPermissions = {};
+
+  /**
+   * 設定群組權限
+   */
+  function setGroupPermissions(perms) {
+    groupPermissions = perms || {};
+    console.log(`[router] group permissions: ${Object.keys(groupPermissions).length} groups configured`);
+  }
+
+  /**
+   * 取得群組權限（API 用）
+   */
+  function getGroupPermissions() {
+    return { ...groupPermissions };
+  }
+
+  /**
+   * 檢查 plugin 是否允許在該群組使用
+   * - 私訊 → 永遠允許
+   * - 群組 → 查 groupPermissions[groupId] 或 groupPermissions["*"]，預設全關
+   */
+  function isPluginAllowedInGroup(plugin, groupId) {
+    if (!groupId) return true; // 私訊不受限
+    const allowed = groupPermissions[groupId] || groupPermissions['*'] || [];
+    return allowed.includes(plugin);
+  }
+
+  /**
    * 註冊路由
    * @param {RegExp} pattern - 比對 regex
    * @param {Function} handler - async (match, ctx) => string|void
@@ -35,12 +68,13 @@ export function createRouter() {
   /**
    * 比對訊息
    * @param {string} text - 使用者訊息
-   * @param {object} [opts] - { sourceType: 'user'|'group'|'room' }
-   * @returns {{ matched, route, match, scopeBlocked }} | { matched: false }
+   * @param {object} [opts] - { sourceType, groupId }
+   * @returns {{ matched, route, match, scopeBlocked, groupBlocked }} | { matched: false }
    */
   function match(text, opts = {}) {
     const trimmed = text.trim();
     const sourceType = opts.sourceType || 'user';
+    const groupId = opts.groupId || null;
     const isGroup = sourceType === 'group' || sourceType === 'room';
 
     for (const route of routes) {
@@ -48,12 +82,16 @@ export function createRouter() {
       if (m) {
         // scope 過濾
         if (route.scope === 'private' && isGroup) {
-          return { matched: true, route, match: m, scopeBlocked: true };
+          return { matched: true, route, match: m, scopeBlocked: true, groupBlocked: false };
         }
         if (route.scope === 'group' && !isGroup) {
-          return { matched: true, route, match: m, scopeBlocked: true };
+          return { matched: true, route, match: m, scopeBlocked: true, groupBlocked: false };
         }
-        return { matched: true, route, match: m, scopeBlocked: false };
+        // 群組權限過濾
+        if (isGroup && !isPluginAllowedInGroup(route.plugin, groupId)) {
+          return { matched: true, route, match: m, scopeBlocked: false, groupBlocked: true };
+        }
+        return { matched: true, route, match: m, scopeBlocked: false, groupBlocked: false };
       }
     }
     return { matched: false };
@@ -82,5 +120,5 @@ export function createRouter() {
     }));
   }
 
-  return { add, match, execute, list };
+  return { add, match, execute, list, setGroupPermissions, getGroupPermissions };
 }

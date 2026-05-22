@@ -51,6 +51,7 @@ function loadConfig() {
     },
     providers: config.providers || {},
     apiAuth: config.server?.apiAuth || {},
+    groupPermissions: config.groupPermissions || {},
   };
 }
 
@@ -73,6 +74,11 @@ async function main() {
   const lineApi = createLineAPI(config.line.channelAccessToken);
   const router = createRouter();
   const scheduler = createScheduler({ lineApi });
+
+  // 群組權限：預設全關，只有 config 列出的 plugin 可用
+  if (Object.keys(config.groupPermissions).length > 0) {
+    router.setGroupPermissions(config.groupPermissions);
+  }
   const dataDir = config.providers.db?.dir || resolve(ROOT, './data');
   const logger = createLogger(dataDir);
 
@@ -165,6 +171,7 @@ async function main() {
   // 管理 API
   app.get('/api/routes', (_req, res) => res.json(router.list()));
   app.get('/api/schedules', (_req, res) => res.json(scheduler.list()));
+  app.get('/api/group-permissions', (_req, res) => res.json(router.getGroupPermissions()));
   app.post('/api/schedules/:name/toggle', (req, res) => {
     try {
       const { name } = req.params;

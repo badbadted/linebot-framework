@@ -93,9 +93,9 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       // scopeId：私訊 = userId，群組 = groupId，聊天室 = roomId
       const scopeId = groupId || roomId || userId;
 
-      // Router 比對（帶 sourceType 做 scope 過濾）
+      // Router 比對（帶 sourceType + groupId 做 scope 和群組權限過濾）
       const t0 = Date.now();
-      const matchResult = router.match(text, { sourceType });
+      const matchResult = router.match(text, { sourceType, groupId });
       if (matchResult.matched) {
         // scope 限制：指令不適用於此對話場景
         if (matchResult.scopeBlocked) {
@@ -109,6 +109,20 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
             plugin: matchResult.route.plugin,
             type: 'scope-blocked',
             response: `scope: ${matchResult.route.scope}`,
+            durationMs: Date.now() - t0,
+          });
+          continue;
+        }
+
+        // 群組權限限制：此群組未開放此 plugin
+        if (matchResult.groupBlocked) {
+          // 靜默忽略，不回覆（避免在群組刷屏）
+          if (logger) logger.log({
+            userId, sourceType, text,
+            route: matchResult.route.name,
+            plugin: matchResult.route.plugin,
+            type: 'group-blocked',
+            response: `group ${groupId} not allowed for ${matchResult.route.plugin}`,
             durationMs: Date.now() - t0,
           });
           continue;
