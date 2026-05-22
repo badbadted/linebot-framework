@@ -9,14 +9,27 @@
   },
   "plugins": {
     "dir": "./plugins",
-    "enabled": []
+    "enabled": [
+      "fitness",
+      "niujiu",
+      "todo",
+      "routines"
+    ]
   },
   "scheduler": {
     "httpTrigger": true,
     "httpPath": "/api/cron"
   },
   "providers": {
-    "db": { "type": "sqlite", "dir": "./data", "mode": "isolated" },
-    "_llm_example": "設定 LLM provider 啟用 AI 對話 fallback（gemini / openai / luna）"
+    "db": {
+      "type": "sqlite",
+      "dir": "./data",
+      "mode": "isolated"
+    },
+    "llm": {
+      "type": "luna",
+      "baseUrl": "http://localhost:18797",
+      "timeout": 30000
+    }
   }
 }
