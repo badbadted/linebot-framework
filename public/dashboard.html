@@ -259,8 +259,8 @@ function formatPushTo(targets) {
     const icon = t.type === 'user' ? '👤' : t.type === 'group' ? '👥' : '🔄';
     const idShort = t.id ? (t.id.startsWith('(') ? t.id : t.id.slice(0, 10) + '...') : '';
     const tip = t.id ? ` title="${esc(t.id)}"` : '';
-    const spanId = t.id && !t.id.startsWith('(') ? ` id="pt-${t.id.slice(0,12)}"` : '';
-    return `<span${tip}${spanId}>${icon} ${esc(t.label || t.type)}${idShort ? ' <code style="font-size:10px;color:var(--t2)">' + esc(idShort) + '</code>' : ''}</span>`;
+    const cls = t.id && !t.id.startsWith('(') ? ` class="pt-${t.id.slice(0,12)}"` : '';
+    return `<span${tip}${cls}>${icon} ${esc(t.label || t.type)}${idShort ? ' <code style="font-size:10px;color:var(--t2)">' + esc(idShort) + '</code>' : ''}</span>`;
   }).join('<br>');
 }
 
@@ -274,15 +274,15 @@ async function enrichPushTargets(scheds) {
   for (const id of ids) {
     const profile = await resolveProfile(id);
     if (!profile) continue;
-    const el = document.getElementById('pt-' + id.slice(0, 12));
-    if (!el) continue;
+    const els = document.querySelectorAll('.pt-' + id.slice(0, 12));
+    if (!els.length) continue;
     const name = profile.displayName || profile.groupName || '';
     const pic = profile.pictureUrl || '';
     const icon = profile._type === 'group' ? '👥' : '👤';
-    el.innerHTML = (pic ? `<img src="${esc(pic)}" style="width:20px;height:20px;border-radius:50%;vertical-align:middle;margin-right:4px">` : `${icon} `)
+    const html = (pic ? `<img src="${esc(pic)}" style="width:20px;height:20px;border-radius:50%;vertical-align:middle;margin-right:4px">` : `${icon} `)
       + `<strong>${esc(name)}</strong>`
       + (profile.memberCount ? ` <span style="color:var(--t2);font-size:11px">(${profile.memberCount}人)</span>` : '');
-    el.title = `${name}\n${id}`;
+    els.forEach(el => { el.innerHTML = html; el.title = `${name}\n${id}`; });
   }
 }
 
