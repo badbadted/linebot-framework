@@ -39,6 +39,7 @@ export function createRouter() {
    */
   function isPluginAllowedInGroup(plugin, groupId) {
     if (!groupId) return true; // 私訊不受限
+    if (plugin === '_system') return true; // 系統指令不受群組限制
     const allowed = groupPermissions[groupId] || groupPermissions['*'] || [];
     return allowed.includes(plugin);
   }

@@ -122,6 +122,20 @@ async function main() {
   const apiAuth = createApiAuth(config.apiAuth);
   app.use('/api', apiAuth);
 
+  // 系統指令：/groupid — 回覆當前群組 ID（方便加白名單）
+  router.add(/^\/groupid$/i, async (_match, ctx) => {
+    if (ctx.groupId) {
+      return `群組 ID：\n${ctx.groupId}\n\n請將此 ID 加入 config/groups.json`;
+    }
+    return `這是私訊，沒有群組 ID。\n你的 userId：${ctx.userId}`;
+  }, {
+    type: 'query',
+    name: 'groupid',
+    plugin: '_system',
+    describe: '/groupid — 查詢群組 ID',
+    scope: 'all',
+  });
+
   // LLM：若有設定 LLM provider，註冊 /ask 指令供群組使用
   const llm = registry.get('llm');
 
