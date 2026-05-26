@@ -163,11 +163,26 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
   }
 
   // ── 內建指令：/help ──────────────────────────────────
-  router.add(/^\/help$/i, async () => {
-    const allRoutes = router.list()
-      .filter(r => r.describe && r.plugin !== '_system');
+  router.add(/^\/help$/i, async (_match, ctx) => {
+    const isGroup = ctx.sourceType === 'group' || ctx.sourceType === 'room';
+    const groupPerms = router.getGroupPermissions();
+    const allowed = ctx.groupId
+      ? (groupPerms[ctx.groupId] || groupPerms['*'] || [])
+      : null;
 
-    if (!allRoutes.length) return '📖 目前沒有已註冊的指令說明';
+    const allRoutes = router.list()
+      .filter(r => {
+        if (!r.describe) return false;
+        if (r.plugin === '_system') return false;
+        // 群組中只顯示有權限的 plugin
+        if (isGroup && allowed && !allowed.includes(r.plugin)) return false;
+        // scope 過濾
+        if (r.scope === 'private' && isGroup) return false;
+        if (r.scope === 'group' && !isGroup) return false;
+        return true;
+      });
+
+    if (!allRoutes.length) return '📖 目前沒有可用的指令';
 
     // 依 plugin 分群，去除重複 describe
     const grouped = {};
