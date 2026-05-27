@@ -49,26 +49,64 @@ export async function getActiveEvents(db, limit = 5) {
   const now = Date.now();
   const events = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-  // 過濾掉日期已過的活動（startDate 是 timestamp 或 Firestore Timestamp）
+  // 過濾：只保留今天起 7 天內的活動
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
+  const cutoff = dayStart.getTime() + 8 * 24 * 60 * 60 * 1000; // 7 天後午夜
+
   const active = events.filter(e => {
     if (!e.startDate) return true; // 日期未定的保留
     const ts = typeof e.startDate === 'number' ? e.startDate
       : e.startDate.toMillis ? e.startDate.toMillis()
       : new Date(e.startDate).getTime();
-    return ts >= now - 24 * 60 * 60 * 1000; // 允許當天的活動（寬限 24hr）
+    return ts >= dayStart.getTime() && ts < cutoff;
   });
 
-  // 依活動日期升序（最近的在前）
+  // 依活動日期+時間升序（同一天按 startTime 早→晚）
   active.sort((a, b) => {
     const tsA = getTimestamp(a.startDate);
     const tsB = getTimestamp(b.startDate);
     // 無日期的排最後
     if (!tsA) return 1;
     if (!tsB) return -1;
-    return tsA - tsB;
+    if (tsA !== tsB) return tsA - tsB;
+    // 同一天：按 startTime 排序（"09:00" < "20:00"）
+    const tA = a.startTime || '99:99';
+    const tB = b.startTime || '99:99';
+    return tA.localeCompare(tB);
   });
 
   return active.slice(0, limit);
+}
+
+/**
+ * 批次查詢多個活動的參與者名單
+ * @returns Map<eventId, [{userId, userName, adults, kids, note}]>
+ */
+export async function getParticipantsForEvents(db, eventIds) {
+  const result = new Map();
+  for (const id of eventIds) result.set(id, []);
+
+  // Firestore 'in' 一次最多 30 筆
+  for (let i = 0; i < eventIds.length; i += 30) {
+    const batch = eventIds.slice(i, i + 30);
+    const snap = await db.collection('participants')
+      .where('eventId', 'in', batch)
+      .get();
+    for (const doc of snap.docs) {
+      const d = doc.data();
+      if (result.has(d.eventId)) {
+        result.get(d.eventId).push({
+          userId: d.userId || '',
+          userName: d.userName || '匿名',
+          adults: d.adults || 0,
+          kids: d.kids || 0,
+          note: d.note || '',
+        });
+      }
+    }
+  }
+  return result;
 }
 
 function getTimestamp(d) {

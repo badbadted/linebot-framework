@@ -78,6 +78,20 @@
   .loading { text-align: center; padding: 40px; color: var(--t2); }
   .error-banner { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
 
+  /* ── Push Target Cards ── */
+  .target-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; padding: 16px; }
+  .target-card { background: var(--s1); border-radius: 8px; padding: 14px; border: 1px solid var(--s2); display: flex; gap: 12px; align-items: flex-start; }
+  .target-card .avatar { width: 44px; height: 44px; border-radius: 50%; background: var(--s2); flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; overflow: hidden; }
+  .target-card .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .target-card .info { flex: 1; min-width: 0; }
+  .target-card .info .name { font-weight: 600; font-size: 14px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .target-card .info .id-text { font-size: 10px; color: var(--t2); font-family: monospace; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .target-card .info .detail { font-size: 11px; color: var(--t2); line-height: 1.6; }
+  .target-card .info .plugin-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .target-card .info .plugin-tags .ptag { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #dbeafe; color: #1d4ed8; }
+  .target-card .info .sched-list { font-size: 11px; color: var(--t2); margin-top: 4px; }
+  .target-card .info .sched-list span { display: block; }
+
   /* ── Responsive ── */
   @media (max-width: 640px) {
     .stats { grid-template-columns: repeat(2, 1fr); }
@@ -108,6 +122,17 @@
     <div class="stat-card"><div class="label">Schedules</div><div class="value" id="s-schedules">-</div></div>
     <div class="stat-card"><div class="label">7 日訊息</div><div class="value" id="s-messages">-</div><div class="sub" id="s-errors"></div></div>
     <div class="stat-card"><div class="label">Providers</div><div class="value" id="s-providers">-</div><div class="sub" id="s-provider-list"></div></div>
+  </div>
+
+  <!-- Push Targets & Groups -->
+  <div class="section">
+    <div class="section-header">
+      <h2>📡 推播對象與群組</h2>
+      <span class="badge" id="target-count">0</span>
+    </div>
+    <div class="target-grid" id="target-grid">
+      <div class="loading">載入中...</div>
+    </div>
   </div>
 
   <!-- 7-day chart -->
@@ -423,9 +448,116 @@ function showError(msg) {
   document.getElementById('error-area').innerHTML = `<div class="error-banner">⚠️ ${esc(msg)}</div>`;
 }
 
+async function loadTargets() {
+  try {
+    const [perms, scheds] = await Promise.all([
+      api('/api/group-permissions'),
+      api('/api/schedules'),
+    ]);
+
+    const cards = [];
+
+    // 1. Groups from group-permissions
+    for (const [gid, plugins] of Object.entries(perms)) {
+      if (gid === '*') {
+        cards.push({ id: '*', type: 'wildcard', label: '所有群組（預設）', plugins });
+        continue;
+      }
+      cards.push({ id: gid, type: 'group', label: gid, plugins });
+    }
+
+    // 2. Unique push targets from schedules
+    const seen = new Set(Object.keys(perms));
+    const userTargets = {};
+    const dynamics = [];
+    for (const s of scheds) {
+      for (const t of (s.pushTo || [])) {
+        if (t.type === 'dynamic') {
+          dynamics.push({ sched: s.name, label: t.label, cron: s.schedule, describe: s.describe });
+        } else if (t.id && !seen.has(t.id)) {
+          if (!userTargets[t.id]) {
+            userTargets[t.id] = { id: t.id, type: t.type, label: t.label, scheds: [] };
+          }
+          userTargets[t.id].scheds.push({ name: s.name, cron: s.schedule, describe: s.describe });
+        }
+      }
+    }
+    for (const u of Object.values(userTargets)) cards.push(u);
+    if (dynamics.length > 0) cards.push({ id: '_dynamic', type: 'dynamic', dynamics });
+
+    document.getElementById('target-count').textContent = cards.length;
+    const grid = document.getElementById('target-grid');
+    if (cards.length === 0) { grid.innerHTML = '<div style="color:var(--t2);padding:16px">尚無推播對象</div>'; return; }
+
+    grid.innerHTML = cards.map(c => {
+      if (c.type === 'dynamic') {
+        return `<div class="target-card">
+          <div class="avatar">🔄</div>
+          <div class="info">
+            <div class="name">動態推播</div>
+            <div class="detail">${c.dynamics.map(d => `<span>• ${esc(d.sched)}：${esc(d.label)}</span>`).join('')}</div>
+          </div>
+        </div>`;
+      }
+      if (c.type === 'wildcard') {
+        return `<div class="target-card">
+          <div class="avatar">🌐</div>
+          <div class="info">
+            <div class="name">${esc(c.label)}</div>
+            <div class="detail">所有群組的共用權限</div>
+            <div class="plugin-tags">${c.plugins.map(p => `<span class="ptag">${esc(p)}</span>`).join('')}</div>
+          </div>
+        </div>`;
+      }
+
+      const icon = c.type === 'group' ? '👥' : '👤';
+      const idShort = c.id.length > 20 ? c.id.slice(0, 8) + '...' + c.id.slice(-6) : c.id;
+      let details = '';
+      if (c.plugins) {
+        details = `<div class="plugin-tags">${c.plugins.map(p => `<span class="ptag">${esc(p)}</span>`).join('')}</div>`;
+      }
+      if (c.scheds) {
+        details = `<div class="sched-list">${c.scheds.map(s => `<span>⏰ ${esc(s.name)} — ${esc(s.describe || '')}</span>`).join('')}</div>`;
+      }
+
+      return `<div class="target-card" id="tc-${c.id.slice(0,12)}">
+        <div class="avatar">${icon}</div>
+        <div class="info">
+          <div class="name tc-name-${c.id.slice(0,12)}">${esc(c.label || c.id)}</div>
+          <div class="id-text" title="${esc(c.id)}">${esc(idShort)}</div>
+          ${details}
+        </div>
+      </div>`;
+    }).join('');
+
+    // Resolve LINE profiles for real IDs
+    for (const c of cards) {
+      if (!c.id || c.id === '*' || c.id === '_dynamic') continue;
+      resolveProfile(c.id).then(profile => {
+        if (!profile) return;
+        const card = document.getElementById('tc-' + c.id.slice(0, 12));
+        if (!card) return;
+        const nameEl = card.querySelector('.tc-name-' + c.id.slice(0, 12));
+        const avatarEl = card.querySelector('.avatar');
+        const name = profile.displayName || profile.groupName || c.label;
+        if (nameEl) nameEl.textContent = name;
+        if (profile.pictureUrl && avatarEl) {
+          avatarEl.innerHTML = `<img src="${esc(profile.pictureUrl)}" alt="">`;
+        }
+        if (profile.memberCount) {
+          const idText = card.querySelector('.id-text');
+          if (idText) idText.textContent += ` (${profile.memberCount} 人)`;
+        }
+      });
+    }
+  } catch (e) {
+    document.getElementById('target-grid').innerHTML = `<div class="loading">載入失敗</div>`;
+  }
+}
+
 async function loadAll() {
   document.getElementById('error-area').innerHTML = '';
-  await Promise.all([loadHealth(), loadRoutes(), loadSchedules(), loadLogs(), loadStats()]);
+  await Promise.all([loadHealth(), loadRoutes(), loadSchedules(), loadLogs(), loadStats(), loadTargets()]);
 }
 
 loadAll();

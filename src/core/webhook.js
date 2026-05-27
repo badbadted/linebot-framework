@@ -131,14 +131,18 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
         try {
           const ctx = { userId, groupId, roomId, sourceType, scopeId, replyToken, lineApi, event };
           const { type, result } = await router.execute(matchResult, ctx);
-          const responseText = result ? String(result) : '';
+
+          // result 可能是字串或 LINE message 物件（如帶 mention 的 text message）
+          const isMessageObj = result && typeof result === 'object' && result.type;
+          const responseText = isMessageObj ? (result.text || '') : (result ? String(result) : '');
 
           // query 類型：回覆結果
           if (type === 'query' && result) {
+            const replyPayload = isMessageObj ? result : responseText;
             try {
-              await lineApi.reply(replyToken, responseText);
+              await lineApi.reply(replyToken, replyPayload);
             } catch {
-              await lineApi.push(userId, responseText);
+              await lineApi.push(userId, replyPayload);
             }
           }
           // action 類型：靜默執行，不回覆

@@ -218,31 +218,7 @@ export default {
     },
   ],
 
-  schedules: [
-    {
-      name: 'todo-daily-digest',
-      cron: '0 9 * * *',
-      describe: '每日待辦提醒：推播未完成數量給所有使用者',
-      pushTo: [
-        { type: 'dynamic', label: '所有有未完成待辦的使用者' },
-      ],
-      handler: async ({ lineApi }) => {
-        if (!db) return;
-        const users = db.all('SELECT DISTINCT user_id FROM todos WHERE done = 0');
-        for (const { user_id } of users) {
-          const count = db.get(
-            'SELECT COUNT(*) as n FROM todos WHERE user_id = ? AND done = 0',
-            user_id
-          ).n;
-          if (count > 0) {
-            await lineApi.push(user_id,
-              `☀️ 早安！你有 ${count} 項待辦未完成\n輸入「待辦」查看列表`
-            );
-          }
-        }
-      },
-    },
-  ],
+  schedules: [],
 
   init: async (ctx) => {
     db = ctx.db;

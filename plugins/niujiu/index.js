@@ -5,7 +5,7 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents } from './firestore.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -74,6 +74,10 @@ async function handleList(match, ctx) {
       return '目前沒有進行中的活動 🎈\n有新活動時會通知你！';
     }
 
+    // 批次查詢所有活動的參加名單
+    const eventIds = events.map(e => e.id);
+    const participantsMap = await getParticipantsForEvents(db, eventIds);
+
     const lines = ['🎯 近期活動：', ''];
     events.forEach((event, i) => {
       lines.push(`${i + 1}. ${event.title}`);
@@ -82,11 +86,28 @@ async function handleList(match, ctx) {
       const dateTime = time ? `${date} ${time}` : date;
       lines.push(`   ${formatEventStatus(event.status)} | ${dateTime}`);
       if (event.location) lines.push(`   📍 ${event.location}`);
+
+      // 參加名單
+      const participants = participantsMap.get(event.id) || [];
+      if (participants.length > 0) {
+        const totalAdults = participants.reduce((s, p) => s + p.adults, 0);
+        const totalKids = participants.reduce((s, p) => s + p.kids, 0);
+        lines.push(`   👥 ${participants.length} 組（大人 ${totalAdults} / 小孩 ${totalKids}）`);
+        for (const p of participants) {
+          const parts = [];
+          if (p.adults) parts.push(`大${p.adults}`);
+          if (p.kids) parts.push(`小${p.kids}`);
+          const count = parts.length > 0 ? ` (${parts.join('+')})` : '';
+          const note = p.note ? ` 📝${p.note}` : '';
+          lines.push(`      • ${p.userName}${count}${note}`);
+        }
+      } else {
+        lines.push(`   👥 尚無人報名`);
+      }
       lines.push('');
     });
 
-    lines.push('💡 輸入 /nj_info <活動名> 查看詳情');
-    return lines.join('\n');
+    return lines.join('\n').trimEnd();
   } catch (err) {
     console.error('[niujiu] handleList error:', err);
     return '⚠️ 查詢活動時發生錯誤，請稍後再試';
