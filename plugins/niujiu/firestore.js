@@ -249,6 +249,50 @@ export async function getUpcomingEventsWithParticipants(db, withinHours = 24) {
 }
 
 /**
+ * 取得明日活動（含報名組數）
+ * @returns [{event, participantCount}]
+ */
+export async function getTomorrowEvents(db) {
+  // 用台灣時區算「明天」的範圍
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+  const tomorrowEnd = new Date(tomorrow);
+  tomorrowEnd.setHours(23, 59, 59, 999);
+
+  const snap = await db.collection('events')
+    .where('status', 'in', ['voting', 'upcoming', 'ongoing'])
+    .get();
+
+  const events = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+  const tomorrowEvents = events.filter(e => {
+    const ts = getTimestamp(e.startDate);
+    if (!ts) return false;
+    return ts >= tomorrow.getTime() && ts <= tomorrowEnd.getTime();
+  });
+
+  // 按時間排序
+  tomorrowEvents.sort((a, b) => {
+    const tA = a.startTime || '99:99';
+    const tB = b.startTime || '99:99';
+    return tA.localeCompare(tB);
+  });
+
+  // 查每個活動的報名組數
+  const results = [];
+  for (const event of tomorrowEvents) {
+    const partSnap = await db.collection('participants')
+      .where('eventId', '==', event.id)
+      .get();
+    results.push({ event, participantCount: partSnap.size });
+  }
+
+  return results;
+}
+
+/**
  * 平台統計
  */
 export async function getPlatformStats(db) {

@@ -5,7 +5,7 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents } from './firestore.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -228,6 +228,42 @@ async function remindUpcomingEvents({ lineApi, hours, replyUserId }) {
   }
 }
 
+// ── 排程：明日活動提醒（晚上 8 點推播到群組）─────────────
+
+const NOTIFY_GROUP_ID = process.env.NJ_NOTIFY_GROUP_ID || 'C4d42b6072ca86ea3596875949ad37675'; // 妞揪群組
+
+async function remindTomorrowEvents({ lineApi }) {
+  try {
+    const items = await getTomorrowEvents(db);
+
+    // 沒活動就不推
+    if (items.length === 0) {
+      console.log('[niujiu] tomorrow-remind: 明天沒有活動，不推播');
+      return;
+    }
+
+    const lines = ['📅 明日活動提醒', ''];
+    items.forEach((item, i) => {
+      const { event, participantCount } = item;
+      const time = formatTimeRange(event.startTime, event.endTime);
+      lines.push(`${i + 1}. ${event.title}`);
+      const parts = [];
+      if (time) parts.push(`🕐 ${time}`);
+      if (event.location) parts.push(`📍 ${event.location}`);
+      lines.push(`   ${parts.join(' | ')}`);
+      lines.push(`   👥 ${participantCount} 組報名`);
+      lines.push('');
+    });
+
+    const msg = lines.join('\n').trimEnd();
+    console.log(`[niujiu] tomorrow-remind: ${items.length} 個活動，推播到群組`);
+
+    await lineApi.push(NOTIFY_GROUP_ID, msg);
+  } catch (err) {
+    console.error('[niujiu] tomorrow-remind error:', err);
+  }
+}
+
 // ── Plugin 定義 ──────────────────────────────────────
 
 export default {
@@ -279,9 +315,18 @@ export default {
       name: 'niujiu-event-remind',
       cron: '0 8 * * *',  // 每天早上 8 點
       handler: remindUpcomingEvents,
-      describe: '每日活動提醒：查詢未來 24 小時內的活動，推播摘要',
+      describe: '每日活動提醒：查詢未來 24 小時內的活動，推播摘要給管理員',
       pushTo: [
         { type: 'user', id: ADMIN_USER_ID || '(env: NJ_ADMIN_USER_ID)', label: '管理員' },
+      ],
+    },
+    {
+      name: 'niujiu-tomorrow-remind',
+      cron: '0 20 * * *',  // 每天晚上 8 點
+      handler: remindTomorrowEvents,
+      describe: '明日活動提醒：晚上 8 點推播明天的活動到妞揪群組',
+      pushTo: [
+        { type: 'group', id: NOTIFY_GROUP_ID, label: '妞揪群組' },
       ],
     },
   ],
