@@ -136,47 +136,35 @@ async function main() {
     scope: 'all',
   });
 
-  // LLM：若有設定 LLM provider，註冊 /ask 指令供群組使用
+  // LLM fallback：私訊 + 有 _llm 權限的群組，未匹配指令時用 LLM 回覆
   const llm = registry.get('llm');
-
-  if (llm) {
-    router.add(/^\/ask\s+(.+)/i, async (match, ctx) => {
-      const question = match[1];
-      const reply = await llm.chat(question, { sessionId: `line-${ctx.userId}` });
-      return reply || '🤔 沒有回應';
-    }, {
-      type: 'query',
-      name: 'ask-llm',
-      plugin: '_system',
-      describe: '/ask <問題> — 問 AI',
-      scope: 'all',
-    });
-  }
-
-  // LLM fallback：私訊未匹配指令時用 LLM 回覆（群組不觸發）
 
   const webhookHandler = createWebhookHandler({
     channelSecret: config.line.channelSecret,
     router,
     lineApi,
     logger,
-    onUnmatched: async ({ userId, sourceType, text, replyToken }) => {
+    onUnmatched: async ({ userId, groupId, sourceType, text, replyToken }) => {
       if (!llm) {
         console.log(`[fallback] unmatched: ${text.slice(0, 60)}`);
         return;
       }
 
-      // 群組中只有 /ask 指令才觸發 LLM，私訊任何訊息都可以
       const isGroup = sourceType === 'group' || sourceType === 'room';
-      if (isGroup) return; // 群組不回應未匹配訊息
+
+      // 群組：只有 groups.json 中有 _llm 的群組才觸發 LLM
+      if (isGroup) {
+        const allowed = groupPerms[groupId] || groupPerms['*'] || [];
+        if (!allowed.includes('_llm')) return;
+      }
 
       try {
-        const reply = await llm.chat(text, { sessionId: `line-${userId}` });
+        const reply = await llm.chat(text, { sessionId: `line-${isGroup ? groupId : userId}` });
         if (reply) {
           try {
             await lineApi.reply(replyToken, reply);
           } catch {
-            await lineApi.push(userId, reply);
+            await lineApi.push(isGroup ? groupId : userId, reply);
           }
         }
       } catch (err) {

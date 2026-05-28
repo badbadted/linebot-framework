@@ -49,17 +49,20 @@ export async function getActiveEvents(db, limit = 5) {
   const now = Date.now();
   const events = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-  // 過濾：只保留今天起 7 天內的活動
-  const dayStart = new Date(now);
-  dayStart.setHours(0, 0, 0, 0);
-  const cutoff = dayStart.getTime() + 8 * 24 * 60 * 60 * 1000; // 7 天後午夜
+  // 過濾：只保留本週活動（週一～週日，從今天起算）
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const day = today.getDay(); // 0=日 1=一 ... 6=六
+  const sundayEnd = new Date(today);
+  sundayEnd.setDate(today.getDate() + (day === 0 ? 0 : 7 - day)); // 本週日
+  sundayEnd.setHours(23, 59, 59, 999);
 
   const active = events.filter(e => {
     if (!e.startDate) return true; // 日期未定的保留
     const ts = typeof e.startDate === 'number' ? e.startDate
       : e.startDate.toMillis ? e.startDate.toMillis()
       : new Date(e.startDate).getTime();
-    return ts >= dayStart.getTime() && ts < cutoff;
+    return ts >= today.getTime() && ts <= sundayEnd.getTime();
   });
 
   // 依活動日期+時間升序（同一天按 startTime 早→晚）

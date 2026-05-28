@@ -5,5 +5,7 @@
     "*": ["todo"]
   },
   "_name:C8ed32c7ec84bb16be50eb338bc95073d": "智能管家",
-  "C8ed32c7ec84bb16be50eb338bc95073d": ["niujiu", "todo"]
+  "C8ed32c7ec84bb16be50eb338bc95073d": ["niujiu", "todo", "work", "_llm"],
+  "_name:C4d42b6072ca86ea3596875949ad37675": "妞揪",
+  "C4d42b6072ca86ea3596875949ad37675": ["niujiu"]
 }

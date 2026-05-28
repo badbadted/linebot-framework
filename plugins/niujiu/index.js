@@ -78,7 +78,7 @@ async function handleList(match, ctx) {
     const eventIds = events.map(e => e.id);
     const participantsMap = await getParticipantsForEvents(db, eventIds);
 
-    const lines = ['🎯 近期活動：', ''];
+    const lines = ['🎯 本週活動：', ''];
     events.forEach((event, i) => {
       lines.push(`${i + 1}. ${event.title}`);
       const date = formatDate(event.startDate);
