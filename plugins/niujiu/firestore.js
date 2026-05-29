@@ -235,6 +235,13 @@ export async function getUpcomingEventsWithParticipants(db, withinHours = 24) {
     return ts >= now && ts <= cutoff;
   });
 
+  // 按時間排序（早→晚）
+  upcoming.sort((a, b) => {
+    const tA = a.startTime || '99:99';
+    const tB = b.startTime || '99:99';
+    return tA.localeCompare(tB);
+  });
+
   // 查每個活動的參與者
   const results = [];
   for (const event of upcoming) {
