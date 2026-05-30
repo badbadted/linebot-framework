@@ -256,8 +256,8 @@ export async function getUpcomingEventsWithParticipants(db, withinHours = 24) {
 }
 
 /**
- * 取得明日活動（含報名組數）
- * @returns [{event, participantCount}]
+ * 取得明日活動（含報名組數）+ 明日已取消的活動
+ * @returns { active: [{event, participantCount}], cancelled: [event] }
  */
 export async function getTomorrowEvents(db) {
   // 用台灣時區算「明天」的範圍
@@ -268,35 +268,49 @@ export async function getTomorrowEvents(db) {
   const tomorrowEnd = new Date(tomorrow);
   tomorrowEnd.setHours(23, 59, 59, 999);
 
-  const snap = await db.collection('events')
-    .where('status', 'in', ['voting', 'upcoming', 'ongoing'])
-    .get();
+  // 同時查活躍 + 已取消的活動
+  const [activeSnap, cancelledSnap] = await Promise.all([
+    db.collection('events')
+      .where('status', 'in', ['voting', 'upcoming', 'ongoing'])
+      .get(),
+    db.collection('events')
+      .where('status', '==', 'cancelled')
+      .get(),
+  ]);
 
-  const events = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-  const tomorrowEvents = events.filter(e => {
+  const isTomorrow = (e) => {
     const ts = getTimestamp(e.startDate);
     if (!ts) return false;
     return ts >= tomorrow.getTime() && ts <= tomorrowEnd.getTime();
-  });
+  };
 
-  // 按時間排序
-  tomorrowEvents.sort((a, b) => {
+  const sortByTime = (a, b) => {
     const tA = a.startTime || '99:99';
     const tB = b.startTime || '99:99';
     return tA.localeCompare(tB);
-  });
+  };
 
-  // 查每個活動的報名組數
-  const results = [];
-  for (const event of tomorrowEvents) {
+  // 活躍的明日活動
+  const activeEvents = activeSnap.docs
+    .map(doc => ({ id: doc.id, ...doc.data() }))
+    .filter(isTomorrow);
+  activeEvents.sort(sortByTime);
+
+  const active = [];
+  for (const event of activeEvents) {
     const partSnap = await db.collection('participants')
       .where('eventId', '==', event.id)
       .get();
-    results.push({ event, participantCount: partSnap.size });
+    active.push({ event, participantCount: partSnap.size });
   }
 
-  return results;
+  // 取消的明日活動
+  const cancelled = cancelledSnap.docs
+    .map(doc => ({ id: doc.id, ...doc.data() }))
+    .filter(isTomorrow);
+  cancelled.sort(sortByTime);
+
+  return { active, cancelled };
 }
 
 /**

@@ -234,29 +234,44 @@ const NOTIFY_GROUP_ID = process.env.NJ_NOTIFY_GROUP_ID || 'C4d42b6072ca86ea35968
 
 async function remindTomorrowEvents({ lineApi }) {
   try {
-    const items = await getTomorrowEvents(db);
+    const { active, cancelled } = await getTomorrowEvents(db);
 
-    // 沒活動就不推
-    if (items.length === 0) {
+    // 沒活動也沒取消就不推
+    if (active.length === 0 && cancelled.length === 0) {
       console.log('[niujiu] tomorrow-remind: 明天沒有活動，不推播');
       return;
     }
 
     const lines = ['📅 明日活動提醒', ''];
-    items.forEach((item, i) => {
-      const { event, participantCount } = item;
-      const time = formatTimeRange(event.startTime, event.endTime);
-      lines.push(`${i + 1}. ${event.title}`);
-      const parts = [];
-      if (time) parts.push(`🕐 ${time}`);
-      if (event.location) parts.push(`📍 ${event.location}`);
-      lines.push(`   ${parts.join(' | ')}`);
-      lines.push(`   👥 ${participantCount} 組報名`);
-      lines.push('');
-    });
+
+    // 進行中的活動
+    if (active.length > 0) {
+      active.forEach((item, i) => {
+        const { event, participantCount } = item;
+        const time = formatTimeRange(event.startTime, event.endTime);
+        lines.push(`${i + 1}. ${event.title}`);
+        const parts = [];
+        if (time) parts.push(`🕐 ${time}`);
+        if (event.location) parts.push(`📍 ${event.location}`);
+        lines.push(`   ${parts.join(' | ')}`);
+        lines.push(`   👥 ${participantCount} 組報名`);
+        lines.push('');
+      });
+    }
+
+    // 已取消的活動
+    if (cancelled.length > 0) {
+      lines.push('──── 已取消 ────');
+      for (const event of cancelled) {
+        const time = formatTimeRange(event.startTime, event.endTime);
+        lines.push(`❌ ${event.title}`);
+        if (time) lines.push(`   🕐 ${time}`);
+        lines.push('');
+      }
+    }
 
     const msg = lines.join('\n').trimEnd();
-    console.log(`[niujiu] tomorrow-remind: ${items.length} 個活動，推播到群組`);
+    console.log(`[niujiu] tomorrow-remind: ${active.length} 活動 + ${cancelled.length} 取消，推播到群組`);
 
     await lineApi.push(NOTIFY_GROUP_ID, msg);
   } catch (err) {
@@ -322,7 +337,9 @@ export default {
     },
   ],
 
-  async init() {
+  async init(ctx) {
+    const lineApi = ctx.lineApi;
+
     try {
       db = await initFirestore();
       console.log('[niujiu] Firestore 連線成功（sipangzi003）');
@@ -330,5 +347,51 @@ export default {
       console.error('[niujiu] Firestore 連線失敗:', err.message);
       throw err;
     }
+
+    // ── onSnapshot：即時監聽活動取消，推播通知 ──
+    const notifiedCancels = new Set(); // 防重複通知
+    let isInitialSnapshot = true;
+
+    db.collection('events').onSnapshot(snapshot => {
+      // 跳過初始載入（全部 docs 會以 'added' 進來）
+      if (isInitialSnapshot) {
+        // 記錄已取消的，避免重啟後重複通知
+        for (const doc of snapshot.docs) {
+          if (doc.data().status === 'cancelled') {
+            notifiedCancels.add(doc.id);
+          }
+        }
+        isInitialSnapshot = false;
+        console.log(`[niujiu] onSnapshot ready, ${notifiedCancels.size} existing cancels tracked`);
+        return;
+      }
+
+      for (const change of snapshot.docChanges()) {
+        if (change.type !== 'modified') continue;
+        const event = { id: change.doc.id, ...change.doc.data() };
+        if (event.status !== 'cancelled') continue;
+        if (notifiedCancels.has(event.id)) continue;
+
+        notifiedCancels.add(event.id);
+
+        const time = formatTimeRange(event.startTime, event.endTime);
+        const lines = [
+          '❌ 活動取消通知',
+          '',
+          `「${event.title}」已取消`,
+        ];
+        if (event.startDate) {
+          lines.push(`原定時間：${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
+        }
+
+        const msg = lines.join('\n');
+        console.log(`[niujiu] cancel-notify: ${event.title}`);
+        lineApi.push(NOTIFY_GROUP_ID, msg).catch(err => {
+          console.error(`[niujiu] cancel-notify push error: ${err.message}`);
+        });
+      }
+    }, err => {
+      console.error('[niujiu] onSnapshot error:', err.message);
+    });
   },
 };
