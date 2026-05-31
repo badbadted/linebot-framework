@@ -5,7 +5,7 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, extractMapsUrl, addPendingRestaurant, findRestaurantByUrl } from './firestore.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -320,6 +320,41 @@ export default {
         return await remindUpcomingEvents({ lineApi: ctx.lineApi, hours, replyUserId: ctx.userId });
       },
       scope: 'private',
+    },
+    {
+      name: 'food',
+      command: 'food',
+      pattern: /^(.+)/,
+      describe: '/nj_food <Google Maps 連結> — 加入美食記錄',
+      handler: async (match, ctx) => {
+        const input = match[1].trim();
+        const mapsUrl = extractMapsUrl(input);
+        if (!mapsUrl) {
+          return '請貼 Google Maps 連結\n範例：/nj_food https://maps.app.goo.gl/xxxxx';
+        }
+
+        try {
+          // 防重複
+          const existing = await findRestaurantByUrl(db, mapsUrl);
+          if (existing) {
+            const name = existing.name || '（解析中）';
+            return `這間已經記錄過了 😋\n📍 ${name}`;
+          }
+
+          // 取使用者 profile
+          const profile = await ctx.lineApi.getProfile(ctx.userId) || {
+            userId: ctx.userId,
+            displayName: '匿名',
+          };
+
+          const docId = await addPendingRestaurant(db, mapsUrl, profile);
+          return `已加入美食記錄 🍜\n店名與資訊稍後自動補上！\n（ID: ${docId.slice(0, 6)}）`;
+        } catch (err) {
+          console.error('[niujiu] handleFood error:', err);
+          return '⚠️ 加入失敗，請稍後再試';
+        }
+      },
+      scope: 'all',
     },
   ],
 

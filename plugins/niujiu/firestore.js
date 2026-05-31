@@ -2,7 +2,7 @@
  * 妞揪 Firestore 連線 + 查詢模組
  *
  * Firebase Project: sipangzi003
- * Collections: events, participants, dateVotes, comments, users
+ * Collections: events, participants, dateVotes, comments, users, restaurants
  */
 
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
@@ -337,4 +337,52 @@ export async function getPlatformStats(db) {
     monthlyNewEvents: recentEvents.length,
     monthlyNewUsers: recentUsers.length,
   };
+}
+
+// ── 美食記錄 ─────────────────────────────────────────
+
+/** 從訊息文字抓出 Google Maps 連結（短連結 / 長連結都涵蓋） */
+const MAPS_URL_RE = /(https?:\/\/(?:maps\.app\.goo\.gl|maps\.google\.[a-z.]+|(?:www\.)?google\.[a-z.]+\/maps)\/\S+)/i;
+
+export function extractMapsUrl(text) {
+  return text.match(MAPS_URL_RE)?.[1] ?? null;
+}
+
+/**
+ * 寫一筆 pending 餐廳到 restaurants collection
+ * @param {object} profile - { userId, displayName, pictureUrl? }
+ * @returns {string} docId
+ */
+export async function addPendingRestaurant(db, mapsUrl, profile) {
+  const recommender = { uid: profile.userId, name: profile.displayName };
+  if (profile.pictureUrl) recommender.avatarUrl = profile.pictureUrl;
+
+  const now = Date.now();
+  const doc = {
+    googleMapsUrl: mapsUrl,
+    name: '',
+    status: 'pending',
+    recommenders: [recommender],
+    cuisineTypes: [],
+    photos: [],
+    createdBy: profile.userId,
+    createdByName: profile.displayName,
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (profile.pictureUrl) doc.createdByAvatar = profile.pictureUrl;
+
+  const ref = await db.collection('restaurants').add(doc);
+  return ref.id;
+}
+
+/**
+ * 檢查同一個 Google Maps 連結是否已存在
+ */
+export async function findRestaurantByUrl(db, mapsUrl) {
+  const snap = await db.collection('restaurants')
+    .where('googleMapsUrl', '==', mapsUrl)
+    .limit(1)
+    .get();
+  return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
 }
