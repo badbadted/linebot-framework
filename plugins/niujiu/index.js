@@ -5,7 +5,7 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, extractMapsUrl, addPendingRestaurant, findRestaurantByUrl } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, extractMapsUrl, addPendingRestaurant, findRestaurantByUrl, getUser } from './firestore.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -334,6 +334,12 @@ export default {
         }
 
         try {
+          // 檢查使用者是否已登入過妞揪
+          const user = await getUser(db, ctx.userId);
+          if (!user) {
+            return '請先登入妞揪 App 才能使用美食記錄功能 🔒';
+          }
+
           // 防重複
           const existing = await findRestaurantByUrl(db, mapsUrl);
           if (existing) {
@@ -341,10 +347,12 @@ export default {
             return `這間已經記錄過了 😋\n📍 ${name}`;
           }
 
-          // 取使用者 profile
-          const profile = await ctx.lineApi.getProfile(ctx.userId) || {
+          // 用 niujiu user 資料 + LINE profile 大頭貼
+          const lineProfile = await ctx.lineApi.getProfile(ctx.userId);
+          const profile = {
             userId: ctx.userId,
-            displayName: '匿名',
+            displayName: user.name || user.displayName || lineProfile?.displayName || '匿名',
+            pictureUrl: user.avatar || user.pictureUrl || lineProfile?.pictureUrl,
           };
 
           const docId = await addPendingRestaurant(db, mapsUrl, profile);
