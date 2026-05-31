@@ -100,16 +100,35 @@ export async function resolveGoogleMapsUrl(shortUrl) {
 export async function resolveExternalUrl(url) {
   if (!model) throw new Error('Gemini not initialized');
 
-  const prompt = `你是餐廳辨識助手。以下是一個可能包含餐廳資訊的網頁連結：
-${url}
+  // 先嘗試 fetch OG meta 取得線索
+  let hint = '';
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+    });
+    const html = await res.text();
+    const title = html.match(/og:title[^>]*content="([^"]*)"/)?.[1]
+      || html.match(/<title[^>]*>([^<]*)</)?.[1]
+      || '';
+    const desc = html.match(/og:description[^>]*content="([^"]*)"/)?.[1]
+      || html.match(/description[^>]*content="([^"]*)"/)?.[1]
+      || '';
+    hint = [title, desc].filter(Boolean).join(' — ').slice(0, 300);
+  } catch { /* fetch 失敗就靠 Gemini search */ }
 
-請分析這個連結（可能是 Instagram 貼文、美食部落格、食記網站等），辨識其中提到的餐廳。
+  const hintBlock = hint ? `\n網頁預覽：${hint}` : '';
+
+  const prompt = `你是餐廳辨識助手。請用 Google Search 搜尋以下連結提到的餐廳：
+${url}${hintBlock}
+
+請搜尋這個連結相關的餐廳資訊（可能是 Facebook、Instagram、美食部落格、食記等），辨識其中的餐廳。
 回傳嚴格 JSON（不要用 markdown code fence 包裹）：
 
 {
   "name": "餐廳名稱（找不到填空字串）",
   "address": "餐廳地址（找不到填空字串）",
-  "area": "地區，如 大阪難波（找不到填空字串）",
+  "area": "地區，如 台南東區、大阪難波（找不到填空字串）",
   "lat": null,
   "lng": null
 }
