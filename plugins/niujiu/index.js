@@ -5,7 +5,8 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, extractMapsUrl, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName, updateRestaurant, getPendingRestaurants } from './firestore.js';
+import { initGemini, isGeminiReady, resolveAndEnrich } from './gemini.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -359,6 +360,33 @@ export default {
           };
 
           const docId = await addPendingRestaurant(db, mapsUrl, profile);
+
+          // 即時 resolve + enrich（Gemini 可用時）
+          if (isGeminiReady()) {
+            try {
+              const result = await resolveAndEnrich(mapsUrl);
+              if (result.status === 'resolved' && result.name) {
+                // 回寫 Firestore
+                const { status, ...fields } = result;
+                await updateRestaurant(db, docId, { ...fields, status: 'resolved' });
+
+                // 組回覆訊息
+                const parts = [`✅ 已新增：${result.name}`];
+                if (result.area) parts.push(`📍 ${result.area}`);
+                if (result.googleRating) parts.push(`⭐ ${result.googleRating}`);
+                if (result.priceDetail) parts.push(`💰 ${result.priceDetail}`);
+                return parts.join('\n');
+              } else {
+                await updateRestaurant(db, docId, { status: 'failed' });
+                return '已記錄連結，但無法辨識餐廳 🤔\n管理員稍後會人工補上';
+              }
+            } catch (err) {
+              console.error('[niujiu] resolve error:', err.message);
+              // resolve 失敗不影響寫入，保持 pending
+              return `已加入美食記錄 🍜\n自動辨識失敗，稍後重試\n（ID: ${docId.slice(0, 6)}）`;
+            }
+          }
+
           return `已加入美食記錄 🍜\n店名與資訊稍後自動補上！\n（ID: ${docId.slice(0, 6)}）`;
         } catch (err) {
           console.error('[niujiu] handleFood error:', err);
@@ -366,6 +394,59 @@ export default {
         }
       },
       scope: 'all',
+    },
+    {
+      name: 'resolve',
+      command: 'resolve',
+      describe: '/nj_resolve — 批次解析所有 pending 餐廳（管理員）',
+      handler: async (_match, ctx) => {
+        if (!isGeminiReady()) {
+          return '⚠️ Gemini 未設定（缺 GEMINI_API_KEY）';
+        }
+
+        const pending = await getPendingRestaurants(db);
+        if (pending.length === 0) {
+          return '📋 沒有待解析的餐廳';
+        }
+
+        const lines = [`🔄 開始解析 ${pending.length} 筆...`];
+        let ok = 0, fail = 0;
+
+        for (const restaurant of pending) {
+          const url = restaurant.googleMapsUrl?.trim();
+          if (!url) {
+            await updateRestaurant(db, restaurant.id, { status: 'failed' });
+            fail++;
+            continue;
+          }
+
+          try {
+            const result = await resolveAndEnrich(url);
+            if (result.status === 'resolved' && result.name) {
+              const { status, ...fields } = result;
+              await updateRestaurant(db, restaurant.id, { ...fields, status: 'resolved' });
+              lines.push(`✓ ${result.name}`);
+              ok++;
+            } else {
+              await updateRestaurant(db, restaurant.id, { status: 'failed' });
+              lines.push(`✗ ${url.slice(0, 40)}...`);
+              fail++;
+            }
+          } catch (err) {
+            await updateRestaurant(db, restaurant.id, { status: 'failed' });
+            lines.push(`✗ ${url.slice(0, 40)}... (${err.message})`);
+            fail++;
+          }
+
+          // Rate limit
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
+        lines.push('');
+        lines.push(`✅ ${ok} 成功 / ❌ ${fail} 失敗`);
+        return lines.join('\n');
+      },
+      scope: 'private',
     },
   ],
 
@@ -393,6 +474,9 @@ export default {
       console.error('[niujiu] Firestore 連線失敗:', err.message);
       throw err;
     }
+
+    // Gemini AI（選用，沒有 key 就 fallback 到 pending 模式）
+    initGemini();
 
     // ── onSnapshot：即時監聽活動取消，推播通知 ──
     const notifiedCancels = new Set(); // 防重複通知

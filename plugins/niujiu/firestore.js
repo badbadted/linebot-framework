@@ -388,12 +388,32 @@ export async function addPendingRestaurant(db, mapsUrl, profile) {
 }
 
 /**
- * 檢查同一個 Google Maps 連結是否已存在
+ * 檢查同一個連結是否已存在
  */
-export async function findRestaurantByUrl(db, mapsUrl) {
+export async function findRestaurantByUrl(db, url) {
   const snap = await db.collection('restaurants')
-    .where('googleMapsUrl', '==', mapsUrl)
+    .where('googleMapsUrl', '==', url)
     .limit(1)
     .get();
   return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+}
+
+/**
+ * 更新餐廳文件（resolve/enrich 結果回寫）
+ */
+export async function updateRestaurant(db, docId, fields) {
+  await db.collection('restaurants').doc(docId).update({
+    ...fields,
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * 取得所有 pending 餐廳
+ */
+export async function getPendingRestaurants(db) {
+  const snap = await db.collection('restaurants')
+    .where('status', '==', 'pending')
+    .get();
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
