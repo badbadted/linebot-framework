@@ -325,13 +325,15 @@ export default {
       name: 'food',
       command: 'food',
       pattern: /^(.+)/,
-      describe: '/nj_food <Google Maps 連結> — 加入美食記錄',
+      describe: '/nj_food <連結> — 加入美食記錄',
       handler: async (match, ctx) => {
         const input = match[1].trim();
-        const mapsUrl = extractMapsUrl(input);
-        if (!mapsUrl) {
-          return '請貼 Google Maps 連結\n範例：/nj_food https://maps.app.goo.gl/xxxxx';
+        // 檢查是否為網址
+        const urlMatch = input.match(/(https?:\/\/\S+)/i);
+        if (!urlMatch) {
+          return '請貼上連結\n範例：/nj_food https://maps.app.goo.gl/xxxxx';
         }
+        const mapsUrl = urlMatch[1];
 
         try {
           // 取 LINE profile，用暱稱比對 niujiu 帳號
