@@ -173,6 +173,17 @@ export async function getUser(db, userId) {
 }
 
 /**
+ * 用暱稱查詢使用者（LIFF 與 BOT userId 不同，改用 displayName 比對）
+ */
+export async function getUserByDisplayName(db, displayName) {
+  const snap = await db.collection('users')
+    .where('displayName', '==', displayName)
+    .limit(1)
+    .get();
+  return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+}
+
+/**
  * 檢查是否已報名
  */
 export async function hasJoined(db, eventId, userId) {
