@@ -125,13 +125,13 @@ ${url}
   const parsed = safeParseJson(text);
   if (!parsed) return {};
 
-  return {
-    name: parsed.name?.trim() || undefined,
-    address: parsed.address?.trim() || undefined,
-    area: parsed.area?.trim() || undefined,
-    lat: typeof parsed.lat === 'number' ? parsed.lat : undefined,
-    lng: typeof parsed.lng === 'number' ? parsed.lng : undefined,
-  };
+  const out = {};
+  if (parsed.name?.trim()) out.name = parsed.name.trim();
+  if (parsed.address?.trim()) out.address = parsed.address.trim();
+  if (parsed.area?.trim()) out.area = parsed.area.trim();
+  if (typeof parsed.lat === 'number') out.lat = parsed.lat;
+  if (typeof parsed.lng === 'number') out.lng = parsed.lng;
+  return out;
 }
 
 // ── Phase 2: Enrich 餐廳資訊（Gemini + Google Search） ──
@@ -216,13 +216,18 @@ export async function resolveAndEnrich(url) {
     // resolve 成功但 enrich 失敗，仍回傳 resolved 資料
   }
 
-  return {
+  const merged = {
     status: 'resolved',
     ...resolved,
     ...enriched,
-    // resolved 的欄位優先（避免 enrich 覆蓋已知的精確資料）
     name: resolved.name,
     ...(resolved.lat != null ? { lat: resolved.lat } : {}),
     ...(resolved.lng != null ? { lng: resolved.lng } : {}),
   };
+
+  // 過濾 undefined（Firestore 不接受）
+  for (const key of Object.keys(merged)) {
+    if (merged[key] === undefined) delete merged[key];
+  }
+  return merged;
 }
