@@ -359,34 +359,31 @@ export default {
             pictureUrl: njUser.avatarUrl || lineProfile?.pictureUrl,
           };
 
-          const docId = await addPendingRestaurant(db, mapsUrl, profile);
-
-          // 即時 resolve + enrich（Gemini 可用時）
+          // 先 resolve，成功才寫入 Firestore
           if (isGeminiReady()) {
             try {
               const result = await resolveAndEnrich(mapsUrl);
               if (result.status === 'resolved' && result.name) {
-                // 回寫 Firestore
                 const { status, ...fields } = result;
+                const docId = await addPendingRestaurant(db, mapsUrl, profile);
                 await updateRestaurant(db, docId, { ...fields, status: 'resolved' });
 
-                // 組回覆訊息
                 const parts = [`✅ 已新增：${result.name}`];
                 if (result.area) parts.push(`📍 ${result.area}`);
                 if (result.googleRating) parts.push(`⭐ ${result.googleRating}`);
                 if (result.priceDetail) parts.push(`💰 ${result.priceDetail}`);
                 return parts.join('\n');
               } else {
-                await updateRestaurant(db, docId, { status: 'failed' });
-                return '已記錄連結，但無法辨識餐廳 🤔\n管理員稍後會人工補上';
+                return '❌ 無法辨識餐廳，請確認連結是否正確';
               }
             } catch (err) {
               console.error('[niujiu] resolve error:', err.message);
-              // resolve 失敗不影響寫入，保持 pending
-              return `已加入美食記錄 🍜\n自動辨識失敗，稍後重試\n（ID: ${docId.slice(0, 6)}）`;
+              return '❌ 辨識失敗，請稍後再試';
             }
           }
 
+          // Gemini 未啟用時直接寫 pending
+          const docId = await addPendingRestaurant(db, mapsUrl, profile);
           return `已加入美食記錄 🍜\n店名與資訊稍後自動補上！\n（ID: ${docId.slice(0, 6)}）`;
         } catch (err) {
           console.error('[niujiu] handleFood error:', err);
