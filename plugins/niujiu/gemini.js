@@ -30,6 +30,22 @@ export function isGeminiReady() {
   return model !== null;
 }
 
+/** 從 Gemini 回傳文字中提取 JSON，容錯處理 */
+function safeParseJson(text) {
+  if (!text || !text.trim()) return null;
+  // 去 code fence
+  let cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+  // 嘗試找 JSON object
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) cleaned = jsonMatch[0];
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    console.error('[niujiu-gemini] JSON parse failed:', cleaned.slice(0, 100));
+    return null;
+  }
+}
+
 // ── URL 分類 ────────────────────────────────────────
 
 const GOOGLE_MAPS_RE = /google\.\w+\/maps|maps\.app\.goo\.gl|goo\.gl\/maps/;
@@ -105,8 +121,9 @@ ${url}
 
   const result = await model.generateContent(prompt);
   const text = result.response.text();
-  const cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-  const parsed = JSON.parse(cleaned);
+  console.log('[niujiu-gemini] resolve raw:', text.slice(0, 200));
+  const parsed = safeParseJson(text);
+  if (!parsed) return {};
 
   return {
     name: parsed.name?.trim() || undefined,
@@ -149,8 +166,8 @@ ${area ? `地區：${area}` : ''}
 }
 
 function parseEnrichResponse(text) {
-  const cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-  const parsed = JSON.parse(cleaned);
+  const parsed = safeParseJson(text);
+  if (!parsed) return {};
   const fields = {};
   for (const key of ENRICHMENT_KEYS) {
     if (parsed[key] && typeof parsed[key] === 'string' && parsed[key].trim()) {
