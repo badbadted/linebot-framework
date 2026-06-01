@@ -63,10 +63,32 @@ const PLACE_URL_RE = /https?:\/\/www\.google\.\w+\/maps\/place\/[^"'\\<> ]+/;
 
 function parseLongUrl(url) {
   const out = {};
+
+  // 方式1: /maps/place/<name>/@lat,lng
   const nameMatch = url.match(PLACE_NAME_RE);
   if (nameMatch?.[1]) {
     out.name = decodeURIComponent(nameMatch[1].replace(/\+/g, ' ')).trim();
   }
+
+  // 方式2: ?q=<地址+店名>（從 q 參數尾端提取店名）
+  if (!out.name) {
+    try {
+      const u = new URL(url);
+      const q = u.searchParams.get('q');
+      if (q) {
+        const decoded = decodeURIComponent(q);
+        // q 通常是「地址+店名」，取最後一個中文詞組作為店名
+        // 例：701臺南市東區大智里生產路504號佳福川味牛肉麵 → 佳福川味牛肉麵
+        const nameFromQ = decoded.replace(/^\d{3,5}/, '') // 郵遞區號
+          .replace(/^.+?[號巷弄樓室F]+/, '')              // 地址部分
+          .trim();
+        if (nameFromQ) out.name = nameFromQ;
+        // fallback: 整段 q 當作名稱（至少有東西）
+        if (!out.name && decoded.length < 50) out.name = decoded;
+      }
+    } catch { /* not a valid URL */ }
+  }
+
   const coords = url.match(COORDS_DATA_RE) || url.match(COORDS_AT_RE);
   if (coords) {
     out.lat = parseFloat(coords[1]);
