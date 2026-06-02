@@ -127,28 +127,39 @@ export async function resolveExternalUrl(url) {
   try {
     const res = await fetch(url, {
       redirect: 'follow',
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+      headers: { 'User-Agent': 'facebookexternalhit/1.1' },
     });
     const html = await res.text();
-    const title = html.match(/og:title[^>]*content="([^"]*)"/)?.[1]
+    // 抓 OG meta 並 decode HTML entities
+    const decodeEntities = (s) => s.replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCodePoint(parseInt(c, 16)))
+      .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+    const rawTitle = html.match(/og:title[^>]*content="([^"]*)"/)?.[1]
       || html.match(/<title[^>]*>([^<]*)</)?.[1]
       || '';
-    const desc = html.match(/og:description[^>]*content="([^"]*)"/)?.[1]
+    const rawDesc = html.match(/og:description[^>]*content="([^"]*)"/)?.[1]
       || html.match(/description[^>]*content="([^"]*)"/)?.[1]
       || '';
-    hint = [title, desc].filter(Boolean).join(' — ').slice(0, 300);
+    const title = decodeEntities(rawTitle);
+    const desc = decodeEntities(rawDesc);
+    hint = [title, desc].filter(Boolean).join(' — ').slice(0, 500);
   } catch { /* fetch 失敗就靠 Gemini search */ }
 
+  const isIG = /instagram\.com/.test(url);
+  const isFB = /facebook\.com/.test(url);
   const hintBlock = hint ? `\n網頁預覽：${hint}` : '';
+  const platformWarn = (isIG || isFB)
+    ? `\n⚠️ 注意：網頁預覽中的帳號名稱（如「吃吃霞」「美食日記」）是發文者帳號，不是餐廳名稱！請搜尋這則貼文實際介紹的餐廳。`
+    : '';
 
-  const prompt = `你是餐廳辨識助手。請用 Google Search 搜尋以下連結提到的餐廳：
-${url}${hintBlock}
+  const prompt = `你是餐廳辨識助手。請用 Google Search 搜尋以下連結中介紹的餐廳：
+${url}${hintBlock}${platformWarn}
 
-請搜尋這個連結相關的餐廳資訊（可能是 Facebook、Instagram、美食部落格、食記等），辨識其中的餐廳。
+請搜尋這則貼文（可能是 Instagram Reel、Facebook 貼文、美食部落格等）實際介紹的餐廳。
 回傳嚴格 JSON（不要用 markdown code fence 包裹）：
 
 {
-  "name": "餐廳名稱（找不到填空字串）",
+  "name": "餐廳店名（找不到填空字串）",
   "address": "餐廳地址（找不到填空字串）",
   "area": "地區，如 台南東區、大阪難波（找不到填空字串）",
   "lat": null,
@@ -156,9 +167,10 @@ ${url}${hintBlock}
 }
 
 規則：
+- 回傳的是「貼文中介紹的餐廳」，不是「發文者帳號名稱」
 - 只辨識一家餐廳（若提到多家，取最主要的那家）
 - lat/lng 如果知道填數字，不知道填 null
-- 找不到餐廳就全部填空字串/null`;
+- 真的找不到就全部填空字串/null，不要猜`;
 
   const result = await model.generateContent(prompt);
   const text = result.response.text();
