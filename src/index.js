@@ -137,7 +137,7 @@ async function main() {
   });
 
   // 系統指令：/radar — 即時雷達回波圖（中央氣象署）
-  router.add(/^(?:\/radar|雷達回波圖)$/i, async (_match, _ctx) => {
+  router.add(/^\/雷達$/i, async (_match, _ctx) => {
     // 加 timestamp 避免 LINE 快取舊圖
     const ts = Date.now();
     const radarUrl = `https://www.cwa.gov.tw/Data/radar/CV1_TW_3600.png?t=${ts}`;
@@ -150,7 +150,7 @@ async function main() {
     type: 'query',
     name: 'radar',
     plugin: '_system',
-    describe: '/radar — 即時雷達回波圖',
+    describe: '/雷達 — 即時雷達回波圖',
     scope: 'all',
   });
 
