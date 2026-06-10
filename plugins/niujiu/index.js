@@ -475,47 +475,69 @@ export default {
     // Gemini AI（選用，沒有 key 就 fallback 到 pending 模式）
     initGemini();
 
-    // ── onSnapshot：即時監聽活動取消，推播通知 ──
-    const notifiedCancels = new Set(); // 防重複通知
+    // ── onSnapshot：即時監聽活動變更（取消通知 + 即將額滿通知）──
+    const notifiedCancels = new Set();
+    const notifiedAlmostFull = new Set(); // 每個活動只通知一次
     let isInitialSnapshot = true;
 
     db.collection('events').onSnapshot(snapshot => {
-      // 跳過初始載入（全部 docs 會以 'added' 進來）
       if (isInitialSnapshot) {
-        // 記錄已取消的，避免重啟後重複通知
         for (const doc of snapshot.docs) {
-          if (doc.data().status === 'cancelled') {
-            notifiedCancels.add(doc.id);
+          const d = doc.data();
+          if (d.status === 'cancelled') notifiedCancels.add(doc.id);
+          // 已經快滿的不重複通知
+          if (d.maxParticipants > 0 && d.currentParticipants >= d.maxParticipants - 1) {
+            notifiedAlmostFull.add(doc.id);
           }
         }
         isInitialSnapshot = false;
-        console.log(`[niujiu] onSnapshot ready, ${notifiedCancels.size} existing cancels tracked`);
+        console.log(`[niujiu] onSnapshot ready, ${notifiedCancels.size} cancels, ${notifiedAlmostFull.size} almost-full tracked`);
         return;
       }
 
       for (const change of snapshot.docChanges()) {
         if (change.type !== 'modified') continue;
         const event = { id: change.doc.id, ...change.doc.data() };
-        if (event.status !== 'cancelled') continue;
-        if (notifiedCancels.has(event.id)) continue;
 
-        notifiedCancels.add(event.id);
-
-        const time = formatTimeRange(event.startTime, event.endTime);
-        const lines = [
-          '❌ 活動取消通知',
-          '',
-          `「${event.title}」已取消`,
-        ];
-        if (event.startDate) {
-          lines.push(`原定時間：${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
+        // ── 取消通知 ──
+        if (event.status === 'cancelled' && !notifiedCancels.has(event.id)) {
+          notifiedCancels.add(event.id);
+          const time = formatTimeRange(event.startTime, event.endTime);
+          const lines = [
+            '❌ 活動取消通知',
+            '',
+            `「${event.title}」已取消`,
+          ];
+          if (event.startDate) {
+            lines.push(`原定時間：${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
+          }
+          console.log(`[niujiu] cancel-notify: ${event.title}`);
+          lineApi.push(NOTIFY_GROUP_ID, lines.join('\n')).catch(err => {
+            console.error(`[niujiu] cancel-notify push error: ${err.message}`);
+          });
         }
 
-        const msg = lines.join('\n');
-        console.log(`[niujiu] cancel-notify: ${event.title}`);
-        lineApi.push(NOTIFY_GROUP_ID, msg).catch(err => {
-          console.error(`[niujiu] cancel-notify push error: ${err.message}`);
-        });
+        // ── 即將額滿通知（只差 1 人）──
+        if (event.maxParticipants > 0
+          && event.currentParticipants === event.maxParticipants - 1
+          && !notifiedAlmostFull.has(event.id)
+          && ['voting', 'upcoming', 'ongoing'].includes(event.status)) {
+          notifiedAlmostFull.add(event.id);
+          const time = formatTimeRange(event.startTime, event.endTime);
+          const lines = [
+            '🔥 即將額滿！',
+            '',
+            `「${event.title}」只剩 1 個名額`,
+            `👥 ${event.currentParticipants}/${event.maxParticipants}`,
+          ];
+          if (event.startDate) {
+            lines.push(`📅 ${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
+          }
+          console.log(`[niujiu] almost-full: ${event.title} (${event.currentParticipants}/${event.maxParticipants})`);
+          lineApi.push(NOTIFY_GROUP_ID, lines.join('\n')).catch(err => {
+            console.error(`[niujiu] almost-full push error: ${err.message}`);
+          });
+        }
       }
     }, err => {
       console.error('[niujiu] onSnapshot error:', err.message);
