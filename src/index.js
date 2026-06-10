@@ -136,6 +136,24 @@ async function main() {
     scope: 'all',
   });
 
+  // 系統指令：/radar — 即時雷達回波圖（中央氣象署）
+  router.add(/^\/radar$/i, async (_match, _ctx) => {
+    // 加 timestamp 避免 LINE 快取舊圖
+    const ts = Date.now();
+    const radarUrl = `https://www.cwa.gov.tw/Data/radar/CV1_TW_3600.png?t=${ts}`;
+    return {
+      type: 'image',
+      originalContentUrl: radarUrl,
+      previewImageUrl: radarUrl,
+    };
+  }, {
+    type: 'query',
+    name: 'radar',
+    plugin: '_system',
+    describe: '/radar — 即時雷達回波圖',
+    scope: 'all',
+  });
+
   // LLM fallback：私訊 + 有 _llm 權限的群組，未匹配指令時用 LLM 回覆
   const llm = registry.get('llm');
 
