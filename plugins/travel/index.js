@@ -40,6 +40,29 @@ function decodeEntities(s) {
 }
 
 /**
+ * 判斷標題是否為爬蟲封鎖頁 / 無意義的垃圾標題。
+ * 例：Error、純網域名、Cloudflare 擋頁、登入牆等。
+ */
+function isJunkTitle(title, url) {
+  if (!title) return true;
+  const t = title.trim().toLowerCase();
+  const JUNK = [
+    'error', 'errors', 'not found', '404', '403', 'forbidden',
+    'just a moment...', 'just a moment', 'attention required! | cloudflare',
+    'access denied', 'log in', 'log in to facebook', 'login',
+    'facebook', 'instagram', 'redirecting...', 'loading...', 'page not found',
+    'security check', '請稍候', '系統忙碌中',
+  ];
+  if (JUNK.includes(t)) return true;
+  // 標題只是網域名（如 klook.com、tripadvisor.com.tw）
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    if (t === host || t === host.replace(/\.[a-z.]+$/, '')) return true;
+  } catch { /* ignore */ }
+  return false;
+}
+
+/**
  * 抓網頁的標題與描述。失敗回 {}（不擋記錄流程）。
  * @returns {{ title?: string, description?: string }}
  */
@@ -69,7 +92,7 @@ async function fetchMeta(url) {
     const out = {};
     const title = decodeEntities(rawTitle);
     const desc = decodeEntities(rawDesc);
-    if (title) out.title = title.slice(0, 120);
+    if (title && !isJunkTitle(title, url)) out.title = title.slice(0, 120);
     if (desc) out.description = desc.slice(0, 300);
     return out;
   } catch {
