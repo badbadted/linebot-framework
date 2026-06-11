@@ -29,6 +29,61 @@ function formatDate(isoStr) {
   });
 }
 
+/** 縮短顯示用的網址（去掉協定、過長截斷） */
+function shortUrl(url) {
+  const s = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
+  return s.length > 36 ? s.slice(0, 36) + '…' : s;
+}
+
+/** 建立「整列可點」的旅遊清單 Flex（點任一列開該連結） */
+function buildClickableList(items) {
+  const rows = [];
+  items.forEach((t, i) => {
+    if (i > 0) rows.push({ type: 'separator', margin: 'sm' });
+    rows.push({
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '8px',
+      spacing: 'xs',
+      action: { type: 'uri', label: '開啟', uri: t.url },
+      contents: [
+        {
+          type: 'text',
+          text: `#${t.id}  ${t.title || shortUrl(t.url)}`,
+          size: 'sm', weight: 'bold', color: '#0369a1', wrap: true,
+        },
+        {
+          type: 'box',
+          layout: 'horizontal',
+          contents: [
+            { type: 'text', text: shortUrl(t.url), size: 'xxs', color: '#94a3b8', flex: 3, wrap: false },
+            { type: 'text', text: formatDate(t.created_at), size: 'xxs', color: '#94a3b8', align: 'end', flex: 2 },
+          ],
+        },
+      ],
+    });
+  });
+
+  return {
+    type: 'flex',
+    altText: '🧳 旅遊清單',
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box', layout: 'vertical', backgroundColor: COLOR, paddingAll: '16px',
+        contents: [
+          { type: 'text', text: '🧳 旅遊清單', color: '#ffffff', weight: 'bold', size: 'lg' },
+          { type: 'text', text: '點任一筆開啟連結', color: '#e0f2fe', size: 'xs', margin: 'xs' },
+        ],
+      },
+      body: {
+        type: 'box', layout: 'vertical', paddingAll: '12px', spacing: 'sm',
+        contents: rows,
+      },
+    },
+  };
+}
+
 // ── 解析網頁標題 / 描述（OG meta，輕量、不依賴 Gemini） ──
 function decodeEntities(s) {
   return s
@@ -181,10 +236,7 @@ export default {
         );
         if (!items.length) return '🧳 還沒有旅遊記錄\n輸入 /旅遊 <連結> 新增第一筆';
 
-        return flex.list('🧳 旅遊清單', items.map(t => ({
-          label: `#${t.id}  ${t.title || t.url}`,
-          value: formatDate(t.created_at),
-        })), COLOR);
+        return buildClickableList(items);
       },
     },
     // 刪除：/旅遊_del <編號>
