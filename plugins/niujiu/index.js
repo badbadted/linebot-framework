@@ -323,76 +323,6 @@ export default {
       scope: 'private',
     },
     {
-      name: 'food',
-      command: 'food',
-      pattern: /^(.+)/,
-      describe: '/nj_food <連結> — 加入美食記錄',
-      handler: async (match, ctx) => {
-        const input = match[1].trim();
-        // 檢查是否為網址
-        const urlMatch = input.match(/(https?:\/\/\S+)/i);
-        if (!urlMatch) {
-          return '請貼上連結\n範例：/nj_food https://maps.app.goo.gl/xxxxx';
-        }
-        const mapsUrl = urlMatch[1];
-
-        try {
-          // 取 LINE profile，用暱稱比對 niujiu 帳號
-          const lineProfile = await ctx.lineApi.getProfile(ctx.userId);
-          const displayName = lineProfile?.displayName || '';
-          const njUser = displayName ? await getUserByDisplayName(db, displayName) : null;
-          if (!njUser) {
-            return '請先登入妞揪 App 才能使用美食記錄功能 🔒';
-          }
-
-          // 防重複
-          const existing = await findRestaurantByUrl(db, mapsUrl);
-          if (existing) {
-            const name = existing.name || '（解析中）';
-            return `這間已經記錄過了 😋\n📍 ${name}`;
-          }
-
-          // 用 niujiu 帳號資料作為推薦人
-          const profile = {
-            userId: njUser.id,
-            displayName: njUser.displayName || displayName,
-            pictureUrl: njUser.avatarUrl || lineProfile?.pictureUrl,
-          };
-
-          // 先 resolve，成功才寫入 Firestore
-          if (isGeminiReady()) {
-            try {
-              const result = await resolveAndEnrich(mapsUrl);
-              if (result.status === 'resolved' && result.name) {
-                const { status, ...fields } = result;
-                const docId = await addPendingRestaurant(db, mapsUrl, profile);
-                await updateRestaurant(db, docId, { ...fields, status: 'resolved' });
-
-                const parts = [`✅ 已新增：${result.name}`];
-                if (result.area) parts.push(`📍 ${result.area}`);
-                if (result.googleRating) parts.push(`⭐ ${result.googleRating}`);
-                if (result.priceDetail) parts.push(`💰 ${result.priceDetail}`);
-                return parts.join('\n');
-              } else {
-                return '❌ 無法辨識餐廳，請確認連結是否正確';
-              }
-            } catch (err) {
-              console.error('[niujiu] resolve error:', err.message);
-              return '❌ 辨識失敗，請稍後再試';
-            }
-          }
-
-          // Gemini 未啟用時直接寫 pending
-          const docId = await addPendingRestaurant(db, mapsUrl, profile);
-          return `已加入美食記錄 🍜\n店名與資訊稍後自動補上！\n（ID: ${docId.slice(0, 6)}）`;
-        } catch (err) {
-          console.error('[niujiu] handleFood error:', err);
-          return '⚠️ 加入失敗，請稍後再試';
-        }
-      },
-      scope: 'all',
-    },
-    {
       name: 'resolve',
       command: 'resolve',
       describe: '/nj_resolve — 批次解析所有 pending 餐廳（管理員）',
@@ -474,6 +404,71 @@ export default {
 
     // Gemini AI（選用，沒有 key 就 fallback 到 pending 模式）
     initGemini();
+
+    // ── /加美 指令：加入美食記錄 ──
+    const router = ctx.router;
+    router.add(/^\/加美\s+(.+)$/i, async (match, rctx) => {
+      const input = match[1].trim();
+      const urlMatch = input.match(/(https?:\/\/\S+)/i);
+      if (!urlMatch) {
+        return '請貼上連結\n範例：/加美 https://maps.app.goo.gl/xxxxx';
+      }
+      const foodUrl = urlMatch[1];
+
+      try {
+        const lineProfile = await rctx.lineApi.getProfile(rctx.userId);
+        const displayName = lineProfile?.displayName || '';
+        const njUser = displayName ? await getUserByDisplayName(db, displayName) : null;
+        if (!njUser) {
+          return '請先登入妞揪 App 才能使用美食記錄功能 🔒';
+        }
+
+        const existing = await findRestaurantByUrl(db, foodUrl);
+        if (existing) {
+          const name = existing.name || '（解析中）';
+          return `這間已經記錄過了 😋\n📍 ${name}`;
+        }
+
+        const profile = {
+          userId: njUser.id,
+          displayName: njUser.displayName || displayName,
+          pictureUrl: njUser.avatarUrl || lineProfile?.pictureUrl,
+        };
+
+        if (isGeminiReady()) {
+          try {
+            const result = await resolveAndEnrich(foodUrl);
+            if (result.status === 'resolved' && result.name) {
+              const { status, ...fields } = result;
+              const docId = await addPendingRestaurant(db, foodUrl, profile);
+              await updateRestaurant(db, docId, { ...fields, status: 'resolved' });
+              const parts = [`✅ 已新增：${result.name}`];
+              if (result.area) parts.push(`📍 ${result.area}`);
+              if (result.googleRating) parts.push(`⭐ ${result.googleRating}`);
+              if (result.priceDetail) parts.push(`💰 ${result.priceDetail}`);
+              return parts.join('\n');
+            } else {
+              return '❌ 無法辨識餐廳，請確認連結是否正確';
+            }
+          } catch (err) {
+            console.error('[niujiu] resolve error:', err.message);
+            return '❌ 辨識失敗，請稍後再試';
+          }
+        }
+
+        const docId = await addPendingRestaurant(db, foodUrl, profile);
+        return `已加入美食記錄 🍜\n店名與資訊稍後自動補上！\n（ID: ${docId.slice(0, 6)}）`;
+      } catch (err) {
+        console.error('[niujiu] handleFood error:', err);
+        return '⚠️ 加入失敗，請稍後再試';
+      }
+    }, {
+      type: 'query',
+      name: 'food',
+      plugin: 'niujiu',
+      describe: '/加美 <連結> — 加入美食記錄',
+      scope: 'all',
+    });
 
     // ── onSnapshot：即時監聽活動變更（取消通知 + 即將額滿通知）──
     const notifiedCancels = new Set();
