@@ -64,6 +64,61 @@ function formatTime(isoStr) {
   });
 }
 
+// ── 互動式待辦清單（每筆含 完成 / 刪除 按鈕） ──────────
+function buildTodoList(todos) {
+  const MAX = 12; // 避免 Flex bubble 過大
+  const shown = todos.slice(0, MAX);
+  const rows = [];
+
+  shown.forEach((t, i) => {
+    if (i > 0) rows.push({ type: 'separator', margin: 'md' });
+    const lines = [
+      { type: 'text', text: `#${t.id}  ${t.content}`, size: 'sm', weight: 'bold', color: '#1e293b', wrap: true },
+    ];
+    if (t.remind_at) {
+      lines.push({ type: 'text', text: `⏰ ${formatTime(t.remind_at)}`, size: 'xxs', color: '#f59e0b', margin: 'xs' });
+    }
+    lines.push({
+      type: 'box',
+      layout: 'horizontal',
+      spacing: 'sm',
+      margin: 'sm',
+      contents: [
+        {
+          type: 'button', style: 'primary', color: '#10b981', height: 'sm', flex: 1,
+          action: { type: 'message', label: '✅ 完成', text: `/todo_done ${t.id}` },
+        },
+        {
+          type: 'button', style: 'secondary', height: 'sm', flex: 1,
+          action: { type: 'message', label: '🗑️ 刪除', text: `/todo_del ${t.id}` },
+        },
+      ],
+    });
+    rows.push({ type: 'box', layout: 'vertical', paddingAll: '8px', spacing: 'xs', contents: lines });
+  });
+
+  if (todos.length > MAX) {
+    rows.push({ type: 'separator', margin: 'md' });
+    rows.push({ type: 'text', text: `還有 ${todos.length - MAX} 筆未顯示`, size: 'xxs', color: '#94a3b8', align: 'center', margin: 'sm' });
+  }
+
+  return {
+    type: 'flex',
+    altText: '📋 待辦列表',
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box', layout: 'vertical', backgroundColor: '#10b981', paddingAll: '16px',
+        contents: [
+          { type: 'text', text: '📋 待辦列表', color: '#ffffff', weight: 'bold', size: 'lg' },
+          { type: 'text', text: `共 ${todos.length} 筆 · 點按鈕完成或刪除`, color: '#d1fae5', size: 'xs', margin: 'xs' },
+        ],
+      },
+      body: { type: 'box', layout: 'vertical', paddingAll: '12px', spacing: 'sm', contents: rows },
+    },
+  };
+}
+
 // ── 建立提醒排程 ─────────────────────────────────────
 function scheduleReminder(id, userId, content, remindAt) {
   scheduler.addOnce(`todo-remind-${id}`, remindAt, async ({ lineApi }) => {
@@ -124,10 +179,7 @@ export default {
         );
         if (!todos.length) return '📋 沒有待辦事項！輸入 /todo_add 建立';
 
-        return flex.list('📋 待辦列表', todos.map(t => ({
-          label: `#${t.id}  ${t.content}`,
-          value: t.remind_at ? `⏰ ${formatTime(t.remind_at)}` : '',
-        })));
+        return buildTodoList(todos);
       },
     },
     {
