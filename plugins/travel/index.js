@@ -17,42 +17,43 @@ let db;
 
 const COLOR = '#0ea5e9'; // 天藍色，跟 work 的紫色區隔
 
-// ── 格式化 ──────────────────────────────────────────
-function formatDate(isoStr) {
-  if (!isoStr) return '';
-  const d = new Date(isoStr);
-  return d.toLocaleString('zh-TW', {
-    timeZone: 'Asia/Taipei',
-    month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-    hour12: false,
-  });
-}
-
 /** 縮短顯示用的網址（去掉協定、過長截斷） */
 function shortUrl(url) {
   const s = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
   return s.length > 36 ? s.slice(0, 36) + '…' : s;
 }
 
+/** 旅遊清單查詢（最新在上，最多 20 筆）— 畫面序號與刪除都依此順序 */
+function getTravelItems(userId) {
+  return db.all(
+    `SELECT id, url, title, description, created_at FROM travel_items
+     WHERE user_id = ?
+     ORDER BY id DESC
+     LIMIT 20`,
+    userId
+  );
+}
+
+// 第 n 筆（畫面序號）→ 實際資料列
+function travelByIndex(userId, n) {
+  return getTravelItems(userId)[n - 1] || null;
+}
+
 /** 建立旅遊清單 Flex（簡約式：單色、極細分隔、整列可點開連結） */
 function buildClickableList(items) {
-  const MAX = 20;
-  const shown = items.slice(0, MAX);
-
   const body = [
     { type: 'text', text: `旅遊 · ${items.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
     { type: 'separator', margin: 'md', color: '#f1f5f9' },
   ];
 
-  shown.forEach((t, i) => {
+  items.forEach((t, i) => {
     if (i > 0) body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
     body.push({
       type: 'box', layout: 'horizontal', alignItems: 'center', spacing: 'sm',
       paddingTop: 'md', paddingBottom: 'md',
       action: { type: 'uri', label: '開啟', uri: t.url },
       contents: [
-        { type: 'text', text: String(t.id), size: 'sm', color: '#94a3b8', flex: 0 },
+        { type: 'text', text: String(i + 1), size: 'sm', color: '#94a3b8', flex: 0 },
         {
           type: 'box', layout: 'vertical', flex: 1, spacing: 'xs',
           contents: [
@@ -64,11 +65,6 @@ function buildClickableList(items) {
       ],
     });
   });
-
-  if (items.length > MAX) {
-    body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
-    body.push({ type: 'text', text: `還有 ${items.length - MAX} 筆`, size: 'xxs', color: '#94a3b8', align: 'center', margin: 'md' });
-  }
 
   return {
     type: 'flex',
@@ -183,18 +179,17 @@ export default {
           ctx.userId, url
         );
         if (exist) {
-          return `這個連結已經記錄過了 🧳\n#${exist.id} ${exist.title || url}`;
+          return `這個連結已經記錄過了 🧳\n${exist.title || url}`;
         }
 
         // 嘗試解析標題/描述（失敗不擋記錄）
         const meta = await fetchMeta(url);
 
-        const result = db.run(
+        db.run(
           `INSERT INTO travel_items (user_id, url, title, description, created_at)
            VALUES (?, ?, ?, ?, datetime('now', '+8 hours'))`,
           ctx.userId, url, meta.title || '', meta.description || ''
         );
-        const id = result.lastInsertRowid;
 
         const bodyLines = [];
         if (meta.title) bodyLines.push(`📌 ${meta.title}`);
@@ -205,7 +200,7 @@ export default {
         }
 
         return flex.card({
-          title: `🧳 已記錄旅遊 #${id}`,
+          title: '🧳 已記錄旅遊',
           body: bodyLines.join('\n'),
           color: COLOR,
           actions: [
@@ -223,13 +218,7 @@ export default {
       type: 'query',
       handler: async (_match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const items = db.all(
-          `SELECT id, url, title, created_at FROM travel_items
-           WHERE user_id = ?
-           ORDER BY id DESC
-           LIMIT 20`,
-          ctx.userId
-        );
+        const items = getTravelItems(ctx.userId);
         if (!items.length) return '🧳 還沒有旅遊記錄\n輸入 /旅遊 <連結> 新增第一筆';
 
         return buildClickableList(items);
@@ -244,14 +233,11 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const id = +match[1];
-        const item = db.get(
-          'SELECT * FROM travel_items WHERE id = ? AND user_id = ?',
-          id, ctx.userId
-        );
-        if (!item) return `❌ 找不到 #${id}`;
-        db.run('DELETE FROM travel_items WHERE id = ?', id);
-        return `🗑️ 已刪除：#${id} ${item.title || item.url}`;
+        const n = +match[1];
+        const item = travelByIndex(ctx.userId, n);
+        if (!item) return `❌ 找不到第 ${n} 筆`;
+        db.run('DELETE FROM travel_items WHERE id = ?', item.id);
+        return `🗑️ 已刪除：${item.title || item.url}`;
       },
     },
     // 全部：/旅遊_all（含連結與描述）
@@ -262,21 +248,15 @@ export default {
       type: 'query',
       handler: async (_match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const items = db.all(
-          `SELECT id, url, title, description, created_at FROM travel_items
-           WHERE user_id = ?
-           ORDER BY id DESC
-           LIMIT 20`,
-          ctx.userId
-        );
+        const items = getTravelItems(ctx.userId);
         if (!items.length) return '🧳 還沒有旅遊記錄';
 
         const lines = ['🧳 旅遊清單（全部）', ''];
-        for (const t of items) {
-          lines.push(`#${t.id}  ${t.title || '(無標題)'}`);
+        items.forEach((t, i) => {
+          lines.push(`${i + 1}.  ${t.title || '(無標題)'}`);
           lines.push(`🔗 ${t.url}`);
           lines.push('');
-        }
+        });
         lines.push(`📊 共 ${items.length} 筆`);
         return lines.join('\n');
       },

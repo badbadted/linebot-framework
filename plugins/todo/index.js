@@ -64,6 +64,21 @@ function formatTime(isoStr) {
   });
 }
 
+// ── 位置序號解析（畫面顯示 1,2,3… 連號，不用資料庫 id） ──
+function getUndoneTodos(userId) {
+  return db.all(
+    `SELECT id, content, done, remind_at FROM todos
+     WHERE user_id = ? AND done = 0
+     ORDER BY id`,
+    userId
+  );
+}
+
+// 第 n 筆（從畫面看到的序號）→ 實際資料列
+function todoByIndex(userId, n) {
+  return getUndoneTodos(userId)[n - 1] || null;
+}
+
 // ── 互動式待辦清單（簡約式：單色、極細分隔、右側 ✓ ✕ 小圖示） ──
 function buildTodoList(todos) {
   const MAX = 12; // 避免 Flex bubble 過大
@@ -77,10 +92,11 @@ function buildTodoList(todos) {
   shown.forEach((t, i) => {
     if (i > 0) body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
 
+    const pos = i + 1; // 畫面序號（連號），按鈕也用這個
     const left = {
       type: 'box', layout: 'horizontal', flex: 1, spacing: 'sm', alignItems: 'center',
       contents: [
-        { type: 'text', text: String(t.id), size: 'sm', color: '#94a3b8', flex: 0 },
+        { type: 'text', text: String(pos), size: 'sm', color: '#94a3b8', flex: 0 },
         { type: 'text', text: t.content, size: 'md', color: '#1e293b', flex: 1, wrap: false },
       ],
     };
@@ -95,12 +111,12 @@ function buildTodoList(todos) {
         left,
         {
           type: 'box', layout: 'vertical', width: '30px',
-          action: { type: 'message', label: '完成', text: `/todo_done ${t.id}` },
+          action: { type: 'message', label: '完成', text: `/todo_done ${pos}` },
           contents: [{ type: 'text', text: '✓', size: 'lg', align: 'center', color: '#10b981' }],
         },
         {
           type: 'box', layout: 'vertical', width: '30px',
-          action: { type: 'message', label: '刪除', text: `/todo_del ${t.id}` },
+          action: { type: 'message', label: '刪除', text: `/todo_del ${pos}` },
           contents: [{ type: 'text', text: '✕', size: 'lg', align: 'center', color: '#94a3b8' }],
         },
       ],
@@ -124,15 +140,16 @@ function buildTodoList(todos) {
 
 // ── 新增待辦（共用：/todo_add 與 /todo <內容> 都用這個） ──
 function addTodo(content, userId) {
-  const result = db.run(
+  const text = content.trim();
+  db.run(
     `INSERT INTO todos (user_id, content, done, created_at)
      VALUES (?, ?, 0, datetime('now', '+8 hours'))`,
-    userId, content.trim()
+    userId, text
   );
-  const id = result.lastInsertRowid;
+  const count = getUndoneTodos(userId).length; // 新增後的未完成筆數 = 此筆序號
   return flex.card({
     title: '✅ 已新增待辦',
-    body: `#${id}  ${content.trim()}`,
+    body: `${count}　${text}`,
     color: '#10b981',
     actions: [{ label: '查看列表', text: '/todo' }],
   });
@@ -141,11 +158,13 @@ function addTodo(content, userId) {
 // ── 建立提醒排程 ─────────────────────────────────────
 function scheduleReminder(id, userId, content, remindAt) {
   scheduler.addOnce(`todo-remind-${id}`, remindAt, async ({ lineApi }) => {
+    // 觸發當下才算位置序號（清單可能已增減）
+    const pos = getUndoneTodos(userId).findIndex(t => t.id === id) + 1;
     await lineApi.push(userId, flex.card({
       title: '⏰ 待辦提醒',
-      body: `#${id}  ${content}`,
+      body: content,
       color: '#f59e0b',
-      actions: [{ label: '已完成', text: `/todo_done ${id}` }],
+      actions: pos > 0 ? [{ label: '已完成', text: `/todo_done ${pos}` }] : [],
     }));
   });
 }
@@ -187,12 +206,7 @@ export default {
       type: 'query',
       handler: async (_match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const todos = db.all(
-          `SELECT id, content, done, remind_at FROM todos
-           WHERE user_id = ? AND done = 0
-           ORDER BY id`,
-          ctx.userId
-        );
+        const todos = getUndoneTodos(ctx.userId);
         if (!todos.length) return '📋 沒有待辦事項！輸入 /todo_add 建立';
 
         return buildTodoList(todos);
@@ -206,15 +220,12 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const id = +match[1];
-        const todo = db.get(
-          'SELECT * FROM todos WHERE id = ? AND user_id = ?',
-          id, ctx.userId
-        );
-        if (!todo) return `❌ 找不到 #${id}`;
-        db.run('UPDATE todos SET done = 1 WHERE id = ?', id);
-        scheduler.stop(`todo-remind-${id}`);
-        return `✅ 已完成：#${id} ${todo.content}`;
+        const n = +match[1];
+        const todo = todoByIndex(ctx.userId, n);
+        if (!todo) return `❌ 找不到第 ${n} 筆`;
+        db.run('UPDATE todos SET done = 1 WHERE id = ?', todo.id);
+        scheduler.stop(`todo-remind-${todo.id}`);
+        return `✅ 已完成：${todo.content}`;
       },
     },
     {
@@ -225,15 +236,12 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const id = +match[1];
-        const todo = db.get(
-          'SELECT * FROM todos WHERE id = ? AND user_id = ?',
-          id, ctx.userId
-        );
-        if (!todo) return `❌ 找不到 #${id}`;
-        db.run('DELETE FROM todos WHERE id = ?', id);
-        scheduler.stop(`todo-remind-${id}`);
-        return `🗑️ 已刪除：#${id} ${todo.content}`;
+        const n = +match[1];
+        const todo = todoByIndex(ctx.userId, n);
+        if (!todo) return `❌ 找不到第 ${n} 筆`;
+        db.run('DELETE FROM todos WHERE id = ?', todo.id);
+        scheduler.stop(`todo-remind-${todo.id}`);
+        return `🗑️ 已刪除：${todo.content}`;
       },
     },
     {
@@ -244,15 +252,12 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const id = +match[1];
+        const n = +match[1];
         const newContent = match[2].trim();
-        const todo = db.get(
-          'SELECT * FROM todos WHERE id = ? AND user_id = ?',
-          id, ctx.userId
-        );
-        if (!todo) return `❌ 找不到 #${id}`;
-        db.run('UPDATE todos SET content = ? WHERE id = ?', newContent, id);
-        return `📝 已修改 #${id}：${newContent}`;
+        const todo = todoByIndex(ctx.userId, n);
+        if (!todo) return `❌ 找不到第 ${n} 筆`;
+        db.run('UPDATE todos SET content = ? WHERE id = ?', newContent, todo.id);
+        return `📝 已修改第 ${n} 筆：${newContent}`;
       },
     },
     {
@@ -263,25 +268,22 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const id = +match[1];
+        const n = +match[1];
         const timeText = match[2].trim();
-        const todo = db.get(
-          'SELECT * FROM todos WHERE id = ? AND user_id = ?',
-          id, ctx.userId
-        );
-        if (!todo) return `❌ 找不到 #${id}`;
+        const todo = todoByIndex(ctx.userId, n);
+        if (!todo) return `❌ 找不到第 ${n} 筆`;
 
         const remindAt = parseRemindTime(timeText);
         if (!remindAt) return '❌ 時間格式錯誤\n支援：18:00 / 明天 09:00 / 12/25 10:00';
 
         db.run('UPDATE todos SET remind_at = ? WHERE id = ?',
-          remindAt.toISOString(), id);
+          remindAt.toISOString(), todo.id);
 
         // 取消舊提醒，建立新提醒
-        scheduler.stop(`todo-remind-${id}`);
-        scheduleReminder(id, ctx.userId, todo.content, remindAt);
+        scheduler.stop(`todo-remind-${todo.id}`);
+        scheduleReminder(todo.id, ctx.userId, todo.content, remindAt);
 
-        return `⏰ 已設定提醒\n#${id} ${todo.content}\n📅 ${formatTime(remindAt.toISOString())}`;
+        return `⏰ 已設定提醒\n${todo.content}\n📅 ${formatTime(remindAt.toISOString())}`;
       },
     },
   ],
