@@ -30,6 +30,25 @@ function formatDate(isoStr) {
   });
 }
 
+// ── 新增工作事項（共用：/work_add 與 /work <內容> 都用這個） ──
+function addWork(content, userId) {
+  const text = content.trim();
+  const result = db.run(
+    `INSERT INTO work_items (user_id, content, done, created_at)
+     VALUES (?, ?, 0, datetime('now', '+8 hours'))`,
+    userId, text
+  );
+  const id = result.lastInsertRowid;
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  const dateStr = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  return flex.card({
+    title: '✅ 已記錄工作事項',
+    body: `#${id}  ${text}\n📅 ${dateStr}`,
+    color: '#6366f1',
+    actions: [{ label: '查看列表', text: '/work' }],
+  });
+}
+
 // ── Plugin 定義 ──────────────────────────────────────
 export default {
   name: 'work',
@@ -42,25 +61,22 @@ export default {
       name: 'add-work',
       command: 'add',
       pattern: /^(.+)/,
-      describe: '/work_add <內容> — 新增工作事項',
+      describe: '/work <內容> — 新增工作事項',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const content = match[1].trim();
-        const result = db.run(
-          `INSERT INTO work_items (user_id, content, done, created_at)
-           VALUES (?, ?, 0, datetime('now', '+8 hours'))`,
-          ctx.userId, content
-        );
-        const id = result.lastInsertRowid;
-        return flex.card({
-          title: '✅ 已記錄工作事項',
-          body: `#${id}  ${content}`,
-          color: '#6366f1',
-          actions: [
-            { label: '查看列表', text: '/work' },
-          ],
-        });
+        return addWork(match[1], ctx.userId);
+      },
+    },
+    {
+      // /work <內容>（空格新增，跟 /旅遊 /加美 一致）
+      name: 'add-work-bare',
+      pattern: /^\/work\s+(.+)$/i,
+      describe: '/work <內容> — 新增工作事項',
+      type: 'query',
+      handler: async (match, ctx) => {
+        if (!db) return '❌ 此 BOT 未啟用資料庫';
+        return addWork(match[1], ctx.userId);
       },
     },
     {

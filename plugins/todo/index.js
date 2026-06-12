@@ -119,6 +119,22 @@ function buildTodoList(todos) {
   };
 }
 
+// ── 新增待辦（共用：/todo_add 與 /todo <內容> 都用這個） ──
+function addTodo(content, userId) {
+  const result = db.run(
+    `INSERT INTO todos (user_id, content, done, created_at)
+     VALUES (?, ?, 0, datetime('now', '+8 hours'))`,
+    userId, content.trim()
+  );
+  const id = result.lastInsertRowid;
+  return flex.card({
+    title: '✅ 已新增待辦',
+    body: `#${id}  ${content.trim()}`,
+    color: '#10b981',
+    actions: [{ label: '查看列表', text: '/todo' }],
+  });
+}
+
 // ── 建立提醒排程 ─────────────────────────────────────
 function scheduleReminder(id, userId, content, remindAt) {
   scheduler.addOnce(`todo-remind-${id}`, remindAt, async ({ lineApi }) => {
@@ -143,25 +159,22 @@ export default {
       name: 'add-todo',
       command: 'add',
       pattern: /^(.+)/,
-      describe: '/todo_add <內容> — 新增待辦',
+      describe: '/todo <內容> — 新增待辦',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const content = match[1].trim();
-        const result = db.run(
-          `INSERT INTO todos (user_id, content, done, created_at)
-           VALUES (?, ?, 0, datetime('now', '+8 hours'))`,
-          ctx.userId, content
-        );
-        const id = result.lastInsertRowid;
-        return flex.card({
-          title: '✅ 已新增待辦',
-          body: `#${id}  ${content}`,
-          color: '#10b981',
-          actions: [
-            { label: '查看列表', text: '/todo' },
-          ],
-        });
+        return addTodo(match[1], ctx.userId);
+      },
+    },
+    {
+      // /todo <內容>（空格新增，跟 /旅遊 /加美 一致）
+      name: 'add-todo-bare',
+      pattern: /^\/todo\s+(.+)$/i,
+      describe: '/todo <內容> — 新增待辦',
+      type: 'query',
+      handler: async (match, ctx) => {
+        if (!db) return '❌ 此 BOT 未啟用資料庫';
+        return addTodo(match[1], ctx.userId);
       },
     },
     {
