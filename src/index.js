@@ -163,12 +163,27 @@ async function main() {
     lineApi,
     logger,
     onUnmatched: async ({ userId, groupId, sourceType, text, replyToken }) => {
+      const isGroup = sourceType === 'group' || sourceType === 'room';
+      const trimmed = (text || '').trim();
+
+      // 以 / 開頭但沒命中任何指令 → 打錯/不存在的指令，不丟給 LLM（避免假回覆）
+      // （合法但該群沒開權限的指令會在 router 被 groupBlocked 攔下，不會走到這裡）
+      if (trimmed.startsWith('/')) {
+        const allowed = isGroup ? (groupPerms[groupId] || groupPerms['*'] || []) : null;
+        // 私訊一律提示；群組只在有 _llm 的對話型群組提示（避免跨 bot 刷屏）
+        if (!isGroup || allowed.includes('_llm')) {
+          const cmd = trimmed.split(/\s+/)[0];
+          try {
+            await lineApi.reply(replyToken, `❓ 找不到指令「${cmd}」\n輸入 /help 查看可用指令`);
+          } catch { /* replyToken 過期就算了 */ }
+        }
+        return;
+      }
+
       if (!llm) {
         console.log(`[fallback] unmatched: ${text.slice(0, 60)}`);
         return;
       }
-
-      const isGroup = sourceType === 'group' || sourceType === 'room';
 
       // 群組：只有 groups.json 中有 _llm 的群組才觸發 LLM
       if (isGroup) {
