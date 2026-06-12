@@ -200,10 +200,11 @@ export default {
           bodyLines.push('（無法解析標題，已存連結，日後可補）');
         }
 
-        return flex.card({
-          title: '🧳 已記錄旅遊',
+        return flex.mini({
+          icon: '🧳',
+          title: '已記錄旅遊',
           body: bodyLines.join('\n'),
-          color: COLOR,
+          accent: COLOR,
           actions: [
             { label: '開啟連結', uri: url },
             { label: '查看清單', text: '/旅遊' },

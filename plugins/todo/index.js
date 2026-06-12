@@ -148,10 +148,11 @@ function addTodo(content, userId) {
     userId, text
   );
   // 不顯示序號（序號在清單才有意義，避免誤導）
-  return flex.card({
-    title: '✅ 已新增待辦',
+  return flex.mini({
+    icon: '✓',
+    title: '已新增待辦',
     body: text,
-    color: '#10b981',
+    accent: '#10b981',
     actions: [{ label: '查看列表', text: '/todo' }],
   });
 }
@@ -161,11 +162,12 @@ function scheduleReminder(id, userId, content, remindAt) {
   scheduler.addOnce(`todo-remind-${id}`, remindAt, async ({ lineApi }) => {
     // 觸發當下才算位置序號（清單可能已增減）
     const pos = getUndoneTodos(userId).findIndex(t => t.id === id) + 1;
-    await lineApi.push(userId, flex.card({
-      title: '⏰ 待辦提醒',
+    await lineApi.push(userId, flex.mini({
+      icon: '⏰',
+      title: '待辦提醒',
       body: content,
-      color: '#f59e0b',
-      actions: pos > 0 ? [{ label: '已完成', text: `/todo_done ${pos}` }] : [],
+      accent: '#f59e0b',
+      actions: pos > 0 ? [{ label: '標記完成', text: `/todo_done ${pos}` }] : [],
     }));
   });
 }

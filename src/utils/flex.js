@@ -73,6 +73,47 @@ function card({ title, body, footer, actions, color = '#0367D3' }) {
 }
 
 /**
+ * 簡約確認卡（白底、無色塊、文字標題 + 文字連結按鈕）
+ * 與簡約式清單同一視覺語言。
+ * @param {Object} opts
+ * @param {string} [opts.icon] - 標題前小圖示（如 ✓ ⏰ 🧳）
+ * @param {string} opts.title - 標題（accent 色小字）
+ * @param {string} [opts.body] - 內文（深色）
+ * @param {string} [opts.accent] - 主色（標題與連結色，預設綠）
+ * @param {Array} [opts.actions] - [{ label, text?, uri?, color? }] 底部文字連結
+ */
+function mini({ icon = '', title, body, accent = '#10b981', actions = [] }) {
+  const contents = [
+    { type: 'text', text: `${icon} ${title}`.trim(), size: 'sm', color: accent, weight: 'bold' },
+  ];
+  if (body) {
+    contents.push({ type: 'text', text: body, size: 'md', color: '#1e293b', wrap: true, margin: 'md' });
+  }
+  if (actions.length) {
+    contents.push({ type: 'separator', margin: 'lg', color: '#f1f5f9' });
+    contents.push({
+      type: 'box', layout: 'horizontal', margin: 'md', spacing: 'md',
+      contents: actions.map(a => ({
+        type: 'text', text: a.label, size: 'sm', weight: 'bold', align: 'center', flex: 1,
+        color: a.color || accent,
+        action: a.uri
+          ? { type: 'uri', label: a.label, uri: a.uri }
+          : { type: 'message', label: a.label, text: a.text || a.label },
+      })),
+    });
+  }
+  return {
+    type: 'flex',
+    altText: title,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: { type: 'box', layout: 'vertical', paddingAll: '18px', contents },
+    },
+  };
+}
+
+/**
  * 清單（多行項目）
  * @param {string} title - 標題
  * @param {Array} items - [{ label, value }]
@@ -150,4 +191,4 @@ function quickReply(text, options) {
   };
 }
 
-export const flex = { card, list, confirm, quickReply };
+export const flex = { card, mini, list, confirm, quickReply };
