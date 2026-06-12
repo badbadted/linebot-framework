@@ -71,6 +71,7 @@ function buildClickableList(items) {
     altText: '旅遊清單',
     contents: {
       type: 'bubble',
+      size: 'giga',
       body: { type: 'box', layout: 'vertical', paddingAll: '18px', contents: body },
     },
   };

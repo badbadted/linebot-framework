@@ -133,6 +133,7 @@ function buildTodoList(todos) {
     altText: '待辦列表',
     contents: {
       type: 'bubble',
+      size: 'giga',
       body: { type: 'box', layout: 'vertical', paddingAll: '18px', contents: body },
     },
   };
