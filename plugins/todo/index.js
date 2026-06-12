@@ -147,10 +147,10 @@ function addTodo(content, userId) {
      VALUES (?, ?, 0, datetime('now', '+8 hours'))`,
     userId, text
   );
-  const count = getUndoneTodos(userId).length; // 新增後的未完成筆數 = 此筆序號
+  // 不顯示序號（序號在清單才有意義，避免誤導）
   return flex.card({
     title: '✅ 已新增待辦',
-    body: `${count}　${text}`,
+    body: text,
     color: '#10b981',
     actions: [{ label: '查看列表', text: '/todo' }],
   });
