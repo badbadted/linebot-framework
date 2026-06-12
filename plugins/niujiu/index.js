@@ -405,13 +405,13 @@ export default {
     // Gemini AI（選用，沒有 key 就 fallback 到 pending 模式）
     initGemini();
 
-    // ── /加美 指令：加入美食記錄 ──
+    // ── /美食 指令：加入美食記錄 ──
     const router = ctx.router;
-    router.add(/^\/加美\s+(.+)$/i, async (match, rctx) => {
+    router.add(/^\/美食\s+(.+)$/i, async (match, rctx) => {
       const input = match[1].trim();
       const urlMatch = input.match(/(https?:\/\/\S+)/i);
       if (!urlMatch) {
-        return '請貼上連結\n範例：/加美 https://maps.app.goo.gl/xxxxx';
+        return '請貼上連結\n範例：/美食 https://maps.app.goo.gl/xxxxx';
       }
       const foodUrl = urlMatch[1];
 
@@ -466,7 +466,7 @@ export default {
       type: 'query',
       name: 'food',
       plugin: 'niujiu',
-      describe: '/加美 <連結> — 加入美食記錄',
+      describe: '/美食 <連結> — 加入美食記錄',
       scope: 'all',
     });
 
