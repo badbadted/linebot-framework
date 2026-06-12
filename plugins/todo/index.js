@@ -64,57 +64,60 @@ function formatTime(isoStr) {
   });
 }
 
-// ── 互動式待辦清單（每筆含 完成 / 刪除 按鈕） ──────────
+// ── 互動式待辦清單（簡約式：單色、極細分隔、右側 ✓ ✕ 小圖示） ──
 function buildTodoList(todos) {
   const MAX = 12; // 避免 Flex bubble 過大
   const shown = todos.slice(0, MAX);
-  const rows = [];
+
+  const body = [
+    { type: 'text', text: `待辦 · ${todos.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
+    { type: 'separator', margin: 'md', color: '#f1f5f9' },
+  ];
 
   shown.forEach((t, i) => {
-    if (i > 0) rows.push({ type: 'separator', margin: 'md' });
-    const lines = [
-      { type: 'text', text: `#${t.id}  ${t.content}`, size: 'sm', weight: 'bold', color: '#1e293b', wrap: true },
-    ];
-    if (t.remind_at) {
-      lines.push({ type: 'text', text: `⏰ ${formatTime(t.remind_at)}`, size: 'xxs', color: '#f59e0b', margin: 'xs' });
-    }
-    lines.push({
-      type: 'box',
-      layout: 'horizontal',
-      spacing: 'sm',
-      margin: 'sm',
+    if (i > 0) body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+
+    const left = {
+      type: 'box', layout: 'horizontal', flex: 1, spacing: 'sm', alignItems: 'center',
       contents: [
+        { type: 'text', text: String(t.id), size: 'sm', color: '#94a3b8', flex: 0 },
+        { type: 'text', text: t.content, size: 'md', color: '#1e293b', flex: 1, wrap: false },
+      ],
+    };
+    if (t.remind_at) {
+      left.contents.push({ type: 'text', text: formatTime(t.remind_at), size: 'xs', color: '#94a3b8', flex: 0, align: 'end' });
+    }
+
+    body.push({
+      type: 'box', layout: 'horizontal', alignItems: 'center', spacing: 'sm',
+      paddingTop: 'md', paddingBottom: 'md',
+      contents: [
+        left,
         {
-          type: 'button', style: 'primary', color: '#10b981', height: 'sm', flex: 1,
-          action: { type: 'message', label: '✅ 完成', text: `/todo_done ${t.id}` },
+          type: 'box', layout: 'vertical', width: '30px',
+          action: { type: 'message', label: '完成', text: `/todo_done ${t.id}` },
+          contents: [{ type: 'text', text: '✓', size: 'lg', align: 'center', color: '#10b981' }],
         },
         {
-          type: 'button', style: 'secondary', height: 'sm', flex: 1,
-          action: { type: 'message', label: '🗑️ 刪除', text: `/todo_del ${t.id}` },
+          type: 'box', layout: 'vertical', width: '30px',
+          action: { type: 'message', label: '刪除', text: `/todo_del ${t.id}` },
+          contents: [{ type: 'text', text: '✕', size: 'lg', align: 'center', color: '#94a3b8' }],
         },
       ],
     });
-    rows.push({ type: 'box', layout: 'vertical', paddingAll: '8px', spacing: 'xs', contents: lines });
   });
 
   if (todos.length > MAX) {
-    rows.push({ type: 'separator', margin: 'md' });
-    rows.push({ type: 'text', text: `還有 ${todos.length - MAX} 筆未顯示`, size: 'xxs', color: '#94a3b8', align: 'center', margin: 'sm' });
+    body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+    body.push({ type: 'text', text: `還有 ${todos.length - MAX} 筆`, size: 'xxs', color: '#94a3b8', align: 'center', margin: 'md' });
   }
 
   return {
     type: 'flex',
-    altText: '📋 待辦列表',
+    altText: '待辦列表',
     contents: {
       type: 'bubble',
-      header: {
-        type: 'box', layout: 'vertical', backgroundColor: '#10b981', paddingAll: '16px',
-        contents: [
-          { type: 'text', text: '📋 待辦列表', color: '#ffffff', weight: 'bold', size: 'lg' },
-          { type: 'text', text: `共 ${todos.length} 筆 · 點按鈕完成或刪除`, color: '#d1fae5', size: 'xs', margin: 'xs' },
-        ],
-      },
-      body: { type: 'box', layout: 'vertical', paddingAll: '12px', spacing: 'sm', contents: rows },
+      body: { type: 'box', layout: 'vertical', paddingAll: '18px', contents: body },
     },
   };
 }

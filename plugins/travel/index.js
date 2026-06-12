@@ -35,51 +35,47 @@ function shortUrl(url) {
   return s.length > 36 ? s.slice(0, 36) + '…' : s;
 }
 
-/** 建立「整列可點」的旅遊清單 Flex（點任一列開該連結） */
+/** 建立旅遊清單 Flex（簡約式：單色、極細分隔、整列可點開連結） */
 function buildClickableList(items) {
-  const rows = [];
-  items.forEach((t, i) => {
-    if (i > 0) rows.push({ type: 'separator', margin: 'sm' });
-    rows.push({
-      type: 'box',
-      layout: 'vertical',
-      paddingAll: '8px',
-      spacing: 'xs',
+  const MAX = 20;
+  const shown = items.slice(0, MAX);
+
+  const body = [
+    { type: 'text', text: `旅遊 · ${items.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
+    { type: 'separator', margin: 'md', color: '#f1f5f9' },
+  ];
+
+  shown.forEach((t, i) => {
+    if (i > 0) body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+    body.push({
+      type: 'box', layout: 'horizontal', alignItems: 'center', spacing: 'sm',
+      paddingTop: 'md', paddingBottom: 'md',
       action: { type: 'uri', label: '開啟', uri: t.url },
       contents: [
+        { type: 'text', text: String(t.id), size: 'sm', color: '#94a3b8', flex: 0 },
         {
-          type: 'text',
-          text: `#${t.id}  ${t.title || shortUrl(t.url)}`,
-          size: 'sm', weight: 'bold', color: '#0369a1', wrap: true,
-        },
-        {
-          type: 'box',
-          layout: 'horizontal',
+          type: 'box', layout: 'vertical', flex: 1, spacing: 'xs',
           contents: [
-            { type: 'text', text: shortUrl(t.url), size: 'xxs', color: '#94a3b8', flex: 3, wrap: false },
-            { type: 'text', text: formatDate(t.created_at), size: 'xxs', color: '#94a3b8', align: 'end', flex: 2 },
+            { type: 'text', text: t.title || shortUrl(t.url), size: 'md', color: '#1e293b', wrap: false },
+            { type: 'text', text: shortUrl(t.url), size: 'xxs', color: '#cbd5e1', wrap: false },
           ],
         },
+        { type: 'text', text: '↗', size: 'lg', color: '#cbd5e1', flex: 0, align: 'end' },
       ],
     });
   });
 
+  if (items.length > MAX) {
+    body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+    body.push({ type: 'text', text: `還有 ${items.length - MAX} 筆`, size: 'xxs', color: '#94a3b8', align: 'center', margin: 'md' });
+  }
+
   return {
     type: 'flex',
-    altText: '🧳 旅遊清單',
+    altText: '旅遊清單',
     contents: {
       type: 'bubble',
-      header: {
-        type: 'box', layout: 'vertical', backgroundColor: COLOR, paddingAll: '16px',
-        contents: [
-          { type: 'text', text: '🧳 旅遊清單', color: '#ffffff', weight: 'bold', size: 'lg' },
-          { type: 'text', text: '點任一筆開啟連結', color: '#e0f2fe', size: 'xs', margin: 'xs' },
-        ],
-      },
-      body: {
-        type: 'box', layout: 'vertical', paddingAll: '12px', spacing: 'sm',
-        contents: rows,
-      },
+      body: { type: 'box', layout: 'vertical', paddingAll: '18px', contents: body },
     },
   };
 }
