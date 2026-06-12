@@ -30,23 +30,92 @@ function formatDate(isoStr) {
   });
 }
 
+const COLOR = '#6366f1'; // 靛紫
+
+// ── 位置序號解析（畫面顯示 1,2,3… 連號，不用資料庫 id） ──
+function getUndoneWork(userId) {
+  return db.all(
+    `SELECT id, content, done, created_at FROM work_items
+     WHERE user_id = ? AND done = 0
+     ORDER BY id`,
+    userId
+  );
+}
+
+function workByIndex(userId, n) {
+  return getUndoneWork(userId)[n - 1] || null;
+}
+
 // ── 新增工作事項（共用：/work_add 與 /work <內容> 都用這個） ──
 function addWork(content, userId) {
   const text = content.trim();
-  const result = db.run(
+  db.run(
     `INSERT INTO work_items (user_id, content, done, created_at)
      VALUES (?, ?, 0, datetime('now', '+8 hours'))`,
     userId, text
   );
-  const id = result.lastInsertRowid;
-  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-  const dateStr = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  return flex.card({
-    title: '✅ 已記錄工作事項',
-    body: `#${id}  ${text}\n📅 ${dateStr}`,
-    color: '#6366f1',
+  return flex.mini({
+    icon: '✓',
+    title: '已記錄工作',
+    body: text,
+    accent: COLOR,
     actions: [{ label: '查看列表', text: '/work' }],
   });
+}
+
+// ── 互動式工作清單（簡約式：單色、極細分隔、右側 ✓ ✕ 小圖示） ──
+function buildWorkList(items) {
+  const MAX = 12;
+  const shown = items.slice(0, MAX);
+
+  const body = [
+    { type: 'text', text: `工作 · ${items.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
+    { type: 'separator', margin: 'md', color: '#f1f5f9' },
+  ];
+
+  shown.forEach((t, i) => {
+    if (i > 0) body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+    const pos = i + 1;
+    body.push({
+      type: 'box', layout: 'horizontal', alignItems: 'center', spacing: 'sm',
+      paddingTop: 'md', paddingBottom: 'md',
+      contents: [
+        {
+          type: 'box', layout: 'horizontal', flex: 1, spacing: 'sm', alignItems: 'center',
+          contents: [
+            { type: 'text', text: String(pos), size: 'sm', color: '#94a3b8', flex: 0 },
+            { type: 'text', text: t.content, size: 'md', color: '#1e293b', flex: 1, wrap: false },
+            { type: 'text', text: formatDate(t.created_at), size: 'xs', color: '#94a3b8', flex: 0, align: 'end' },
+          ],
+        },
+        {
+          type: 'box', layout: 'vertical', width: '30px',
+          action: { type: 'message', label: '完成', text: `/work_done ${pos}` },
+          contents: [{ type: 'text', text: '✓', size: 'lg', align: 'center', color: '#10b981' }],
+        },
+        {
+          type: 'box', layout: 'vertical', width: '30px',
+          action: { type: 'message', label: '刪除', text: `/work_del ${pos}` },
+          contents: [{ type: 'text', text: '✕', size: 'lg', align: 'center', color: '#94a3b8' }],
+        },
+      ],
+    });
+  });
+
+  if (items.length > MAX) {
+    body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+    body.push({ type: 'text', text: `還有 ${items.length - MAX} 筆`, size: 'xxs', color: '#94a3b8', align: 'center', margin: 'md' });
+  }
+
+  return {
+    type: 'flex',
+    altText: '工作事項',
+    contents: {
+      type: 'bubble',
+      size: 'giga',
+      body: { type: 'box', layout: 'vertical', paddingAll: '18px', contents: body },
+    },
+  };
 }
 
 // ── Plugin 定義 ──────────────────────────────────────
@@ -86,18 +155,10 @@ export default {
       type: 'query',
       handler: async (_match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const items = db.all(
-          `SELECT id, content, done, created_at FROM work_items
-           WHERE user_id = ? AND done = 0
-           ORDER BY id`,
-          ctx.userId
-        );
+        const items = getUndoneWork(ctx.userId);
         if (!items.length) return '📋 沒有進行中的工作事項！\n輸入 /work_add <內容> 新增';
 
-        return flex.list('💼 工作事項', items.map(t => ({
-          label: `#${t.id}  ${t.content}`,
-          value: formatDate(t.created_at),
-        })), '#6366f1');
+        return buildWorkList(items);
       },
     },
     {
@@ -108,18 +169,14 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const id = +match[1];
-        const item = db.get(
-          'SELECT * FROM work_items WHERE id = ? AND user_id = ?',
-          id, ctx.userId
-        );
-        if (!item) return `❌ 找不到 #${id}`;
-        if (item.done) return `⚠️ #${id} 已經完成了`;
+        const n = +match[1];
+        const item = workByIndex(ctx.userId, n);
+        if (!item) return `❌ 找不到第 ${n} 筆`;
         db.run(
           `UPDATE work_items SET done = 1, done_at = datetime('now', '+8 hours') WHERE id = ?`,
-          id
+          item.id
         );
-        return `✅ 完成：#${id} ${item.content}`;
+        return `✅ 完成：${item.content}`;
       },
     },
     {
@@ -130,14 +187,11 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const id = +match[1];
-        const item = db.get(
-          'SELECT * FROM work_items WHERE id = ? AND user_id = ?',
-          id, ctx.userId
-        );
-        if (!item) return `❌ 找不到 #${id}`;
-        db.run('DELETE FROM work_items WHERE id = ?', id);
-        return `🗑️ 已刪除：#${id} ${item.content}`;
+        const n = +match[1];
+        const item = workByIndex(ctx.userId, n);
+        if (!item) return `❌ 找不到第 ${n} 筆`;
+        db.run('DELETE FROM work_items WHERE id = ?', item.id);
+        return `🗑️ 已刪除：${item.content}`;
       },
     },
     {
@@ -148,15 +202,12 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const id = +match[1];
+        const n = +match[1];
         const newContent = match[2].trim();
-        const item = db.get(
-          'SELECT * FROM work_items WHERE id = ? AND user_id = ?',
-          id, ctx.userId
-        );
-        if (!item) return `❌ 找不到 #${id}`;
-        db.run('UPDATE work_items SET content = ? WHERE id = ?', newContent, id);
-        return `📝 已修改 #${id}：${newContent}`;
+        const item = workByIndex(ctx.userId, n);
+        if (!item) return `❌ 找不到第 ${n} 筆`;
+        db.run('UPDATE work_items SET content = ? WHERE id = ?', newContent, item.id);
+        return `📝 已修改第 ${n} 筆：${newContent}`;
       },
     },
     {
@@ -176,11 +227,11 @@ export default {
         if (!items.length) return '📋 沒有工作事項記錄';
 
         const lines = ['💼 工作事項（全部）', ''];
-        for (const t of items) {
+        items.forEach((t, i) => {
           const status = t.done ? '✅' : '⬜';
           const doneInfo = t.done && t.done_at ? ` (${formatDate(t.done_at)})` : '';
-          lines.push(`${status} #${t.id}  ${t.content}${doneInfo}`);
-        }
+          lines.push(`${status} ${i + 1}.  ${t.content}${doneInfo}`);
+        });
 
         const pending = items.filter(t => !t.done).length;
         const completed = items.filter(t => t.done).length;
