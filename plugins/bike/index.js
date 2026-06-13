@@ -20,6 +20,22 @@ let db;
 
 const COLOR = '#f97316'; // 橘色（滑步車）
 
+// 冠軍標準秒數：年齡 → { 距離: 秒數 }（10/30/50 米）
+const CHAMPION = {
+  3: { 10: 2.4, 30: 6.0, 50: 9.4 },
+  4: { 10: 2.3, 30: 5.8, 50: 9.0 },
+  5: { 10: 2.2, 30: 5.4, 50: 8.5 },
+  6: { 10: 2.1, 30: 5.0, 50: 8.0 },
+  7: { 10: 2.0, 30: 4.8, 50: 7.8 },
+  8: { 10: 1.9, 30: 4.6, 50: 7.6 },
+};
+const CHAMP_DISTANCES = [10, 30, 50];
+
+// 取某年齡某距離的冠軍標準（沒有則 null）
+function championTarget(age, distance) {
+  return CHAMPION[age]?.[distance] ?? null;
+}
+
 // ── 時間/日期工具 ──────────────────────────────────────
 function nowTW() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
@@ -132,16 +148,30 @@ function buildSummary(player, stats, dates) {
     return bubble(body);
   }
 
-  body.push({ type: 'text', text: '📊 成績統計（依距離）', size: 'sm', color: '#64748b', weight: 'bold', margin: 'lg' });
+  const age = ageOf(player.birthday);
+  body.push({ type: 'text', text: `📊 成績統計（依距離） · 目標 ${age}歲冠軍`, size: 'sm', color: '#64748b', weight: 'bold', margin: 'lg' });
   stats.forEach((s) => {
+    const target = championTarget(age, s.distance);
+    const hit = target != null && s.best <= target;
+    // 達標狀態文字
+    let status = '';
+    let statusColor = '#94a3b8';
+    if (target != null) {
+      if (hit) { status = '✅ 達標'; statusColor = '#16a34a'; }
+      else { status = `差 ${(s.best - target).toFixed(2)}`; statusColor = COLOR; }
+    }
     body.push({
       type: 'box', layout: 'horizontal', alignItems: 'center', margin: 'md', spacing: 'sm',
       contents: [
         { type: 'text', text: `${s.distance}米`, size: 'md', weight: 'bold', color: '#1e293b', flex: 0 },
-        { type: 'text', text: `平均 ${s.avg.toFixed(2)}　最快 ${s.best.toFixed(2)} 秒`, size: 'sm', color: '#475569', flex: 1, align: 'end', wrap: false },
+        { type: 'text', text: `最快 ${s.best.toFixed(2)} 秒`, size: 'sm', color: '#475569', flex: 1, align: 'end', wrap: false },
+        ...(status ? [{ type: 'text', text: status, size: 'sm', weight: 'bold', color: statusColor, flex: 0, align: 'end' }] : []),
       ],
     });
-    body.push({ type: 'text', text: `${s.n} 筆記錄`, size: 'xxs', color: '#cbd5e1', align: 'end' });
+    const sub = [`平均 ${s.avg.toFixed(2)}`];
+    if (target != null) sub.push(`目標 ${target.toFixed(2)}`);
+    sub.push(`${s.n}筆`);
+    body.push({ type: 'text', text: sub.join('　'), size: 'xxs', color: '#cbd5e1', align: 'end' });
   });
 
   body.push({ type: 'separator', margin: 'lg', color: '#f1f5f9' });
@@ -210,6 +240,33 @@ function buildDayList(player, date, records) {
       ],
     });
   });
+  return bubble(body);
+}
+
+// 冠軍標準表
+function buildChampion() {
+  const cell = (text, opts = {}) => ({ type: 'text', text, size: opts.size || 'sm', flex: opts.flex ?? 1, align: opts.align || 'end', color: opts.color || '#475569', weight: opts.weight, wrap: false });
+  const body = [
+    { type: 'text', text: '🏆 冠軍標準（秒）', size: 'sm', color: '#64748b', weight: 'bold' },
+    { type: 'separator', margin: 'md', color: '#f1f5f9' },
+    {
+      type: 'box', layout: 'horizontal', spacing: 'sm', margin: 'md',
+      contents: [
+        cell('年齡', { flex: 2, align: 'start', color: '#94a3b8', size: 'xs' }),
+        ...CHAMP_DISTANCES.map(d => cell(`${d}米`, { color: '#94a3b8', size: 'xs' })),
+      ],
+    },
+    { type: 'separator', margin: 'sm', color: '#f1f5f9' },
+  ];
+  for (const age of Object.keys(CHAMPION).map(Number)) {
+    body.push({
+      type: 'box', layout: 'horizontal', spacing: 'sm', margin: 'md', alignItems: 'center',
+      contents: [
+        cell(`${age}歲`, { flex: 2, align: 'start', color: '#1e293b', weight: 'bold' }),
+        ...CHAMP_DISTANCES.map(d => cell(CHAMPION[age][d].toFixed(1))),
+      ],
+    });
+  }
   return bubble(body);
 }
 
@@ -364,6 +421,14 @@ export default {
         });
         return bubble(body);
       },
+    },
+    // /冠軍 — 冠軍標準秒數表
+    {
+      name: 'champion',
+      pattern: /^\/冠軍$/i,
+      describe: '/冠軍 — 各年齡冠軍標準秒數',
+      type: 'query',
+      handler: async (_match, _ctx) => buildChampion(),
     },
   ],
 
