@@ -198,7 +198,7 @@ async function main() {
   }, { type: 'query', name: 'list-perms', plugin: '_system', describe: '/權限 — 查看本群開放的功能', scope: 'all' });
 
   // /開通 <功能...> — 管理員在群組開放功能（即時生效 + 寫回 groups.json）
-  router.add(/^\/開通\s+(.+)$/i, async (match, ctx) => {
+  router.add(/^\/開通\s*(.+)$/i, async (match, ctx) => {
     if (!ctx.groupId) return '請在要開通的群組裡使用此指令';
     if (!isAdmin(ctx.userId)) {
       console.log(`[admin] /開通 denied for ${ctx.userId}`);
@@ -206,7 +206,7 @@ async function main() {
         ? '⛔ 尚未設定管理員\n請先私訊我打 /設為管理員 認領'
         : '⛔ 僅管理員可用';
     }
-    const want = match[1].trim().split(/\s+/);
+    const want = match[1].trim().toLowerCase().split(/\s+/);
     const valid = want.filter(p => openablePlugins.has(p));
     const invalid = want.filter(p => !openablePlugins.has(p));
     if (!valid.length) return `沒有可開通的功能\n可用：${[...openablePlugins].join('、')}`;
@@ -222,10 +222,10 @@ async function main() {
   }, { type: 'query', name: 'open-plugin', plugin: '_system', describe: '/開通 <功能> — （管理員）開放功能到本群', scope: 'all' });
 
   // /關閉 <功能...> — 管理員移除群組功能
-  router.add(/^\/關閉\s+(.+)$/i, async (match, ctx) => {
+  router.add(/^\/關閉\s*(.+)$/i, async (match, ctx) => {
     if (!ctx.groupId) return '請在要關閉的群組裡使用此指令';
     if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
-    const want = match[1].trim().split(/\s+/);
+    const want = match[1].trim().toLowerCase().split(/\s+/);
     const cur = new Set(groupPerms[ctx.groupId] || []);
     const removed = want.filter(p => cur.has(p));
     removed.forEach(p => cur.delete(p));
