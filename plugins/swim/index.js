@@ -2,13 +2,14 @@
  * Swim Plugin — 游泳練習秒數記錄
  *
  * 指令：
- *   /新增泳將 綸綸 20180713        → 建立泳將（需名稱 + 西元生日 8 碼）
- *   /泳紀錄 綸綸 50米45.2秒         → 記錄秒數（可多人多筆；相容 記/紀）
- *   /泳查詢 綸綸                    → 統計（依距離分平均/最快）+ 最近 3 個記錄日期
- *   /泳查詢 綸綸 6                  → 該月所有記錄日期
- *   /泳查詢 綸綸 2026-06-13         → 當天記錄清單（每筆可刪除）
- *   /泳將                          → 列出所有泳將
+ *   /游泳新增選手 綸綸 20180713          → 建立選手（需名稱 + 西元生日 8 碼）
+ *   /游泳紀錄 綸綸 自由式 50米45.2秒       → 記錄秒數（須含泳式，可多人多筆；相容 記/紀）
+ *   /游泳查詢 綸綸                        → 統計（依泳式×距離分平均/最快）+ 最近 3 日期
+ *   /游泳查詢 綸綸 6                      → 該月所有記錄日期
+ *   /游泳查詢 綸綸 2026-06-13             → 當天記錄清單（每筆可刪除）
+ *   /游泳選手                            → 列出所有選手
  *
+ * 泳式：自由式 / 仰式 / 蛙式 / 蝶式
  * 資料共享（不分使用者）：swim_players / swim_records（SQLite）
  * 需求 Provider：db（SQLite）；選用 GEMINI_API_KEY（解析 fallback）
  *
@@ -21,6 +22,16 @@ import { parseRecords, initParseGemini } from '../../src/lib/timing-parse.js';
 let db;
 
 const COLOR = '#06b6d4'; // 青色（游泳）
+
+// 泳式
+const SWIM_STROKES = [
+  { name: '自由式', aliases: ['自由式', '自由'] },
+  { name: '仰式', aliases: ['仰式', '仰'] },
+  { name: '蛙式', aliases: ['蛙式', '蛙'] },
+  { name: '蝶式', aliases: ['蝶式', '蝶'] },
+];
+const STROKE_ORDER = ['自由式', '仰式', '蛙式', '蝶式'];
+function strokeIdx(s) { const i = STROKE_ORDER.indexOf(s); return i < 0 ? 99 : i; }
 
 // ── 時間/日期工具 ──────────────────────────────────────
 function nowTW() {
@@ -65,13 +76,16 @@ function isValidBirthday(b) {
 function findPlayer(name) {
   return db.get('SELECT * FROM swim_players WHERE name = ?', name);
 }
-function distanceStats(playerId) {
-  return db.all(
-    `SELECT distance, COUNT(*) n, AVG(seconds) avg, MIN(seconds) best
+// 依泳式 × 距離統計
+function strokeStats(playerId) {
+  const rows = db.all(
+    `SELECT stroke, distance, COUNT(*) n, AVG(seconds) avg, MIN(seconds) best
      FROM swim_records WHERE player_id = ?
-     GROUP BY distance ORDER BY distance`,
+     GROUP BY stroke, distance`,
     playerId
   );
+  rows.sort((a, b) => strokeIdx(a.stroke) - strokeIdx(b.stroke) || a.distance - b.distance);
+  return rows;
 }
 function recentDates(playerId, limit) {
   return db.all(
@@ -89,12 +103,13 @@ function monthDates(playerId, ymPrefix) {
   );
 }
 function dayRecords(playerId, date) {
-  return db.all(
-    `SELECT id, distance, seconds FROM swim_records
-     WHERE player_id = ? AND recorded_date = ?
-     ORDER BY distance, seconds`,
+  const rows = db.all(
+    `SELECT id, stroke, distance, seconds FROM swim_records
+     WHERE player_id = ? AND recorded_date = ?`,
     playerId, date
   );
+  rows.sort((a, b) => strokeIdx(a.stroke) - strokeIdx(b.stroke) || a.distance - b.distance || a.seconds - b.seconds);
+  return rows;
 }
 
 function classifyDate(arg) {
@@ -133,20 +148,25 @@ function buildSummary(player, stats, dates) {
 
   if (!stats.length) {
     body.push({ type: 'text', text: '尚無秒數記錄', size: 'sm', color: '#64748b', margin: 'lg' });
-    body.push({ type: 'text', text: `用「/泳紀錄 ${player.name} 50米45秒」開始記錄`, size: 'xs', color: '#94a3b8', margin: 'sm', wrap: true });
+    body.push({ type: 'text', text: `用「/游泳紀錄 ${player.name} 自由式 50米45秒」開始記錄`, size: 'xs', color: '#94a3b8', margin: 'sm', wrap: true });
     return bubble(body);
   }
 
-  body.push({ type: 'text', text: '📊 成績統計（依距離）', size: 'sm', color: '#64748b', weight: 'bold', margin: 'lg' });
+  body.push({ type: 'text', text: '📊 成績統計（依泳式 × 距離）', size: 'sm', color: '#64748b', weight: 'bold', margin: 'lg' });
+  let lastStroke = null;
   stats.forEach((s) => {
+    if (s.stroke !== lastStroke) {
+      lastStroke = s.stroke;
+      body.push({ type: 'text', text: s.stroke || '（未分類）', size: 'sm', weight: 'bold', color: COLOR, margin: 'md' });
+    }
     body.push({
-      type: 'box', layout: 'horizontal', alignItems: 'center', margin: 'md', spacing: 'sm',
+      type: 'box', layout: 'horizontal', alignItems: 'center', margin: 'sm', spacing: 'sm',
       contents: [
         { type: 'text', text: `${s.distance}米`, size: 'md', weight: 'bold', color: '#1e293b', flex: 0 },
         { type: 'text', text: `平均 ${s.avg.toFixed(2)}　最快 ${s.best.toFixed(2)} 秒`, size: 'sm', color: '#475569', flex: 1, align: 'end', wrap: false },
       ],
     });
-    body.push({ type: 'text', text: `${s.n} 筆記錄`, size: 'xxs', color: '#cbd5e1', align: 'end' });
+    body.push({ type: 'text', text: `${s.n} 筆`, size: 'xxs', color: '#cbd5e1', align: 'end' });
   });
 
   body.push({ type: 'separator', margin: 'lg', color: '#f1f5f9' });
@@ -161,7 +181,7 @@ function buildSummary(player, stats, dates) {
 function dateRow(playerName, d) {
   return {
     type: 'box', layout: 'horizontal', alignItems: 'center', paddingTop: 'md', paddingBottom: 'md', spacing: 'sm',
-    action: { type: 'message', label: '查看', text: `/泳查詢 ${playerName} ${d.d}` },
+    action: { type: 'message', label: '查看', text: `/游泳查詢 ${playerName} ${d.d}` },
     contents: [
       { type: 'text', text: mmdd(d.d), size: 'md', color: '#1e293b', flex: 0 },
       { type: 'text', text: `${d.n} 筆`, size: 'sm', color: '#94a3b8', flex: 1, align: 'end' },
@@ -204,13 +224,13 @@ function buildDayList(player, date, records) {
         {
           type: 'box', layout: 'horizontal', flex: 1, spacing: 'sm', alignItems: 'center',
           contents: [
-            { type: 'text', text: `${r.distance}米`, size: 'md', color: '#1e293b', weight: 'bold', flex: 0 },
-            { type: 'text', text: `${r.seconds.toFixed(2)} 秒`, size: 'md', color: '#475569', flex: 1, align: 'end' },
+            { type: 'text', text: `${r.stroke || ''} ${r.distance}米`.trim(), size: 'md', color: '#1e293b', weight: 'bold', flex: 1, wrap: false },
+            { type: 'text', text: `${r.seconds.toFixed(2)} 秒`, size: 'md', color: '#475569', flex: 0, align: 'end' },
           ],
         },
         {
           type: 'box', layout: 'vertical', width: '30px',
-          action: { type: 'message', label: '刪除', text: `/刪泳秒 ${r.id}` },
+          action: { type: 'message', label: '刪除', text: `/游泳刪除 ${r.id}` },
           contents: [{ type: 'text', text: '✕', size: 'lg', align: 'center', color: '#94a3b8' }],
         },
       ],
@@ -227,8 +247,8 @@ export default {
   commands: [
     {
       name: 'add-swimmer',
-      pattern: /^\/新增泳將\s+(.+)$/i,
-      describe: '/新增泳將 <名稱> <生日YYYYMMDD> — 建立泳將',
+      pattern: /^\/游泳新增選手\s+(.+)$/i,
+      describe: '/游泳新增選手 <名稱> <生日YYYYMMDD> — 建立選手',
       type: 'query',
       handler: async (match, _ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -236,31 +256,31 @@ export default {
         const bd = raw.match(/\d{8}/);
         const birthday = bd ? bd[0] : null;
         const name = raw.replace(/\d{8}/, ' ').replace(/\s+/g, ' ').trim();
-        if (!name || !birthday) return '需要名稱和生日（西元 8 碼）\n例：/新增泳將 綸綸 20180713';
+        if (!name || !birthday) return '需要名稱和生日（西元 8 碼）\n例：/游泳新增選手 綸綸 20180713';
         if (!isValidBirthday(birthday)) return '生日格式錯誤，需西元 8 碼 YYYYMMDD\n例：20180713';
-        if (findPlayer(name)) return `泳將「${name}」已存在`;
+        if (findPlayer(name)) return `選手「${name}」已存在`;
         db.run(
           `INSERT INTO swim_players (name, birthday, created_at)
            VALUES (?, ?, datetime('now', '+8 hours'))`,
           name, birthday
         );
         return flex.mini({
-          icon: '🏊', title: '已新增泳將', accent: COLOR,
+          icon: '🏊', title: '已新增選手', accent: COLOR,
           body: `${name}\n生日 ${fmtBirthday(birthday)}（${ageOf(birthday)} 歲）`,
-          actions: [{ label: '查詢成績', text: `/泳查詢 ${name}` }],
+          actions: [{ label: '查詢成績', text: `/游泳查詢 ${name}` }],
         });
       },
     },
     {
       name: 'add-record',
-      pattern: /^\/泳[紀記]錄\s+(.+)$/i,
-      describe: '/泳紀錄 <名稱> <距離>米<秒數>秒 — 記錄秒數',
+      pattern: /^\/游泳[紀記]錄\s+(.+)$/i,
+      describe: '/游泳紀錄 <名稱> <泳式> <距離>米<秒數>秒 — 記錄秒數',
       type: 'query',
       handler: async (match, _ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const records = await parseRecords(match[1]);
+        const records = await parseRecords(match[1], { categories: SWIM_STROKES });
         if (!records.length) {
-          return '看不懂秒數格式 🤔\n例：/泳紀錄 綸綸 50米45.2秒\n（可多筆，用逗號或換行分隔）';
+          return '看不懂格式 🤔\n例：/游泳紀錄 綸綸 自由式 50米45.2秒\n泳式：自由式/仰式/蛙式/蝶式（必填）\n（可多筆，用逗號或換行分隔）';
         }
         const date = todayTW();
         const ok = [];
@@ -269,30 +289,30 @@ export default {
           const player = findPlayer(r.name);
           if (!player) { notFound.add(r.name); continue; }
           db.run(
-            `INSERT INTO swim_records (player_id, distance, seconds, recorded_date, created_at)
-             VALUES (?, ?, ?, ?, datetime('now', '+8 hours'))`,
-            player.id, r.distance, r.seconds, date
+            `INSERT INTO swim_records (player_id, stroke, distance, seconds, recorded_date, created_at)
+             VALUES (?, ?, ?, ?, ?, datetime('now', '+8 hours'))`,
+            player.id, r.category || '', r.distance, r.seconds, date
           );
-          ok.push(`${player.name}　${r.distance}米 ${r.seconds.toFixed(2)}秒`);
+          ok.push(`${player.name}　${r.category} ${r.distance}米 ${r.seconds.toFixed(2)}秒`);
         }
         const lines = [];
         if (ok.length) lines.push(...ok);
         if (notFound.size) {
-          lines.push(`⚠️ 找不到泳將：${[...notFound].join('、')}`);
-          lines.push('請先 /新增泳將 <名稱> <生日>');
+          lines.push(`⚠️ 找不到選手：${[...notFound].join('、')}`);
+          lines.push('請先 /游泳新增選手 <名稱> <生日>');
         }
         if (!ok.length) return lines.join('\n');
         return flex.mini({
           icon: '⏱️', title: `已記錄 ${ok.length} 筆`, accent: COLOR,
           body: lines.join('\n'),
-          actions: notFound.size ? [] : [{ label: '查詢成績', text: `/泳查詢 ${records[0].name}` }],
+          actions: notFound.size ? [] : [{ label: '查詢成績', text: `/游泳查詢 ${records[0].name}` }],
         });
       },
     },
     {
       name: 'query',
-      pattern: /^\/泳查詢\s+(.+)$/i,
-      describe: '/泳查詢 <名稱> [月份/日期] — 查詢成績與記錄',
+      pattern: /^\/游泳查詢\s+(.+)$/i,
+      describe: '/游泳查詢 <名稱> [月份/日期] — 查詢成績與記錄',
       type: 'query',
       handler: async (match, _ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -300,13 +320,13 @@ export default {
         const name = args[0];
         const dateArg = args[1] || '';
         const player = findPlayer(name);
-        if (!player) return `找不到泳將「${name}」\n用 /新增泳將 ${name} <生日> 建立`;
+        if (!player) return `找不到選手「${name}」\n用 /游泳新增選手 ${name} <生日> 建立`;
 
         if (!dateArg) {
-          return buildSummary(player, distanceStats(player.id), recentDates(player.id, 3));
+          return buildSummary(player, strokeStats(player.id), recentDates(player.id, 3));
         }
         const cls = classifyDate(dateArg);
-        if (!cls) return '日期格式看不懂\n月份：/泳查詢 名字 6\n當天：/泳查詢 名字 0613';
+        if (!cls) return '日期格式看不懂\n月份：/游泳查詢 名字 6\n當天：/游泳查詢 名字 0613';
         if (cls.type === 'month') {
           return buildDateList(player, cls.label, monthDates(player.id, cls.prefix));
         }
@@ -315,7 +335,7 @@ export default {
     },
     {
       name: 'del-record',
-      pattern: /^\/刪泳秒\s+(\d+)$/i,
+      pattern: /^\/游泳刪除\s+(\d+)$/i,
       describe: '',
       type: 'query',
       handler: async (match, _ctx) => {
@@ -328,27 +348,27 @@ export default {
         );
         if (!rec) return `❌ 找不到該筆記錄`;
         db.run('DELETE FROM swim_records WHERE id = ?', id);
-        return `🗑️ 已刪除：${rec.name} ${rec.distance}米 ${rec.seconds.toFixed(2)}秒`;
+        return `🗑️ 已刪除：${rec.name} ${rec.stroke || ''} ${rec.distance}米 ${rec.seconds.toFixed(2)}秒`;
       },
     },
     {
       name: 'list-swimmers',
-      pattern: /^\/泳將$/i,
-      describe: '/泳將 — 列出所有泳將',
+      pattern: /^\/游泳選手$/i,
+      describe: '/游泳選手 — 列出所有選手',
       type: 'query',
       handler: async (_match, _ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
         const players = db.all('SELECT name, birthday FROM swim_players ORDER BY name');
-        if (!players.length) return '還沒有泳將\n用 /新增泳將 <名稱> <生日> 建立';
+        if (!players.length) return '還沒有選手\n用 /游泳新增選手 <名稱> <生日> 建立';
         const body = [
-          { type: 'text', text: `🏊 泳將 · ${players.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
+          { type: 'text', text: `🏊 游泳選手 · ${players.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
           { type: 'separator', margin: 'md', color: '#f1f5f9' },
         ];
         players.forEach((p, i) => {
           if (i > 0) body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
           body.push({
             type: 'box', layout: 'horizontal', alignItems: 'center', paddingTop: 'md', paddingBottom: 'md', spacing: 'sm',
-            action: { type: 'message', label: '查詢', text: `/泳查詢 ${p.name}` },
+            action: { type: 'message', label: '查詢', text: `/游泳查詢 ${p.name}` },
             contents: [
               { type: 'text', text: p.name, size: 'md', color: '#1e293b', flex: 1 },
               { type: 'text', text: `${ageOf(p.birthday)}歲`, size: 'sm', color: '#94a3b8', flex: 0, align: 'end' },
@@ -381,12 +401,18 @@ export default {
       CREATE TABLE IF NOT EXISTS swim_records (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         player_id INTEGER NOT NULL,
+        stroke TEXT DEFAULT '',
         distance INTEGER NOT NULL,
         seconds REAL NOT NULL,
         recorded_date TEXT NOT NULL,
         created_at TEXT NOT NULL
       )
     `);
+    // 既有表補 stroke 欄位（升級相容）
+    const cols = db.all('PRAGMA table_info(swim_records)').map(c => c.name);
+    if (!cols.includes('stroke')) {
+      db.exec("ALTER TABLE swim_records ADD COLUMN stroke TEXT DEFAULT ''");
+    }
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_swim_player_name ON swim_players (name)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_swim_rec ON swim_records (player_id, recorded_date)');
     initParseGemini();
