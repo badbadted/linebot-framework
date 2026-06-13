@@ -2,7 +2,7 @@
  * Swim Plugin — 游泳練習秒數記錄
  *
  * 指令：
- *   /游泳新增選手 綸綸 20180713          → 建立選手（需名稱 + 西元生日 8 碼）
+ *   /新增游泳選手 綸綸 20180713          → 建立選手（需名稱 + 西元生日 8 碼）
  *   /游泳紀錄 綸綸 自由式 50米45.2秒       → 記錄秒數（須含泳式，可多人多筆；相容 記/紀）
  *   /游泳查詢 綸綸                        → 統計（依泳式×距離分平均/最快）+ 最近 3 日期
  *   /游泳查詢 綸綸 6                      → 該月所有記錄日期
@@ -247,8 +247,8 @@ export default {
   commands: [
     {
       name: 'add-swimmer',
-      pattern: /^\/游泳新增選手\s+(.+)$/i,
-      describe: '/游泳新增選手 <名稱> <生日YYYYMMDD> — 建立選手',
+      pattern: /^\/(?:新增游泳選手|游泳新增選手)\s+(.+)$/i,
+      describe: '/新增游泳選手 <名稱> <生日YYYYMMDD> — 建立選手',
       type: 'query',
       handler: async (match, _ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -256,7 +256,7 @@ export default {
         const bd = raw.match(/\d{8}/);
         const birthday = bd ? bd[0] : null;
         const name = raw.replace(/\d{8}/, ' ').replace(/\s+/g, ' ').trim();
-        if (!name || !birthday) return '需要名稱和生日（西元 8 碼）\n例：/游泳新增選手 綸綸 20180713';
+        if (!name || !birthday) return '需要名稱和生日（西元 8 碼）\n例：/新增游泳選手 綸綸 20180713';
         if (!isValidBirthday(birthday)) return '生日格式錯誤，需西元 8 碼 YYYYMMDD\n例：20180713';
         if (findPlayer(name)) return `選手「${name}」已存在`;
         db.run(
@@ -299,7 +299,7 @@ export default {
         if (ok.length) lines.push(...ok);
         if (notFound.size) {
           lines.push(`⚠️ 找不到選手：${[...notFound].join('、')}`);
-          lines.push('請先 /游泳新增選手 <名稱> <生日>');
+          lines.push('請先 /新增游泳選手 <名稱> <生日>');
         }
         if (!ok.length) return lines.join('\n');
         return flex.mini({
@@ -320,7 +320,7 @@ export default {
         const name = args[0];
         const dateArg = args[1] || '';
         const player = findPlayer(name);
-        if (!player) return `找不到選手「${name}」\n用 /游泳新增選手 ${name} <生日> 建立`;
+        if (!player) return `找不到選手「${name}」\n用 /新增游泳選手 ${name} <生日> 建立`;
 
         if (!dateArg) {
           return buildSummary(player, strokeStats(player.id), recentDates(player.id, 3));
@@ -359,7 +359,7 @@ export default {
       handler: async (_match, _ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
         const players = db.all('SELECT name, birthday FROM swim_players ORDER BY name');
-        if (!players.length) return '還沒有選手\n用 /游泳新增選手 <名稱> <生日> 建立';
+        if (!players.length) return '還沒有選手\n用 /新增游泳選手 <名稱> <生日> 建立';
         const body = [
           { type: 'text', text: `🏊 游泳選手 · ${players.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
           { type: 'separator', margin: 'md', color: '#f1f5f9' },
