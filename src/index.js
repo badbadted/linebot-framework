@@ -10,7 +10,7 @@
  */
 
 import express from 'express';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createRouter } from './core/router.js';
@@ -153,6 +153,88 @@ async function main() {
     describe: '/雷達 — 即時雷達回波圖',
     scope: 'all',
   });
+
+  // ── 管理員權限（config/admin.json）+ 群組開通指令 ──────
+  const adminPath = resolve(ROOT, 'config/admin.json');
+  function loadAdmins() {
+    try {
+      const raw = JSON.parse(readFileSync(adminPath, 'utf-8'));
+      return Array.isArray(raw.adminUserIds) ? raw.adminUserIds : [];
+    } catch { return []; }
+  }
+  let adminUserIds = loadAdmins();
+  const isAdmin = (uid) => adminUserIds.includes(uid);
+
+  // 可開通的功能：已載入的 plugin + 虛擬 _llm 對話權限
+  const openablePlugins = new Set([...loaded, '_llm']);
+
+  // 把某群組權限寫回 config/groups.json（保留 _name/_doc 等說明欄位）
+  const groupsPath = resolve(ROOT, 'config/groups.json');
+  function persistGroupPerms(groupId, plugins) {
+    let raw = {};
+    try { raw = JSON.parse(readFileSync(groupsPath, 'utf-8')); } catch { /* 新檔 */ }
+    raw[groupId] = plugins;
+    writeFileSync(groupsPath, JSON.stringify(raw, null, 2) + '\n');
+  }
+
+  // /設為管理員 — 首次認領（限私訊、限尚無管理員）
+  router.add(/^\/設為管理員$/i, async (_match, ctx) => {
+    if (ctx.groupId) return '請私訊我使用此指令';
+    if (adminUserIds.length > 0) {
+      return isAdmin(ctx.userId) ? '你已經是管理員了 ✅' : '管理員已設定，無法重複認領';
+    }
+    adminUserIds = [ctx.userId];
+    writeFileSync(adminPath, JSON.stringify({ adminUserIds }, null, 2) + '\n');
+    console.log(`[admin] claimed by ${ctx.userId}`);
+    return '✅ 你已成為管理員\n之後可在任何群組打 /開通 <功能> 開放使用';
+  }, { type: 'query', name: 'claim-admin', plugin: '_system', scope: 'all' });
+
+  // /權限 — 查看當前群組已開放的功能
+  router.add(/^\/權限$/i, async (_match, ctx) => {
+    if (!ctx.groupId) return '私訊不受限，所有功能都能用';
+    const cur = groupPerms[ctx.groupId] || [];
+    if (!cur.length) return '本群尚未開放任何功能\n管理員可用 /開通 <功能> 開放';
+    return `本群已開放：\n${cur.join('、')}`;
+  }, { type: 'query', name: 'list-perms', plugin: '_system', describe: '/權限 — 查看本群開放的功能', scope: 'all' });
+
+  // /開通 <功能...> — 管理員在群組開放功能（即時生效 + 寫回 groups.json）
+  router.add(/^\/開通\s+(.+)$/i, async (match, ctx) => {
+    if (!ctx.groupId) return '請在要開通的群組裡使用此指令';
+    if (!isAdmin(ctx.userId)) {
+      console.log(`[admin] /開通 denied for ${ctx.userId}`);
+      return adminUserIds.length === 0
+        ? '⛔ 尚未設定管理員\n請先私訊我打 /設為管理員 認領'
+        : '⛔ 僅管理員可用';
+    }
+    const want = match[1].trim().split(/\s+/);
+    const valid = want.filter(p => openablePlugins.has(p));
+    const invalid = want.filter(p => !openablePlugins.has(p));
+    if (!valid.length) return `沒有可開通的功能\n可用：${[...openablePlugins].join('、')}`;
+    const cur = new Set(groupPerms[ctx.groupId] || []);
+    valid.forEach(p => cur.add(p));
+    groupPerms[ctx.groupId] = [...cur];
+    router.setGroupPermissions(groupPerms);
+    persistGroupPerms(ctx.groupId, groupPerms[ctx.groupId]);
+    const lines = [`✅ 已開通：${valid.join('、')}`];
+    if (invalid.length) lines.push(`⚠️ 略過未知功能：${invalid.join('、')}`);
+    lines.push(`本群現可用：${groupPerms[ctx.groupId].join('、')}`);
+    return lines.join('\n');
+  }, { type: 'query', name: 'open-plugin', plugin: '_system', describe: '/開通 <功能> — （管理員）開放功能到本群', scope: 'all' });
+
+  // /關閉 <功能...> — 管理員移除群組功能
+  router.add(/^\/關閉\s+(.+)$/i, async (match, ctx) => {
+    if (!ctx.groupId) return '請在要關閉的群組裡使用此指令';
+    if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
+    const want = match[1].trim().split(/\s+/);
+    const cur = new Set(groupPerms[ctx.groupId] || []);
+    const removed = want.filter(p => cur.has(p));
+    removed.forEach(p => cur.delete(p));
+    groupPerms[ctx.groupId] = [...cur];
+    router.setGroupPermissions(groupPerms);
+    persistGroupPerms(ctx.groupId, groupPerms[ctx.groupId]);
+    if (!removed.length) return '本群沒有這些功能可關閉';
+    return `🗑️ 已關閉：${removed.join('、')}\n本群現可用：${groupPerms[ctx.groupId].join('、') || '（無）'}`;
+  }, { type: 'query', name: 'close-plugin', plugin: '_system', describe: '', scope: 'all' });
 
   // LLM fallback：私訊 + 有 _llm 權限的群組，未匹配指令時用 LLM 回覆
   const llm = registry.get('llm');
