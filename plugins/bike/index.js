@@ -135,7 +135,7 @@ function buildSummary(player, stats, dates) {
   body.push({ type: 'text', text: '📊 成績統計（依距離）', size: 'sm', color: '#64748b', weight: 'bold', margin: 'lg' });
   stats.forEach((s) => {
     body.push({
-      type: 'box', layout: 'horizontal', alignItems: 'baseline', margin: 'md', spacing: 'sm',
+      type: 'box', layout: 'horizontal', alignItems: 'center', margin: 'md', spacing: 'sm',
       contents: [
         { type: 'text', text: `${s.distance}米`, size: 'md', weight: 'bold', color: '#1e293b', flex: 0 },
         { type: 'text', text: `平均 ${s.avg.toFixed(2)}　最快 ${s.best.toFixed(2)} 秒`, size: 'sm', color: '#475569', flex: 1, align: 'end', wrap: false },
@@ -196,7 +196,7 @@ function buildDayList(player, date, records) {
       type: 'box', layout: 'horizontal', alignItems: 'center', paddingTop: 'md', paddingBottom: 'md', spacing: 'sm',
       contents: [
         {
-          type: 'box', layout: 'horizontal', flex: 1, spacing: 'sm', alignItems: 'baseline',
+          type: 'box', layout: 'horizontal', flex: 1, spacing: 'sm', alignItems: 'center',
           contents: [
             { type: 'text', text: `${r.distance}米`, size: 'md', color: '#1e293b', weight: 'bold', flex: 0 },
             { type: 'text', text: `${r.seconds.toFixed(2)} 秒`, size: 'md', color: '#475569', flex: 1, align: 'end' },

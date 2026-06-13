@@ -23,8 +23,8 @@ export function initParseGemini() {
 
 // 分段符號：換行、逗號、頓號、分號
 const SEP = /[\n,，、;；]+/;
-// 單段格式：<名稱> <距離>米/公尺/m <秒數>秒/s
-const REC_RE = /^\s*(.+?)\s*(\d+(?:\.\d+)?)\s*(?:米|公尺|m)\s*(\d+(?:\.\d+)?)\s*(?:秒|s)?\s*$/i;
+// 名稱：開頭連續的中文/英文字
+const NAME_RE = /^\s*([一-龥A-Za-z·]+)/;
 
 // 全形數字/小數點/空格 → 半形
 function normalizeDigits(s) {
@@ -34,18 +34,29 @@ function normalizeDigits(s) {
     .replace(/　/g, ' ');
 }
 
-/** 規則解析（回傳 [{name, distance, seconds}]） */
+/**
+ * 規則解析（回傳 [{name, distance, seconds}]）
+ * 每段格式：<名稱> <距離> <秒數1> [秒數2 ...]
+ *   - 單位（米/公尺/秒）可有可無
+ *   - 第一個數字 = 距離，其餘 = 多筆秒數（同距離多趟）
+ * 例：鈞鈞 10米2.1秒 / 鈞鈞 10 2.13 2.14 2.15
+ */
 export function parseRecordsRegex(text) {
   const out = [];
   for (const seg of normalizeDigits(text).split(SEP)) {
     const s = seg.trim();
     if (!s) continue;
-    const m = s.match(REC_RE);
-    if (!m) continue;
-    const name = m[1].trim();
-    const distance = Math.round(parseFloat(m[2]));
-    const seconds = parseFloat(m[3]);
-    if (name && distance > 0 && seconds > 0) out.push({ name, distance, seconds });
+    const nameM = s.match(NAME_RE);
+    if (!nameM) continue;
+    const name = nameM[1].trim();
+    const rest = s.slice(nameM[0].length);
+    const nums = (rest.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+    if (nums.length < 2) continue; // 需要 距離 + 至少一個秒數
+    const distance = Math.round(nums[0]);
+    if (distance <= 0) continue;
+    for (const sec of nums.slice(1)) {
+      if (sec > 0) out.push({ name, distance, seconds: sec });
+    }
   }
   return out;
 }
