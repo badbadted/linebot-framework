@@ -160,11 +160,22 @@ function bubble(body) {
 }
 
 function buildSummary(player, stats, dates) {
+  const curAge = ageOf(player.birthday);
+  const champ = CHAMPION[curAge];
   const body = [
     { type: 'text', text: `🚲 ${player.name}`, size: 'lg', weight: 'bold', color: '#1e293b' },
-    { type: 'text', text: `${ageOf(player.birthday)} 歲 · 生日 ${fmtBirthday(player.birthday)}`, size: 'xs', color: '#94a3b8', margin: 'xs' },
-    { type: 'separator', margin: 'lg', color: '#f1f5f9' },
+    { type: 'text', text: `${curAge} 歲 · 生日 ${fmtBirthday(player.birthday)}`, size: 'xs', color: '#94a3b8', margin: 'xs' },
   ];
+  if (champ) {
+    body.push({
+      type: 'box', layout: 'horizontal', margin: 'md', spacing: 'sm',
+      contents: [
+        { type: 'text', text: `🏆 ${curAge}歲標準`, size: 'xs', color: '#94a3b8', flex: 0 },
+        ...CHAMP_DISTANCES.map(d => ({ type: 'text', text: `${d}米 ${champ[d].toFixed(1)}`, size: 'xs', color: '#475569', align: 'end', flex: 1 })),
+      ],
+    });
+  }
+  body.push({ type: 'separator', margin: 'lg', color: '#f1f5f9' });
 
   if (!stats.length) {
     body.push({ type: 'text', text: '尚無秒數記錄', size: 'sm', color: '#64748b', margin: 'lg' });
@@ -338,7 +349,7 @@ export default {
     // /紀錄 鈞鈞 10米2.1秒（可多人多筆）
     {
       name: 'add-record',
-      pattern: /^\/紀錄\s+(.+)$/i,
+      pattern: /^\/[紀記]錄\s+(.+)$/i,
       describe: '/紀錄 <名稱> <距離>米<秒數>秒 — 記錄秒數',
       type: 'query',
       handler: async (match, _ctx) => {
