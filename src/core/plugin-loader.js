@@ -162,40 +162,54 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
     }
   }
 
-  // ── 內建指令：/help ──────────────────────────────────
-  router.add(/^\/help$/i, async (_match, ctx) => {
+  // ── 內建指令：/help（總覽）、/help <模組>（單模組完整指令）──
+  const MODULE_NAMES = {
+    bike: '🚲 滑步車', swim: '🏊 游泳', todo: '📋 待辦', work: '💼 工作',
+    travel: '🧳 旅遊', niujiu: '🍜 妞揪', fitness: '💪 健身', routines: '⏰ 例行',
+    _system: '⚙️ 系統',
+  };
+  const moduleLabel = (p) => MODULE_NAMES[p] || p;
+
+  router.add(/^\/help(?:\s+(.+))?$/i, async (match, ctx) => {
+    const keyword = (match[1] || '').trim();
     const isGroup = ctx.sourceType === 'group' || ctx.sourceType === 'room';
     const groupPerms = router.getGroupPermissions();
-    const allowed = ctx.groupId
-      ? (groupPerms[ctx.groupId] || groupPerms['*'] || [])
-      : null;
+    const allowed = ctx.groupId ? (groupPerms[ctx.groupId] || groupPerms['*'] || []) : null;
 
-    const allRoutes = router.list()
-      .filter(r => {
-        if (!r.describe) return false;
-        if (r.plugin === '_system') return false;
-        // 群組中只顯示有權限的 plugin
-        if (isGroup && allowed && !allowed.includes(r.plugin)) return false;
-        // scope 過濾
-        if (r.scope === 'private' && isGroup) return false;
-        if (r.scope === 'group' && !isGroup) return false;
-        return true;
-      });
+    const visible = router.list().filter(r => {
+      if (!r.describe) return false;
+      // 群組權限（_system 不受限）
+      if (isGroup && allowed && r.plugin !== '_system' && !allowed.includes(r.plugin)) return false;
+      if (r.scope === 'private' && isGroup) return false;
+      if (r.scope === 'group' && !isGroup) return false;
+      return true;
+    });
 
-    if (!allRoutes.length) return '📖 目前沒有可用的指令';
+    // 依 plugin 分群，去重 describe（保留順序）
+    const grouped = new Map();
+    for (const r of visible) {
+      if (!grouped.has(r.plugin)) grouped.set(r.plugin, new Set());
+      grouped.get(r.plugin).add(r.describe);
+    }
+    if (!grouped.size) return '📖 目前沒有可用的指令';
 
-    // 依 plugin 分群，去除重複 describe
-    const grouped = {};
-    for (const r of allRoutes) {
-      if (!grouped[r.plugin]) grouped[r.plugin] = new Set();
-      grouped[r.plugin].add(r.describe);
+    // /help <模組>：列出該模組完整指令
+    if (keyword) {
+      const kw = keyword.toLowerCase();
+      let target = null;
+      for (const p of grouped.keys()) {
+        if (p.toLowerCase().includes(kw) || moduleLabel(p).includes(keyword)) { target = p; break; }
+      }
+      if (!target) return `找不到模組「${keyword}」\n輸入 /help 看所有模組`;
+      return `${moduleLabel(target)} 指令\n\n${[...grouped.get(target)].join('\n')}`;
     }
 
-    const sections = Object.entries(grouped).map(
-      ([plugin, descs]) => `【${plugin}】\n${[...descs].join('\n')}`
-    );
-
-    return `📖 可用指令\n\n${sections.join('\n\n')}\n\n輸入 /help 隨時查看`;
+    // /help：模組總覽
+    const lines = ['📖 指令總覽', ''];
+    for (const [p, descs] of grouped) lines.push(`${moduleLabel(p)}　${descs.size} 個指令`);
+    lines.push('');
+    lines.push('輸入「/help <模組>」看完整指令\n例：/help 游泳');
+    return lines.join('\n');
   }, {
     type: 'query',
     name: 'help',

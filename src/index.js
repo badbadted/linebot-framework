@@ -234,7 +234,7 @@ async function main() {
     persistGroupPerms(ctx.groupId, groupPerms[ctx.groupId]);
     if (!removed.length) return '本群沒有這些功能可關閉';
     return `🗑️ 已關閉：${removed.join('、')}\n本群現可用：${groupPerms[ctx.groupId].join('、') || '（無）'}`;
-  }, { type: 'query', name: 'close-plugin', plugin: '_system', describe: '', scope: 'all' });
+  }, { type: 'query', name: 'close-plugin', plugin: '_system', describe: '/關閉 <功能> — （管理員）移除本群功能', scope: 'all' });
 
   // LLM fallback：私訊 + 有 _llm 權限的群組，未匹配指令時用 LLM 回覆
   const llm = registry.get('llm');
