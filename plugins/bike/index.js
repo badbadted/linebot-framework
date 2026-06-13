@@ -42,6 +42,12 @@ function ageOf(birthday) {
   if (now.getMonth() + 1 < m || (now.getMonth() + 1 === m && now.getDate() < d)) age--;
   return age;
 }
+// 全形數字/空格 → 半形
+function normalizeDigits(s) {
+  return String(s)
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/　/g, ' ');
+}
 function isValidBirthday(b) {
   if (!/^\d{8}$/.test(b)) return false;
   const y = +b.slice(0, 4), m = +b.slice(4, 6), d = +b.slice(6, 8);
@@ -221,9 +227,11 @@ export default {
       type: 'query',
       handler: async (match, _ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const parts = match[1].trim().split(/\s+/);
-        const birthday = parts.find(p => /^\d{8}$/.test(p));
-        const name = parts.filter(p => p !== birthday).join(' ').trim();
+        // 從整串抓出 8 碼數字當生日，剩下當名字（黏一起或有空格都可）
+        const raw = normalizeDigits(match[1]).trim();
+        const bd = raw.match(/\d{8}/);
+        const birthday = bd ? bd[0] : null;
+        const name = raw.replace(/\d{8}/, ' ').replace(/\s+/g, ' ').trim();
         if (!name || !birthday) {
           return '需要名稱和生日（西元 8 碼）\n例：/新增選手 鈞鈞 20180713';
         }

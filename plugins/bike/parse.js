@@ -26,10 +26,18 @@ const SEP = /[\n,，、;；]+/;
 // 單段格式：<名稱> <距離>米/公尺/m <秒數>秒/s
 const REC_RE = /^\s*(.+?)\s*(\d+(?:\.\d+)?)\s*(?:米|公尺|m)\s*(\d+(?:\.\d+)?)\s*(?:秒|s)?\s*$/i;
 
+// 全形數字/小數點/空格 → 半形
+function normalizeDigits(s) {
+  return String(s)
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/．/g, '.')
+    .replace(/　/g, ' ');
+}
+
 /** 規則解析（回傳 [{name, distance, seconds}]） */
 export function parseRecordsRegex(text) {
   const out = [];
-  for (const seg of String(text).split(SEP)) {
+  for (const seg of normalizeDigits(text).split(SEP)) {
     const s = seg.trim();
     if (!s) continue;
     const m = s.match(REC_RE);
