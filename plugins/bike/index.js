@@ -51,11 +51,18 @@ function mmdd(dateStr) {
 function fmtBirthday(b) {
   return `${b.slice(0, 4)}/${b.slice(4, 6)}/${b.slice(6, 8)}`;
 }
-function ageOf(birthday) {
-  const y = +birthday.slice(0, 4), m = +birthday.slice(4, 6), d = +birthday.slice(6, 8);
-  const now = nowTW();
-  let age = now.getFullYear() - y;
-  if (now.getMonth() + 1 < m || (now.getMonth() + 1 === m && now.getDate() < d)) age--;
+// 年齡：預設算「現在」，給 refDate（YYYY-MM-DD）則算「當天」的年齡
+function ageOf(birthday, refDate) {
+  const by = +birthday.slice(0, 4), bm = +birthday.slice(4, 6), bd = +birthday.slice(6, 8);
+  let ry, rm, rd;
+  if (refDate) {
+    [ry, rm, rd] = refDate.split('-').map(Number);
+  } else {
+    const n = nowTW();
+    ry = n.getFullYear(); rm = n.getMonth() + 1; rd = n.getDate();
+  }
+  let age = ry - by;
+  if (rm < bm || (rm === bm && rd < bd)) age--;
   return age;
 }
 // 全形數字/空格 → 半形
@@ -75,13 +82,30 @@ function isValidBirthday(b) {
 function findPlayer(name) {
   return db.get('SELECT * FROM bike_players WHERE name = ?', name);
 }
-function statsByDistance(playerId) {
-  return db.all(
-    `SELECT distance, COUNT(*) n, AVG(seconds) avg, MIN(seconds) best
-     FROM bike_records WHERE player_id = ?
-     GROUP BY distance ORDER BY distance`,
-    playerId
+// 依距離統計：最快成績以「當時年齡」對照冠軍標準判斷達標
+function distanceStats(player) {
+  const recs = db.all(
+    'SELECT distance, seconds, recorded_date FROM bike_records WHERE player_id = ? ORDER BY distance, seconds',
+    player.id
   );
+  const byDist = new Map();
+  for (const r of recs) {
+    if (!byDist.has(r.distance)) byDist.set(r.distance, []);
+    byDist.get(r.distance).push(r);
+  }
+  const out = [];
+  for (const [distance, list] of [...byDist.entries()].sort((a, b) => a[0] - b[0])) {
+    const best = list[0]; // 已按 seconds 升序，第一筆即最快
+    const sum = list.reduce((acc, r) => acc + r.seconds, 0);
+    const ageAtBest = ageOf(player.birthday, best.recorded_date);
+    const target = championTarget(ageAtBest, distance);
+    out.push({
+      distance, n: list.length, avg: sum / list.length,
+      best: best.seconds, bestDate: best.recorded_date,
+      ageAtBest, target, hit: target != null && best.seconds <= target,
+    });
+  }
+  return out;
 }
 function recentDates(playerId, limit) {
   return db.all(
@@ -148,17 +172,14 @@ function buildSummary(player, stats, dates) {
     return bubble(body);
   }
 
-  const age = ageOf(player.birthday);
-  body.push({ type: 'text', text: `📊 成績統計（依距離） · 目標 ${age}歲冠軍`, size: 'sm', color: '#64748b', weight: 'bold', margin: 'lg' });
+  body.push({ type: 'text', text: '📊 成績統計（達標以當時年齡判斷）', size: 'sm', color: '#64748b', weight: 'bold', margin: 'lg' });
   stats.forEach((s) => {
-    const target = championTarget(age, s.distance);
-    const hit = target != null && s.best <= target;
     // 達標狀態文字
     let status = '';
     let statusColor = '#94a3b8';
-    if (target != null) {
-      if (hit) { status = '✅ 達標'; statusColor = '#16a34a'; }
-      else { status = `差 ${(s.best - target).toFixed(2)}`; statusColor = COLOR; }
+    if (s.target != null) {
+      if (s.hit) { status = '✅ 達標'; statusColor = '#16a34a'; }
+      else { status = `差 ${(s.best - s.target).toFixed(2)}`; statusColor = COLOR; }
     }
     body.push({
       type: 'box', layout: 'horizontal', alignItems: 'center', margin: 'md', spacing: 'sm',
@@ -169,7 +190,7 @@ function buildSummary(player, stats, dates) {
       ],
     });
     const sub = [`平均 ${s.avg.toFixed(2)}`];
-    if (target != null) sub.push(`目標 ${target.toFixed(2)}`);
+    if (s.target != null) sub.push(`目標 ${s.target.toFixed(2)}（${s.ageAtBest}歲時）`);
     sub.push(`${s.n}筆`);
     body.push({ type: 'text', text: sub.join('　'), size: 'xxs', color: '#cbd5e1', align: 'end' });
   });
@@ -212,8 +233,9 @@ function buildDateList(player, label, dates) {
 }
 
 function buildDayList(player, date, records) {
+  const ageThen = ageOf(player.birthday, date); // 當天的年齡
   const body = [
-    { type: 'text', text: `🚲 ${player.name} · ${mmdd(date)}`, size: 'sm', color: '#64748b', weight: 'bold' },
+    { type: 'text', text: `🚲 ${player.name} · ${mmdd(date)}（${ageThen}歲）`, size: 'sm', color: '#64748b', weight: 'bold' },
     { type: 'separator', margin: 'md', color: '#f1f5f9' },
   ];
   if (!records.length) {
@@ -222,6 +244,8 @@ function buildDayList(player, date, records) {
   }
   records.forEach((r, i) => {
     if (i > 0) body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+    const target = championTarget(ageThen, r.distance);
+    const hit = target != null && r.seconds <= target;
     body.push({
       type: 'box', layout: 'horizontal', alignItems: 'center', paddingTop: 'md', paddingBottom: 'md', spacing: 'sm',
       contents: [
@@ -230,6 +254,7 @@ function buildDayList(player, date, records) {
           contents: [
             { type: 'text', text: `${r.distance}米`, size: 'md', color: '#1e293b', weight: 'bold', flex: 0 },
             { type: 'text', text: `${r.seconds.toFixed(2)} 秒`, size: 'md', color: '#475569', flex: 1, align: 'end' },
+            ...(hit ? [{ type: 'text', text: '✅', size: 'sm', flex: 0, align: 'end' }] : []),
           ],
         },
         {
@@ -364,7 +389,7 @@ export default {
         if (!player) return `找不到選手「${name}」\n用 /新增選手 ${name} <生日> 建立`;
 
         if (!dateArg) {
-          return buildSummary(player, statsByDistance(player.id), recentDates(player.id, 3));
+          return buildSummary(player, distanceStats(player), recentDates(player.id, 3));
         }
         const cls = classifyDate(dateArg);
         if (!cls) return '日期格式看不懂\n月份：/查詢 名字 6\n當天：/查詢 名字 0613';
