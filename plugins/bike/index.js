@@ -3,7 +3,7 @@
  *
  * 指令：
  *   /新增選手 鈞鈞 20180713        → 建立選手（需名稱 + 西元生日 8 碼）
- *   /新增秒數 鈞鈞 10米2.1秒        → 記錄秒數（可多人多筆，規則解析失敗才丟 LLM）
+ *   /紀錄 鈞鈞 10米2.1秒        → 記錄秒數（可多人多筆，規則解析失敗才丟 LLM）
  *   /查詢 鈞鈞                      → 統計（依距離分平均/最快）+ 最近 3 個記錄日期
  *   /查詢 鈞鈞 6                    → 該月所有記錄日期
  *   /查詢 鈞鈞 2026-06-13           → 當天記錄清單（每筆可刪除）
@@ -168,7 +168,7 @@ function buildSummary(player, stats, dates) {
 
   if (!stats.length) {
     body.push({ type: 'text', text: '尚無秒數記錄', size: 'sm', color: '#64748b', margin: 'lg' });
-    body.push({ type: 'text', text: `用「/新增秒數 ${player.name} 10米2.1秒」開始記錄`, size: 'xs', color: '#94a3b8', margin: 'sm', wrap: true });
+    body.push({ type: 'text', text: `用「/紀錄 ${player.name} 10米2.1秒」開始記錄`, size: 'xs', color: '#94a3b8', margin: 'sm', wrap: true });
     return bubble(body);
   }
 
@@ -335,17 +335,17 @@ export default {
         });
       },
     },
-    // /新增秒數 鈞鈞 10米2.1秒（可多人多筆）
+    // /紀錄 鈞鈞 10米2.1秒（可多人多筆）
     {
       name: 'add-record',
-      pattern: /^\/新增秒數\s+(.+)$/i,
-      describe: '/新增秒數 <名稱> <距離>米<秒數>秒 — 記錄秒數',
+      pattern: /^\/紀錄\s+(.+)$/i,
+      describe: '/紀錄 <名稱> <距離>米<秒數>秒 — 記錄秒數',
       type: 'query',
       handler: async (match, _ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
         const records = await parseRecords(match[1]);
         if (!records.length) {
-          return '看不懂秒數格式 🤔\n例：/新增秒數 鈞鈞 10米2.1秒\n（可多筆，用逗號或換行分隔）';
+          return '看不懂秒數格式 🤔\n例：/紀錄 鈞鈞 10米2.1秒\n（可多筆，用逗號或換行分隔）';
         }
         const date = todayTW();
         const ok = [];
