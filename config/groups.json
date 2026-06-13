@@ -1,12 +1,31 @@
 {
   "_doc": "群組權限：群組預設全關，只有列出的 plugin 可用。私訊不受限。_system 不受限。",
   "_example": {
-    "C群組ID": ["todo", "fitness"],
-    "*": ["todo"]
+    "C群組ID": [
+      "todo",
+      "fitness"
+    ],
+    "*": [
+      "todo"
+    ]
   },
   "_name:C8ed32c7ec84bb16be50eb338bc95073d": "智能管家",
-  "C8ed32c7ec84bb16be50eb338bc95073d": ["niujiu", "todo", "work", "travel", "bike", "_llm"],
+  "C8ed32c7ec84bb16be50eb338bc95073d": [
+    "niujiu",
+    "todo",
+    "work",
+    "travel",
+    "bike",
+    "swim",
+    "_llm"
+  ],
   "_name:C4d42b6072ca86ea3596875949ad37675": "妞揪",
-  "C4d42b6072ca86ea3596875949ad37675": ["niujiu"],
-  "C27524147a75c584c9fdfc28497722133": ["niujiu", "travel"]
+  "C4d42b6072ca86ea3596875949ad37675": [
+    "niujiu"
+  ],
+  "C27524147a75c584c9fdfc28497722133": [
+    "niujiu",
+    "travel",
+    "bike"
+  ]
 }
