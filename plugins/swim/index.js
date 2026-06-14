@@ -76,6 +76,44 @@ function isValidBirthday(b) {
 function findPlayer(name) {
   return db.get('SELECT * FROM swim_players WHERE name = ?', name);
 }
+
+// ── LINE 帳號綁定選手 ──────────────────────────────────
+function getBoundPlayers(userId) {
+  return db.all(
+    `SELECT p.* FROM swim_bindings b JOIN swim_players p ON p.id = b.player_id
+     WHERE b.user_id = ? ORDER BY p.name`,
+    userId
+  );
+}
+function bindPlayer(userId, playerId) {
+  db.run(
+    `INSERT OR IGNORE INTO swim_bindings (user_id, player_id, created_at)
+     VALUES (?, ?, datetime('now', '+8 hours'))`,
+    userId, playerId
+  );
+}
+function unbindPlayer(userId, playerId) {
+  db.run('DELETE FROM swim_bindings WHERE user_id = ? AND player_id = ?', userId, playerId);
+}
+function buildBoundPicker(players) {
+  const body = [
+    { type: 'text', text: `🏊 我的選手 · ${players.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
+    { type: 'separator', margin: 'md', color: '#f1f5f9' },
+  ];
+  players.forEach((p, i) => {
+    if (i > 0) body.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+    body.push({
+      type: 'box', layout: 'horizontal', alignItems: 'center', paddingTop: 'md', paddingBottom: 'md', spacing: 'sm',
+      action: { type: 'message', label: '查詢', text: `/游泳查詢 ${p.name}` },
+      contents: [
+        { type: 'text', text: p.name, size: 'md', color: '#1e293b', flex: 1 },
+        { type: 'text', text: `${ageOf(p.birthday)}歲`, size: 'sm', color: '#94a3b8', flex: 0, align: 'end' },
+        { type: 'text', text: '›', size: 'lg', color: '#cbd5e1', flex: 0, align: 'end' },
+      ],
+    });
+  });
+  return bubble(body);
+}
 // 依泳式 × 距離統計
 function strokeStats(playerId) {
   const rows = db.all(
@@ -276,11 +314,21 @@ export default {
       pattern: /^\/游泳[紀記]錄\s+(.+)$/i,
       describe: '/游泳紀錄 <名稱> <泳式> <距離>米<秒數>秒 — 記錄秒數',
       type: 'query',
-      handler: async (match, _ctx) => {
+      handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const records = await parseRecords(match[1], { categories: SWIM_STROKES });
+        const input = match[1];
+        let records = await parseRecords(input, { categories: SWIM_STROKES });
+        // 無名字（如 /游泳紀錄 自由式 50 45）→ 用綁定選手
+        if (!records.length && /\d/.test(normalizeDigits(input))) {
+          const bound = getBoundPlayers(ctx.userId);
+          if (bound.length === 1) {
+            records = await parseRecords(`${bound[0].name} ${input}`, { categories: SWIM_STROKES });
+          } else if (bound.length > 1) {
+            return '你綁定多位選手，請指定名字：\n/游泳紀錄 <名字> <泳式> <距離> <秒數>';
+          }
+        }
         if (!records.length) {
-          return '看不懂格式 🤔\n例：/游泳紀錄 綸綸 自由式 50米45.2秒\n泳式：自由式/仰式/蛙式/蝶式（必填）\n（可多筆，用逗號或換行分隔）';
+          return '看不懂格式 🤔\n例：/游泳紀錄 綸綸 自由式 50米45.2秒\n泳式：自由式/仰式/蛙式/蝶式（必填）\n綁定後可省略名字：/游泳紀錄 自由式 50 45';
         }
         const date = todayTW();
         const ok = [];
@@ -311,12 +359,23 @@ export default {
     },
     {
       name: 'query',
-      pattern: /^\/游泳查詢\s+(.+)$/i,
-      describe: '/游泳查詢 <名稱> [月份/日期] — 查詢成績與記錄',
+      pattern: /^\/游泳查詢(?:\s+(.+))?$/i,
+      describe: '/游泳查詢 [名稱] [月份/日期] — 查詢成績（綁定後可省略名稱）',
       type: 'query',
-      handler: async (match, _ctx) => {
+      handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const args = match[1].trim().split(/\s+/);
+        const argStr = (match[1] || '').trim();
+        // 不帶名字 → 用綁定選手
+        if (!argStr) {
+          const bound = getBoundPlayers(ctx.userId);
+          if (!bound.length) return '你還沒綁定選手\n用 /游泳綁定 <選手名> 綁定，或 /游泳查詢 <選手名> 直接查';
+          if (bound.length === 1) {
+            const p = bound[0];
+            return buildSummary(p, strokeStats(p.id), recentDates(p.id, 3));
+          }
+          return buildBoundPicker(bound);
+        }
+        const args = argStr.split(/\s+/);
         const name = args[0];
         const dateArg = args[1] || '';
         const player = findPlayer(name);
@@ -331,6 +390,56 @@ export default {
           return buildDateList(player, cls.label, monthDates(player.id, cls.prefix));
         }
         return buildDayList(player, cls.date, dayRecords(player.id, cls.date));
+      },
+    },
+    {
+      name: 'bind',
+      pattern: /^\/游泳綁定\s+(.+)$/i,
+      describe: '/游泳綁定 <選手名> — 綁定選手，之後 /游泳查詢 /游泳紀錄 可省略名稱',
+      type: 'query',
+      handler: async (match, ctx) => {
+        if (!db) return '❌ 此 BOT 未啟用資料庫';
+        const name = match[1].trim();
+        const player = findPlayer(name);
+        if (!player) return `找不到選手「${name}」\n用 /新增游泳選手 ${name} <生日> 建立`;
+        bindPlayer(ctx.userId, player.id);
+        return flex.mini({
+          icon: '🔗', title: '已綁定選手', accent: COLOR,
+          body: `${name}\n之後打 /游泳查詢 直接看他、/游泳紀錄 自由式 50 45 直接記`,
+          actions: [{ label: '查詢成績', text: `/游泳查詢 ${name}` }],
+        });
+      },
+    },
+    {
+      name: 'unbind',
+      pattern: /^\/游泳解綁(?:\s+(.+))?$/i,
+      describe: '/游泳解綁 [選手名] — 解除綁定（不填解除全部）',
+      type: 'query',
+      handler: async (match, ctx) => {
+        if (!db) return '❌ 此 BOT 未啟用資料庫';
+        const name = (match[1] || '').trim();
+        const bound = getBoundPlayers(ctx.userId);
+        if (!bound.length) return '你沒有綁定任何選手';
+        if (!name) {
+          db.run('DELETE FROM swim_bindings WHERE user_id = ?', ctx.userId);
+          return `已解除全部綁定（${bound.length} 位）`;
+        }
+        const player = findPlayer(name);
+        if (!player) return `找不到選手「${name}」`;
+        unbindPlayer(ctx.userId, player.id);
+        return `已解綁：${name}`;
+      },
+    },
+    {
+      name: 'my-bindings',
+      pattern: /^\/我的游泳綁定$/i,
+      describe: '/我的游泳綁定 — 查看綁定的選手',
+      type: 'query',
+      handler: async (_match, ctx) => {
+        if (!db) return '❌ 此 BOT 未啟用資料庫';
+        const bound = getBoundPlayers(ctx.userId);
+        if (!bound.length) return '你還沒綁定選手\n用 /游泳綁定 <選手名> 綁定';
+        return buildBoundPicker(bound);
       },
     },
     {
@@ -413,8 +522,17 @@ export default {
     if (!cols.includes('stroke')) {
       db.exec("ALTER TABLE swim_records ADD COLUMN stroke TEXT DEFAULT ''");
     }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS swim_bindings (
+        user_id TEXT NOT NULL,
+        player_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, player_id)
+      )
+    `);
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_swim_player_name ON swim_players (name)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_swim_rec ON swim_records (player_id, recorded_date)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_swim_bind_user ON swim_bindings (user_id)');
     initParseGemini();
     console.log('[swim] ready');
   },
