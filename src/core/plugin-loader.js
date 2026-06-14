@@ -58,6 +58,7 @@ function buildPrefixedPattern(prefix, command, argsPattern) {
 
 export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, providers, enabledList }) {
   const loaded = [];
+  const moduleHelp = {}; // plugin.name → 完整使用說明（plugin.helpText）
 
   let entries;
   try {
@@ -156,6 +157,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
       }
 
       loaded.push(plugin.name);
+      if (plugin.helpText) moduleHelp[plugin.name] = plugin.helpText;
       console.log(`[plugin-loader] loaded: ${plugin.name} (${plugin.commands?.length || 0} cmds, ${plugin.schedules?.length || 0} schedules)`);
     } catch (err) {
       console.error(`[plugin-loader] failed to load ${pluginName}: ${err.message}`);
@@ -201,6 +203,8 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
         if (p.toLowerCase().includes(kw) || moduleLabel(p).includes(keyword)) { target = p; break; }
       }
       if (!target) return `找不到模組「${keyword}」\n輸入 /help 看所有模組`;
+      // 有完整使用說明就用說明，否則退回指令清單
+      if (moduleHelp[target]) return moduleHelp[target];
       return `${moduleLabel(target)} 指令\n\n${[...grouped.get(target)].join('\n')}`;
     }
 
