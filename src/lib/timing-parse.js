@@ -49,31 +49,58 @@ function buildAliasList(categories) {
  * 每段格式：<名稱> [分類] <距離> <秒數1> [秒數2 ...]
  *   - 單位（米/公尺/秒）可有可無
  *   - 第一個數字 = 距離，其餘 = 多筆秒數（同距離多趟）
- *   - opts.categories 給定時（如泳式），每段須含一個分類關鍵字，否則略過
- * 例：鈞鈞 10米2.1秒 / 綸綸 自由式 50米45.2秒
+ *   - opts.categories 給定時（如泳式），須含分類關鍵字
+ *   - 接續沿用：同一則訊息內，後段省略的「名字 / 距離 / 分類」自動沿用前一段
+ * 例：鈞鈞 10 2.0 2.1 / 鈞鈞 10 2.0、2.1 / 綸綸 自由式 50 45、52
  */
 export function parseRecordsRegex(text, opts = {}) {
   const aliasList = buildAliasList(opts.categories);
   const out = [];
+  let lastName = null, lastDistance = null, lastCategory = null;
   for (const seg0 of normalizeDigits(text).split(SEP)) {
     let s = seg0.trim();
     if (!s) continue;
-    let category;
+
+    // 分類（如泳式）：找不到就沿用前一段
+    let category = null;
     if (aliasList) {
       const found = aliasList.find(a => s.includes(a.alias));
-      if (!found) continue; // 需要分類關鍵字
-      category = found.name;
-      s = s.replace(found.alias, ' '); // 移除分類關鍵字再抓名稱/數字
+      if (found) { category = found.name; s = s.replace(found.alias, ' '); }
     }
+
+    // 名稱：找不到就沿用前一段
     const nameM = s.match(NAME_RE);
-    if (!nameM) continue;
-    const name = nameM[1].trim();
-    const rest = s.slice(nameM[0].length);
+    let name = nameM ? nameM[1].trim() : null;
+    const rest = nameM ? s.slice(nameM[0].length) : s;
     const nums = (rest.match(/\d+(?:\.\d+)?/g) || []).map(Number);
-    if (nums.length < 2) continue; // 需要 距離 + 至少一個秒數
-    const distance = Math.round(nums[0]);
+
+    if (!name) name = lastName;
+    if (!name) continue; // 無法歸屬（前面也沒名字）
+    if (aliasList) {
+      if (!category) category = lastCategory;
+      if (!category) continue; // 需要分類但從頭到此都沒給
+    }
+
+    // 數字：>=2 → 距離+多秒；=1 → 沿用前一段距離的單筆秒數
+    let distance, times;
+    if (nums.length >= 2) {
+      distance = Math.round(nums[0]);
+      times = nums.slice(1);
+    } else if (nums.length === 1) {
+      if (lastDistance == null) continue;
+      distance = lastDistance;
+      times = [nums[0]];
+    } else {
+      continue;
+    }
     if (distance <= 0) continue;
-    for (const sec of nums.slice(1)) {
+
+    // 更新接續狀態
+    lastName = name;
+    lastDistance = distance;
+    if (category) lastCategory = category;
+
+    for (const sec of times) {
       if (sec > 0) out.push(category ? { name, category, distance, seconds: sec } : { name, distance, seconds: sec });
     }
   }
