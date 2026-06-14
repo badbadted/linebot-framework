@@ -49,6 +49,13 @@ function formatStats(rows) {
 
 export default {
   name: 'fitness',
+  helpText: `💪 健身 使用說明
+
+① 記錄運動：/fit_log 跑步 5
+　（運動名稱 + 公里數）
+② 本週統計：/fit
+
+每週日自動推播運動週報`,
   prefix: 'fit',
   defaultCommand: 'weekly-stats',
 

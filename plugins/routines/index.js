@@ -155,6 +155,12 @@ function createPushHandler(message, emoji) {
 
 export default {
   name: 'routines',
+  helpText: `⏰ 例行 使用說明
+
+/rt　查看目前的例行推播清單
+
+例行事項依排程自動推播提醒，
+清單與排程由管理員維護`,
   prefix: 'rt',
   description: '例行事項 — 定時推播提醒',
   version: '1.1.0',

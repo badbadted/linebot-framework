@@ -121,6 +121,16 @@ function buildWorkList(items) {
 // ── Plugin 定義 ──────────────────────────────────────
 export default {
   name: 'work',
+  helpText: `💼 工作事項 使用說明
+
+① 新增：/work 準備週會報告
+② 看清單：/work（每筆有 ✓完成 / ✕刪除 按鈕）
+③ 完成：/work_done 1　或點清單的 ✓
+④ 刪除：/work_del 1　或點清單的 ✕
+⑤ 修改：/work_edit 1 新內容
+⑥ 全部（含已完成）：/work_all
+
+編號是清單上的位置，刪除後會自動連號`,
   prefix: 'work',
   defaultCommand: 'list-work',
   scope: 'all',

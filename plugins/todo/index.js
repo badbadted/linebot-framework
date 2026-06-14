@@ -175,6 +175,16 @@ function scheduleReminder(id, userId, content, remindAt) {
 // ── Plugin 定義 ──────────────────────────────────────
 export default {
   name: 'todo',
+  helpText: `📋 待辦 使用說明
+
+① 新增：/todo 買牛奶
+② 看清單：/todo（每筆有 ✓完成 / ✕刪除 按鈕）
+③ 完成：/todo_done 2　或點清單的 ✓
+④ 刪除：/todo_del 2　或點清單的 ✕
+⑤ 修改：/todo_edit 2 買豆漿
+⑥ 提醒：/todo_remind 2 18:00（或「明天 09:00」）
+
+編號是清單上的位置，刪除後會自動連號`,
   prefix: 'todo',
   defaultCommand: 'list-todos',
   scope: 'all',  // 群組和私訊都可用，資料以 userId 區分

@@ -153,6 +153,15 @@ async function fetchMeta(url) {
 // ── Plugin 定義 ──────────────────────────────────────
 export default {
   name: 'travel',
+  helpText: `🧳 旅遊 使用說明
+
+① 記錄連結：/旅遊 <網址>
+　會自動抓網頁標題（抓不到也會把連結存起來）
+② 看清單：/旅遊（點任一筆直接開連結）
+③ 刪除：/旅遊_del 1
+④ 全部（含完整網址）：/旅遊_all
+
+之後可整合到你的新系統`,
   prefix: '旅遊',
   defaultCommand: 'list-travel',
   scope: 'all',

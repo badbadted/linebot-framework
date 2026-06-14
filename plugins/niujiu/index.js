@@ -284,6 +284,19 @@ async function remindTomorrowEvents({ lineApi }) {
 
 export default {
   name: 'niujiu',
+  helpText: `🍜 妞揪 使用說明
+
+【活動】
+　/nj　近期活動清單
+　/nj_info <活動名>　活動詳情
+　/nj_remind [小時]　即將到來的活動
+
+【美食】
+　/美食 <連結>　加入美食記錄
+　Google Maps／IG／FB／部落格都行，AI 自動辨識餐廳
+
+每晚 8 點自動推播明日活動到妞揪群組
+活動取消、即將額滿也會即時通知`,
   prefix: 'nj',
   description: '妞揪 — 親子活動揪團',
   version: '1.0.0',
