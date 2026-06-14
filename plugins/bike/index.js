@@ -30,10 +30,18 @@ const CHAMPION = {
   8: { 10: 1.9, 30: 4.6, 50: 7.6 },
 };
 const CHAMP_DISTANCES = [10, 30, 50];
+const CHAMP_AGES = Object.keys(CHAMPION).map(Number);
+const CHAMP_MIN = Math.min(...CHAMP_AGES);
+const CHAMP_MAX = Math.max(...CHAMP_AGES);
 
-// 取某年齡某距離的冠軍標準（沒有則 null）
+// 年齡夾擠到有標準的範圍：超過上限用上限（>8 用 8）、低於下限用下限
+function clampChampAge(age) {
+  return age > CHAMP_MAX ? CHAMP_MAX : age < CHAMP_MIN ? CHAMP_MIN : age;
+}
+
+// 取某年齡某距離的冠軍標準（年齡自動夾擠）
 function championTarget(age, distance) {
-  return CHAMPION[age]?.[distance] ?? null;
+  return CHAMPION[clampChampAge(age)]?.[distance] ?? null;
 }
 
 // ── 時間/日期工具 ──────────────────────────────────────
@@ -199,7 +207,11 @@ function bubble(body) {
 
 function buildSummary(player, stats, dates) {
   const curAge = ageOf(player.birthday);
-  const champ = CHAMPION[curAge];
+  const effAge = clampChampAge(curAge);
+  const champ = CHAMPION[effAge];
+  const champLabel = curAge > CHAMP_MAX
+    ? `🏆 標準（${CHAMP_MAX}歲以上同${CHAMP_MAX}歲）`
+    : `🏆 ${effAge}歲標準`;
   const body = [
     { type: 'text', text: `🚲 ${player.name}`, size: 'lg', weight: 'bold', color: '#1e293b' },
     { type: 'text', text: `${curAge} 歲 · 生日 ${fmtBirthday(player.birthday)}`, size: 'xs', color: '#94a3b8', margin: 'xs' },
@@ -208,7 +220,7 @@ function buildSummary(player, stats, dates) {
     body.push({
       type: 'box', layout: 'horizontal', margin: 'md', spacing: 'sm',
       contents: [
-        { type: 'text', text: `🏆 ${curAge}歲標準`, size: 'xs', color: '#94a3b8', flex: 0 },
+        { type: 'text', text: champLabel, size: 'xs', color: '#94a3b8', flex: 0, wrap: false },
         ...CHAMP_DISTANCES.map(d => ({ type: 'text', text: `${d}米 ${champ[d].toFixed(1)}`, size: 'xs', color: '#475569', align: 'end', flex: 1 })),
       ],
     });
