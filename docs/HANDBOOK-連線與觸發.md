@@ -429,4 +429,85 @@ LINE → https://bot.pushbike-training.app/line/webhook
 
 ---
 
+## 附錄 D：完整訊息類型、接收事件與傳送上限
+
+> LINE 平台的完整能力面。標「本框架」= linebot-framework 目前實作的；其餘是平台支援、可自行擴充。
+> 數字上限**以 LINE 官方文件為準**（可能調整）。
+
+### D.1 可接收的 Webhook 事件（`event.type`）
+
+| event.type | 觸發時機 | 本框架 |
+|------------|----------|:---:|
+| `message` | 收到訊息（文字/圖片/貼圖…） | ✓（僅 text） |
+| `postback` | 使用者按下 postback 按鈕 | — |
+| `follow` / `unfollow` | 加好友 / 封鎖 | — |
+| `join` / `leave` | bot 被加入 / 移出群組 | — |
+| `memberJoined` / `memberLeft` | 有人加入 / 離開群組 | — |
+| `unsend` | 使用者收回訊息 | — |
+| `videoPlayComplete` | 影片看完 | — |
+| `beacon` / `accountLink` / `things` | Beacon / 帳號連結 / LINE Things | — |
+
+> 擴充很簡單：webhook 迴圈裡的 `if (event.type !== 'message')` 改成 switch 分流即可。
+> 特別推薦 **postback**：做互動流程（多步驟表單、選單）比用文字指令乾淨。
+
+### D.2 可接收的訊息類型（`event.message.type`）
+
+`text`（本框架）、`image`、`video`、`audio`、`file`、`location`、`sticker`。
+圖片/影音類要再呼叫 `GET /v2/bot/message/{messageId}/content` 取得實體內容。
+
+### D.3 可傳送的訊息物件（`messages[].type`）
+
+| type | 說明 | 本框架 |
+|------|------|:---:|
+| `text` | 純文字（可帶 emoji、mention） | ✓ |
+| `flex` | 自訂排版卡片（最彈性） | ✓ |
+| `image` | 圖片（originalContentUrl，須 HTTPS） | ✓ |
+| `template` | 內建模板：buttons / confirm / carousel / image_carousel | ✓（confirm） |
+| `sticker` | 貼圖（packageId + stickerId） | — |
+| `video` / `audio` | 影片 / 音訊（HTTPS URL） | — |
+| `location` | 地圖位置（經緯度 + 標題） | — |
+| `imagemap` | 可點區塊的大圖 | — |
+
+### D.4 傳送方式與上限
+
+| API | 對象 | 上限（依官方） | 計費 |
+|-----|------|---------------|------|
+| **reply** | 回覆收到的訊息 | replyToken 30 秒、一次性 | 免費 |
+| **push** | 單一 user/group/room | — | 計推播額度 |
+| **multicast** | 多個 userId | ≤ 500 / 次 | 計額度 |
+| **narrowcast** | 依屬性/受眾鎖定 | 大量、非同步 | 計額度 |
+| **broadcast** | 全部好友 | 全好友 | 計額度 |
+
+**共通限制**：
+- 一次呼叫最多 **5 個** message 物件（reply/push 都是）
+- 單則 text **≤ 5000 字**
+- **quick reply** 最多 **13** 顆按鈕（掛在訊息底部的快速選項）
+
+### D.5 互動元件（Action）
+
+訊息/Flex/模板上的按鈕可掛 action：
+
+| action.type | 行為 | 用途 |
+|-------------|------|------|
+| `message` | 模擬使用者送出一段文字 | 「按鈕→送 /todo_done 1」 |
+| `uri` | 開啟網址（或 LIFF） | 開連結、開網頁應用 |
+| `postback` | 回傳 data（**不顯示**為使用者訊息） | 互動流程、不想洗版的回傳 |
+| `datetimepicker` | 跳日期/時間選擇器 | 預約、提醒設定 |
+| `camera` / `cameraRoll` / `location` | 開相機 / 相簿 / 位置 | 收集媒體 |
+
+- **quick reply**：訊息底部的一排快速按鈕，點完即消失，適合引導下一步
+- **rich menu**：聊天室下方常駐選單（需另用 Rich Menu API 設定）
+
+### D.6 本框架目前用到的子集
+
+```
+收：message.text → router 比對
+傳：reply / push / multicast，型別 text / image / flex / template(confirm)
+      flex 工具：card / mini / list / confirm / quickReply
+```
+
+要支援更多型別，在 `src/core/line-api.js` 加對應 method、在 webhook 迴圈加事件分流即可，**連線與觸發的骨架不用動**。
+
+---
+
 *本手冊隨框架演進更新。原始實作：`src/core/{webhook,router,line-api,scheduler}.js`、`src/core/plugin-loader.js`。*
