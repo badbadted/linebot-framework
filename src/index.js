@@ -165,6 +165,21 @@ async function main() {
   let adminUserIds = loadAdmins();
   const isAdmin = (uid) => adminUserIds.includes(uid);
 
+  // ── 私訊白名單（config/allowlist.json）——預設全擋，管理員＋核可者才能私訊 ──
+  const allowPath = resolve(ROOT, 'config/allowlist.json');
+  function loadAllowExplicit() {
+    try {
+      const raw = JSON.parse(readFileSync(allowPath, 'utf-8'));
+      return Array.isArray(raw.allowedUserIds) ? raw.allowedUserIds : [];
+    } catch { return []; }
+  }
+  // 管理員永遠在白名單內
+  const allowSet = new Set([...adminUserIds, ...loadAllowExplicit()]);
+  function saveAllowlist() {
+    const explicit = [...allowSet].filter(id => !adminUserIds.includes(id));
+    writeFileSync(allowPath, JSON.stringify({ allowedUserIds: explicit }, null, 2) + '\n');
+  }
+
   // 可開通的功能：已載入的 plugin + 虛擬 _llm 對話權限
   const openablePlugins = new Set([...loaded, '_llm']);
 
@@ -263,6 +278,35 @@ async function main() {
     }
   }, { type: 'query', name: 'broadcast', plugin: '_system', describe: '/廣播 <內容> — （管理員）家裡 PC 語音廣播', scope: 'all' });
 
+  // /私訊開通 <userId> — 核可某人可私訊（管理員）
+  router.add(/^\/私訊開通\s+(.+)$/i, async (match, ctx) => {
+    if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
+    const id = match[1].trim();
+    if (!/^U[0-9a-fA-F]{32}$/.test(id)) return '請給正確的 LINE userId（U 開頭共 33 碼）';
+    allowSet.add(id);
+    saveAllowlist();
+    return `✅ 已開通私訊：${id.slice(0, 12)}…\n此人現在可在私訊使用 bot`;
+  }, { type: 'query', name: 'allow-add', plugin: '_system', describe: '/私訊開通 <userId> — （管理員）核可某人私訊', scope: 'all' });
+
+  // /私訊關閉 <userId> — 移除私訊核可（管理員）
+  router.add(/^\/私訊關閉\s+(.+)$/i, async (match, ctx) => {
+    if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
+    const id = match[1].trim();
+    if (adminUserIds.includes(id)) return '管理員不可移除';
+    if (!allowSet.delete(id)) return '此 userId 不在白名單';
+    saveAllowlist();
+    return `🗑️ 已移除私訊核可：${id.slice(0, 12)}…`;
+  }, { type: 'query', name: 'allow-del', plugin: '_system', describe: '/私訊關閉 <userId> — （管理員）移除私訊核可', scope: 'all' });
+
+  // /私訊名單 — 查看可私訊名單（管理員）
+  router.add(/^\/私訊名單$/i, async (_match, ctx) => {
+    if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
+    const ids = [...allowSet];
+    const lines = [`👥 可私訊名單（${ids.length}）`];
+    for (const id of ids) lines.push(`· ${id.slice(0, 12)}…${adminUserIds.includes(id) ? '（管理員）' : ''}`);
+    return lines.join('\n');
+  }, { type: 'query', name: 'allow-list', plugin: '_system', describe: '/私訊名單 — （管理員）查看可私訊名單', scope: 'all' });
+
   // LLM fallback：私訊 + 有 _llm 權限的群組，未匹配指令時用 LLM 回覆
   const llm = registry.get('llm');
 
@@ -271,6 +315,7 @@ async function main() {
     router,
     lineApi,
     logger,
+    allowlist: allowSet,
     onUnmatched: async ({ userId, groupId, sourceType, text, replyToken }) => {
       const isGroup = sourceType === 'group' || sourceType === 'room';
       const trimmed = (text || '').trim();
