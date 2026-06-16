@@ -114,6 +114,10 @@ export default {
 ⑤ 查詢（管理者）— 依登錄人分組列全部
 　/派工單查詢　　或　/派工單查詢 Steven
 
+⑥ 清除（管理者）— 審完封存，清單歸零
+　/派工單清除 Steven　　或　/派工單清除 全部
+　（軟清除，資料保留可復原）
+
 只記非本人瑕疵；判定處理由管理者線下做`,
 
   commands: [
@@ -177,10 +181,10 @@ export default {
         const name = getName(ctx.userId);
         if (!name) return '請先綁定你的名字：\n/派工單綁定 <你的名字>';
         const rows = db.all(
-          'SELECT ticket_no, agency, reason FROM dept_tickets WHERE user_id = ? ORDER BY id DESC',
+          'SELECT ticket_no, agency, reason FROM dept_tickets WHERE user_id = ? AND cleared = 0 ORDER BY id DESC',
           ctx.userId
         );
-        if (!rows.length) return `${name} 目前沒有登錄派工單\n用 /派工單 <派工單號> <機關> <原因> 登錄`;
+        if (!rows.length) return `${name} 目前沒有待處理派工單\n用 /派工單 <派工單號> <機關> <原因> 登錄`;
         return buildOwnList(name, rows);
       },
     },
@@ -211,9 +215,9 @@ export default {
 
         const filter = (match[1] || '').trim();
         const rows = filter
-          ? db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets WHERE name = ? ORDER BY id', filter)
-          : db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets ORDER BY name, id');
-        if (!rows.length) return filter ? `「${filter}」沒有派工單記錄` : '目前沒有任何派工單記錄';
+          ? db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets WHERE name = ? AND cleared = 0 ORDER BY id', filter)
+          : db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets WHERE cleared = 0 ORDER BY name, id');
+        if (!rows.length) return filter ? `「${filter}」沒有待處理派工單` : '目前沒有待處理派工單';
 
         // 依登錄人分組
         const groups = new Map();
@@ -231,6 +235,28 @@ export default {
           }
         }
         return lines.join('\n');
+      },
+    },
+    // /派工單清除 <名字|全部> — 管理者審完封存（軟清除，可復原）
+    {
+      name: 'clear',
+      pattern: /^\/派工單清除\s+(.+)$/i,
+      describe: '/派工單清除 <名字|全部> —（管理者）審完清空清單',
+      type: 'query',
+      handler: async (match, ctx) => {
+        if (!db) return '❌ 此 BOT 未啟用資料庫';
+        if (!isManager(ctx.userId)) return '⛔ 僅管理者可清除';
+        const target = match[1].trim();
+        const all = /^(全部|all|\*)$/i.test(target);
+        const res = all
+          ? db.run(`UPDATE dept_tickets SET cleared = 1, cleared_at = datetime('now','+8 hours') WHERE cleared = 0`)
+          : db.run(`UPDATE dept_tickets SET cleared = 1, cleared_at = datetime('now','+8 hours') WHERE name = ? AND cleared = 0`, target);
+        const n = res.changes || 0;
+        if (!n) return all ? '目前沒有待處理派工單' : `「${target}」沒有待處理派工單`;
+        return flex.mini({
+          icon: '✅', title: `已清除 ${n} 筆`, accent: COLOR,
+          body: `${all ? '全部' : target} 的待處理派工單已封存\n（資料保留，需要可復原）`,
+        });
       },
     },
   ],
@@ -255,9 +281,15 @@ export default {
         ticket_no TEXT NOT NULL,
         agency TEXT,
         reason TEXT,
+        cleared INTEGER DEFAULT 0,
+        cleared_at TEXT,
         created_at TEXT NOT NULL
       )
     `);
+    // 既有表補 cleared 欄（軟清除/封存）
+    const cols = db.all('PRAGMA table_info(dept_tickets)').map(c => c.name);
+    if (!cols.includes('cleared')) db.exec('ALTER TABLE dept_tickets ADD COLUMN cleared INTEGER DEFAULT 0');
+    if (!cols.includes('cleared_at')) db.exec('ALTER TABLE dept_tickets ADD COLUMN cleared_at TEXT');
     db.exec('CREATE INDEX IF NOT EXISTS idx_dept_tickets_user ON dept_tickets (user_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_dept_tickets_name ON dept_tickets (name)');
     loadAdmins();
