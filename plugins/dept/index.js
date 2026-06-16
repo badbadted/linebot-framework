@@ -98,6 +98,51 @@ function buildOwnList(name, rows) {
   };
 }
 
+// ── 查詢結果表格化（每人一張卡，多人輪播） ──────────────
+function ticketRows(items) {
+  const MAX = 15;
+  const out = [];
+  items.slice(0, MAX).forEach((t, i) => {
+    if (i > 0) out.push({ type: 'separator', margin: 'md', color: '#f1f5f9' });
+    out.push({
+      type: 'box', layout: 'vertical', spacing: 'xs', paddingTop: 'sm', paddingBottom: 'sm',
+      contents: [
+        {
+          type: 'box', layout: 'horizontal', spacing: 'sm',
+          contents: [
+            { type: 'text', text: t.ticket_no, size: 'sm', weight: 'bold', color: '#1e293b', flex: 0 },
+            { type: 'text', text: t.agency || '', size: 'xs', color: '#64748b', flex: 1, align: 'end', wrap: false },
+          ],
+        },
+        ...(t.reason ? [{ type: 'text', text: t.reason, size: 'xs', color: '#94a3b8', wrap: true }] : []),
+      ],
+    });
+  });
+  if (items.length > MAX) out.push({ type: 'text', text: `還有 ${items.length - MAX} 筆`, size: 'xxs', color: '#cbd5e1', align: 'center', margin: 'sm' });
+  return out;
+}
+function personBubble(name, items, size) {
+  return {
+    type: 'bubble', size,
+    header: {
+      type: 'box', layout: 'vertical', backgroundColor: COLOR, paddingAll: '14px',
+      contents: [
+        { type: 'text', text: name, size: 'lg', weight: 'bold', color: '#ffffff' },
+        { type: 'text', text: `${items.length} 筆 · 非本人瑕疵`, size: 'xs', color: '#e2e8f0', margin: 'xs' },
+      ],
+    },
+    body: { type: 'box', layout: 'vertical', paddingAll: '14px', contents: ticketRows(items) },
+  };
+}
+function buildQueryFlex(groups) {
+  const names = [...groups.keys()];
+  if (names.length === 1) {
+    return { type: 'flex', altText: '派工單查詢', contents: personBubble(names[0], groups.get(names[0]), 'giga') };
+  }
+  const bubbles = names.slice(0, 12).map(n => personBubble(n, groups.get(n), 'mega'));
+  return { type: 'flex', altText: '派工單查詢', contents: { type: 'carousel', contents: bubbles } };
+}
+
 // ── Plugin ────────────────────────────────────────────
 export default {
   name: 'dept',
@@ -232,22 +277,13 @@ export default {
           : db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets WHERE cleared = 0 ORDER BY name, id');
         if (!rows.length) return filter ? `「${filter}」沒有待處理派工單` : '目前沒有待處理派工單';
 
-        // 依登錄人分組
+        // 依登錄人分組 → 表格化 Flex
         const groups = new Map();
         for (const r of rows) {
           if (!groups.has(r.name)) groups.set(r.name, []);
           groups.get(r.name).push(r);
         }
-        const lines = [`📋 非本人瑕疵派工單（共 ${rows.length} 筆 · ${groups.size} 人）`];
-        for (const [name, items] of groups) {
-          lines.push('════════════');
-          lines.push(`【${name}】${items.length} 筆`);
-          for (const t of items) {
-            lines.push(`· ${t.ticket_no} ${t.agency}`);
-            if (t.reason) lines.push(`　${t.reason}`);
-          }
-        }
-        return lines.join('\n');
+        return buildQueryFlex(groups);
       },
     },
     // /派工單清除 <名字|全部> — 管理者審完封存（軟清除，可復原）
