@@ -23,6 +23,13 @@ let db;
 const COLOR = '#475569'; // 板岩灰
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+// 固定部門名單（綁定只能用這六個；大小寫容錯，存標準寫法）
+const ROSTER = ['Ken', 'Peter', 'Steven', 'Ida', 'Kacie', 'Hoho'];
+function canonName(input) {
+  const t = String(input).trim();
+  return ROSTER.find(n => n.toLowerCase() === t.toLowerCase()) || null;
+}
+
 // ── 管理者判定（讀 config/admin.json） ──────────────────
 let adminIds = [];
 function loadAdmins() {
@@ -100,6 +107,7 @@ export default {
 
 ① 綁定名字（登錄前先做一次）
 　/派工單綁定 Steven
+　名單：Ken / Peter / Steven / Ida / Kacie / Hoho
 
 ② 登錄派工單（一行：派工單號 機關 原因；可多行一次多筆）
 　/派工單 UTS060226002 行政院主計總處 非本人瑕疵 接表單流程送件結果寫錯
@@ -129,7 +137,9 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const name = match[1].trim();
+        const input = match[1].trim();
+        const name = canonName(input);
+        if (!name) return `綁定錯誤：沒有「${input}」這個人\n可綁定：${ROSTER.join(' / ')}`;
         db.run(
           `INSERT INTO dept_bindings (user_id, name, created_at) VALUES (?, ?, datetime('now','+8 hours'))
            ON CONFLICT(user_id) DO UPDATE SET name = excluded.name`,
