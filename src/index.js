@@ -192,6 +192,15 @@ async function main() {
         unfollowed_at TEXT
       )
     `);
+    followersDb.exec(`
+      CREATE TABLE IF NOT EXISTS bot_groups (
+        group_id TEXT PRIMARY KEY,
+        group_name TEXT,
+        status TEXT DEFAULT 'active',
+        joined_at TEXT,
+        left_at TEXT
+      )
+    `);
   }
   async function recordFollow(userId) {
     if (!followersDb) return;
@@ -215,6 +224,37 @@ async function main() {
       userId
     );
     console.log(`[followers] -unfollow ${userId.slice(0, 10)}`);
+  }
+
+  // 通知所有管理員
+  async function notifyAdmins(text) {
+    for (const uid of adminUserIds) {
+      try { await lineApi.push(uid, text); } catch (err) { console.error(`[notify] ${err.message}`); }
+    }
+  }
+  // bot 被加入群組
+  async function onBotJoin(groupId) {
+    let name = '';
+    try { const s = await lineApi.getGroupSummary(groupId); name = s?.groupName || ''; } catch { /* ignore */ }
+    if (followersDb) followersDb.run(
+      `INSERT INTO bot_groups (group_id, group_name, status, joined_at)
+       VALUES (?, ?, 'active', datetime('now','+8 hours'))
+       ON CONFLICT(group_id) DO UPDATE SET status='active', group_name=excluded.group_name, joined_at=excluded.joined_at, left_at=NULL`,
+      groupId, name
+    );
+    const opened = (groupPerms[groupId] || []).length > 0;
+    console.log(`[groups] +join ${groupId} ${name}`);
+    await notifyAdmins(`⚠️ Bot 被加入新群組\n${name || '(未命名)'}\n${groupId}\n${opened ? '（此群已有開通功能）' : '目前未開通任何功能'}\n不需要可：/離開群組 ${groupId}`);
+  }
+  // bot 被移出群組
+  async function onBotLeave(groupId) {
+    if (followersDb) followersDb.run(
+      `INSERT INTO bot_groups (group_id, status, left_at) VALUES (?, 'left', datetime('now','+8 hours'))
+       ON CONFLICT(group_id) DO UPDATE SET status='left', left_at=datetime('now','+8 hours')`,
+      groupId
+    );
+    console.log(`[groups] -leave ${groupId}`);
+    await notifyAdmins(`👋 Bot 已離開群組\n${groupId}`);
   }
 
   // 可開通的功能：已載入的 plugin + 虛擬 _llm 對話權限
@@ -360,6 +400,37 @@ async function main() {
     return lines.join('\n');
   }, { type: 'query', name: 'followers', plugin: '_system', describe: '/好友 — （管理員）好友/封鎖統計', scope: 'all' });
 
+  // /群組 — bot 目前在哪些群組（管理員）
+  router.add(/^\/群組$/i, async (_match, ctx) => {
+    if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
+    if (!followersDb) return '未啟用群組追蹤';
+    const rows = followersDb.all(`SELECT group_id, group_name FROM bot_groups WHERE status='active' ORDER BY joined_at DESC`);
+    if (!rows.length) return '目前沒有記錄到 bot 所在的群組\n（追蹤從啟用後加入的群組才有）';
+    const lines = [`👥 Bot 所在群組（${rows.length}）`];
+    for (const g of rows) {
+      const opened = (groupPerms[g.group_id] || []);
+      lines.push('────────────');
+      lines.push(`${g.group_name || '(未命名)'}`);
+      lines.push(`${g.group_id}`);
+      lines.push(opened.length ? `已開通：${opened.join('、')}` : '⚠️ 未開通任何功能');
+    }
+    return lines.join('\n');
+  }, { type: 'query', name: 'bot-groups', plugin: '_system', describe: '/群組 — （管理員）查看 bot 所在群組', scope: 'all' });
+
+  // /離開群組 <groupId> — 讓 bot 退出某群組（管理員）
+  router.add(/^\/離開群組\s+(.+)$/i, async (match, ctx) => {
+    if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
+    const gid = match[1].trim();
+    if (!/^[CR][0-9a-f]{32}$/i.test(gid)) return '請給正確的群組 ID（C 或 R 開頭共 33 碼）';
+    try {
+      await lineApi.leaveChat(gid);
+      if (followersDb) followersDb.run(`UPDATE bot_groups SET status='left', left_at=datetime('now','+8 hours') WHERE group_id=?`, gid);
+      return `✅ 已讓 bot 離開群組\n${gid}`;
+    } catch (err) {
+      return `⚠️ 離開失敗：${err.message}`;
+    }
+  }, { type: 'query', name: 'leave-group', plugin: '_system', describe: '/離開群組 <groupId> — （管理員）讓 bot 退出群組', scope: 'all' });
+
   // LLM fallback：私訊 + 有 _llm 權限的群組，未匹配指令時用 LLM 回覆
   const llm = registry.get('llm');
 
@@ -371,6 +442,8 @@ async function main() {
     allowlist: allowSet,
     onFollow: async ({ userId }) => { await recordFollow(userId); },
     onUnfollow: async ({ userId }) => { recordUnfollow(userId); },
+    onJoin: async ({ groupId }) => { await onBotJoin(groupId); },
+    onLeave: async ({ groupId }) => { await onBotLeave(groupId); },
     onUnmatched: async ({ userId, groupId, sourceType, text, replyToken }) => {
       const isGroup = sourceType === 'group' || sourceType === 'room';
       const trimmed = (text || '').trim();

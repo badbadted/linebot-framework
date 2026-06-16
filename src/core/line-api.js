@@ -80,5 +80,15 @@ export function createLineAPI(channelAccessToken) {
     return JSON.parse(body);
   }
 
-  return { reply, push, multicast, getProfile, getGroupSummary };
+  /**
+   * 讓 bot 離開群組（C 開頭）或聊天室（R 開頭）
+   */
+  async function leaveChat(id) {
+    const kind = id.startsWith('R') ? 'room' : 'group';
+    const res = await fetch(`https://api.line.me/v2/bot/${kind}/${id}/leave`, { method: 'POST', headers });
+    const body = await res.text();
+    if (!res.ok) throw new Error(`LINE leave failed: ${res.status} ${body}`);
+  }
+
+  return { reply, push, multicast, getProfile, getGroupSummary, leaveChat };
 }

@@ -8,7 +8,7 @@
 
 import { createHmac, timingSafeEqual } from 'crypto';
 
-export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, logger }) {
+export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, logger }) {
   // 事件去重：防止同一 webhookEventId 被重複處理
   const recentEventIds = new Map(); // eventId → timestamp
   const DEDUP_WINDOW = 5 * 60_000;  // 5 分鐘
@@ -80,6 +80,24 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
         if (onUnfollow && evUserId) {
           try { await onUnfollow({ userId: evUserId }); }
           catch (err) { console.error(`[webhook] unfollow handler error: ${err.message}`); }
+        }
+        continue;
+      }
+
+      // 被加入 / 被移出 群組或聊天室
+      if (event.type === 'join') {
+        const gid = event.source?.groupId || event.source?.roomId;
+        if (onJoin && gid) {
+          try { await onJoin({ groupId: gid, sourceType: event.source?.type, replyToken: event.replyToken }); }
+          catch (err) { console.error(`[webhook] join handler error: ${err.message}`); }
+        }
+        continue;
+      }
+      if (event.type === 'leave') {
+        const gid = event.source?.groupId || event.source?.roomId;
+        if (onLeave && gid) {
+          try { await onLeave({ groupId: gid }); }
+          catch (err) { console.error(`[webhook] leave handler error: ${err.message}`); }
         }
         continue;
       }
