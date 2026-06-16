@@ -180,6 +180,43 @@ async function main() {
     writeFileSync(allowPath, JSON.stringify({ allowedUserIds: explicit }, null, 2) + '\n');
   }
 
+  // ── 好友追蹤（follow/unfollow → data/_followers.db） ──
+  const followersDb = registry.get('db')?.getDatabase('_followers') || null;
+  if (followersDb) {
+    followersDb.exec(`
+      CREATE TABLE IF NOT EXISTS followers (
+        user_id TEXT PRIMARY KEY,
+        display_name TEXT,
+        status TEXT DEFAULT 'active',
+        followed_at TEXT,
+        unfollowed_at TEXT
+      )
+    `);
+  }
+  async function recordFollow(userId) {
+    if (!followersDb) return;
+    let name = '';
+    try { const p = await lineApi.getProfile(userId); name = p?.displayName || ''; } catch { /* 拿不到名字就空著 */ }
+    followersDb.run(
+      `INSERT INTO followers (user_id, display_name, status, followed_at)
+       VALUES (?, ?, 'active', datetime('now','+8 hours'))
+       ON CONFLICT(user_id) DO UPDATE SET status='active', display_name=excluded.display_name,
+         followed_at=excluded.followed_at, unfollowed_at=NULL`,
+      userId, name
+    );
+    console.log(`[followers] +follow ${userId.slice(0, 10)} ${name}`);
+  }
+  function recordUnfollow(userId) {
+    if (!followersDb) return;
+    followersDb.run(
+      `INSERT INTO followers (user_id, status, unfollowed_at)
+       VALUES (?, 'blocked', datetime('now','+8 hours'))
+       ON CONFLICT(user_id) DO UPDATE SET status='blocked', unfollowed_at=datetime('now','+8 hours')`,
+      userId
+    );
+    console.log(`[followers] -unfollow ${userId.slice(0, 10)}`);
+  }
+
   // 可開通的功能：已載入的 plugin + 虛擬 _llm 對話權限
   const openablePlugins = new Set([...loaded, '_llm']);
 
@@ -307,6 +344,22 @@ async function main() {
     return lines.join('\n');
   }, { type: 'query', name: 'allow-list', plugin: '_system', describe: '/私訊名單 — （管理員）查看可私訊名單', scope: 'all' });
 
+  // /好友 — 好友/封鎖統計（管理員）
+  router.add(/^\/好友$/i, async (_match, ctx) => {
+    if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
+    if (!followersDb) return '未啟用好友追蹤';
+    const active = followersDb.get(`SELECT COUNT(*) c FROM followers WHERE status='active'`).c;
+    const blocked = followersDb.get(`SELECT COUNT(*) c FROM followers WHERE status='blocked'`).c;
+    const recent = followersDb.all(`SELECT display_name, status FROM followers ORDER BY followed_at DESC LIMIT 20`);
+    const lines = [`👥 好友追蹤`, `現有好友 ${active}　已封鎖 ${blocked}`];
+    if (recent.length) {
+      lines.push('────────────');
+      for (const f of recent) lines.push(`${f.status === 'active' ? '🟢' : '🔴'} ${f.display_name || '(無名)'}`);
+    }
+    lines.push('', '※ 從啟用追蹤後加入的才會記錄');
+    return lines.join('\n');
+  }, { type: 'query', name: 'followers', plugin: '_system', describe: '/好友 — （管理員）好友/封鎖統計', scope: 'all' });
+
   // LLM fallback：私訊 + 有 _llm 權限的群組，未匹配指令時用 LLM 回覆
   const llm = registry.get('llm');
 
@@ -316,6 +369,8 @@ async function main() {
     lineApi,
     logger,
     allowlist: allowSet,
+    onFollow: async ({ userId }) => { await recordFollow(userId); },
+    onUnfollow: async ({ userId }) => { recordUnfollow(userId); },
     onUnmatched: async ({ userId, groupId, sourceType, text, replyToken }) => {
       const isGroup = sourceType === 'group' || sourceType === 'room';
       const trimmed = (text || '').trim();

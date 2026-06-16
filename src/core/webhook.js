@@ -8,7 +8,7 @@
 
 import { createHmac, timingSafeEqual } from 'crypto';
 
-export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, logger }) {
+export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, logger }) {
   // 事件去重：防止同一 webhookEventId 被重複處理
   const recentEventIds = new Map(); // eventId → timestamp
   const DEDUP_WINDOW = 5 * 60_000;  // 5 分鐘
@@ -49,9 +49,6 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
     }
 
     for (const event of (data.events || [])) {
-      // 目前只處理 text message
-      if (event.type !== 'message' || event.message?.type !== 'text') continue;
-
       // 防重播攻擊：拒絕超過 5 分鐘的事件
       const eventTs = Number(event.timestamp || 0);
       if (Math.abs(Date.now() - eventTs) > 5 * 60_000) {
@@ -69,7 +66,28 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
         recentEventIds.set(eventId, Date.now());
       }
 
-      const userId = event.source?.userId;
+      const evUserId = event.source?.userId;
+
+      // 加好友 / 封鎖（unfollow 無 replyToken）
+      if (event.type === 'follow') {
+        if (onFollow && evUserId) {
+          try { await onFollow({ userId: evUserId, replyToken: event.replyToken }); }
+          catch (err) { console.error(`[webhook] follow handler error: ${err.message}`); }
+        }
+        continue;
+      }
+      if (event.type === 'unfollow') {
+        if (onUnfollow && evUserId) {
+          try { await onUnfollow({ userId: evUserId }); }
+          catch (err) { console.error(`[webhook] unfollow handler error: ${err.message}`); }
+        }
+        continue;
+      }
+
+      // 之後只處理 text message
+      if (event.type !== 'message' || event.message?.type !== 'text') continue;
+
+      const userId = evUserId;
       const text = event.message.text;
       const replyToken = event.replyToken;
       if (!userId || !text || !replyToken) continue;
