@@ -8,7 +8,7 @@
 
 import { createHmac, timingSafeEqual } from 'crypto';
 
-export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, logger }) {
+export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, onChatSeen, logger }) {
   // 事件去重：防止同一 webhookEventId 被重複處理
   const recentEventIds = new Map(); // eventId → timestamp
   const DEDUP_WINDOW = 5 * 60_000;  // 5 分鐘
@@ -114,6 +114,10 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       const sourceType = event.source?.type || 'user';
       const groupId = event.source?.groupId || null;
       const roomId = event.source?.roomId || null;
+
+      // 延遲發現：群組/聊天室訊息 → 讓上層登記未知群組（fire-and-forget，不阻塞）
+      const chatId = groupId || roomId;
+      if (chatId && onChatSeen) { Promise.resolve(onChatSeen({ chatId })).catch(() => {}); }
 
       // 白名單檢查（可選，僅對個人訊息生效）
       if (allowlist && sourceType === 'user' && !allowlist.has(userId)) {

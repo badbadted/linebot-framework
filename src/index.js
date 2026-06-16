@@ -257,6 +257,39 @@ async function main() {
     await notifyAdmins(`👋 Bot 已離開群組\n${groupId}`);
   }
 
+  // 已知群組集合（避免重複通知）：已記錄的 + 已開通的
+  const knownGroups = new Set();
+  if (followersDb) for (const r of followersDb.all('SELECT group_id FROM bot_groups')) knownGroups.add(r.group_id);
+  for (const gid of Object.keys(groupPerms)) knownGroups.add(gid);
+  // 背景補登已開通群組的名稱（不阻塞、不通知）
+  (async () => {
+    for (const gid of Object.keys(groupPerms)) {
+      try {
+        const s = await lineApi.getGroupSummary(gid);
+        followersDb?.run(
+          `INSERT INTO bot_groups (group_id, group_name, status, joined_at) VALUES (?, ?, 'active', datetime('now','+8 hours'))
+           ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name, status='active'`,
+          gid, s?.groupName || ''
+        );
+      } catch { /* ignore */ }
+    }
+  })();
+  // 延遲發現：收到未知群組的訊息 → 登記 + 通知
+  async function onChatSeen(chatId) {
+    if (!chatId || knownGroups.has(chatId)) return;
+    knownGroups.add(chatId);
+    let name = '';
+    try { const s = await lineApi.getGroupSummary(chatId); name = s?.groupName || ''; } catch { /* ignore */ }
+    if (followersDb) followersDb.run(
+      `INSERT INTO bot_groups (group_id, group_name, status, joined_at) VALUES (?, ?, 'active', datetime('now','+8 hours'))
+       ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name, status='active'`,
+      chatId, name
+    );
+    const opened = (groupPerms[chatId] || []).length > 0;
+    console.log(`[groups] discovered ${chatId} ${name}`);
+    await notifyAdmins(`🔍 發現 bot 在未記錄的群組（有人使用）\n${name || '(未命名)'}\n${chatId}\n${opened ? '（已開通）' : '⚠️ 未開通'}\n不需要可：/離開群組 ${chatId}`);
+  }
+
   // 可開通的功能：已載入的 plugin + 虛擬 _llm 對話權限
   const openablePlugins = new Set([...loaded, '_llm']);
 
@@ -444,6 +477,7 @@ async function main() {
     onUnfollow: async ({ userId }) => { recordUnfollow(userId); },
     onJoin: async ({ groupId }) => { await onBotJoin(groupId); },
     onLeave: async ({ groupId }) => { await onBotLeave(groupId); },
+    onChatSeen: async ({ chatId }) => { await onChatSeen(chatId); },
     onUnmatched: async ({ userId, groupId, sourceType, text, replyToken }) => {
       const isGroup = sourceType === 'group' || sourceType === 'room';
       const trimmed = (text || '').trim();
