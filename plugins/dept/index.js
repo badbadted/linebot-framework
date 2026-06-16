@@ -180,9 +180,10 @@ export default {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
         const name = getName(ctx.userId);
         if (!name) return '請先綁定你的名字：\n/派工單綁定 <你的名字>';
+        // 用綁定的名字過濾（含管理者匯入的同名資料）
         const rows = db.all(
-          'SELECT ticket_no, agency, reason FROM dept_tickets WHERE user_id = ? AND cleared = 0 ORDER BY id DESC',
-          ctx.userId
+          'SELECT ticket_no, agency, reason FROM dept_tickets WHERE name = ? AND cleared = 0 ORDER BY id DESC',
+          name
         );
         if (!rows.length) return `${name} 目前沒有待處理派工單\n用 /派工單 <派工單號> <機關> <原因> 登錄`;
         return buildOwnList(name, rows);
@@ -196,9 +197,11 @@ export default {
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
+        const name = getName(ctx.userId);
+        if (!name) return '請先綁定你的名字：\n/派工單綁定 <你的名字>';
         const no = match[1].trim();
-        const row = db.get('SELECT id FROM dept_tickets WHERE user_id = ? AND ticket_no = ?', ctx.userId, no);
-        if (!row) return `找不到你登錄的「${no}」`;
+        const row = db.get('SELECT id FROM dept_tickets WHERE name = ? AND ticket_no = ? AND cleared = 0', name, no);
+        if (!row) return `找不到「${no}」`;
         db.run('DELETE FROM dept_tickets WHERE id = ?', row.id);
         return `🗑️ 已刪除：${no}`;
       },
