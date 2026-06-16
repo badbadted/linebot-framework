@@ -1,14 +1,14 @@
 /**
- * Dept Plugin — 部門非本人瑕疵工單記錄
+ * Dept Plugin — 部門非本人瑕疵派工單記錄
  *
- * 同仁登錄非本人瑕疵的拍工單，管理者查詢全部、線下判定處理。
+ * 同仁登錄非本人瑕疵的派工單，管理者查詢全部、線下判定處理。
  *
  * 指令：
- *   /工單綁定 Steven                                   → 綁定你的名字（登錄前先做一次）
- *   /工單 UTS060226002 行政院主計總處 非本人瑕疵 原因   → 登錄一筆（可多行一次多筆）
- *   /我的工單                                          → 看自己登錄的
- *   /工單刪除 UTS060226002                              → 刪自己登錄的某筆
- *   /工單查詢 [名字]                                    → 管理者查全部（依登錄人分組）
+ *   /派工單綁定 Steven                                   → 綁定你的名字（登錄前先做一次）
+ *   /派工單 UTS060226002 行政院主計總處 非本人瑕疵 原因   → 登錄一筆（可多行一次多筆）
+ *   /我的派工單                                          → 看自己登錄的
+ *   /派工單刪除 UTS060226002                              → 刪自己登錄的某筆
+ *   /派工單查詢 [名字]                                    → 管理者查全部（依登錄人分組）
  *
  * 權限：查全部限管理者（config/admin.json）；同仁只能看/刪自己的
  * 資料：dept_bindings / dept_tickets（SQLite）
@@ -46,7 +46,7 @@ function getName(userId) {
   return row ? row.name : null;
 }
 
-/** 解析一行工單：<工單號> <機關> [非本人瑕疵] <原因> */
+/** 解析一行派工單：<派工單號> <機關> [非本人瑕疵] <原因> */
 function parseLine(line) {
   const s = normalize(line).trim();
   if (!s) return null;
@@ -55,14 +55,14 @@ function parseLine(line) {
   const ticket_no = parts[0];
   const agency = parts[1];
   let reason = parts.slice(2).join(' ').replace(/^非本人瑕疵[\s,，、:：-]*/, '').trim();
-  if (!/^[A-Za-z]/.test(ticket_no)) return null; // 工單號通常 UTS… 開頭
+  if (!/^[A-Za-z]/.test(ticket_no)) return null; // 派工單號通常 UTS… 開頭
   return { ticket_no, agency, reason };
 }
 
 // ── Flex（自己的清單，簡約式可刪） ──────────────────────
 function buildOwnList(name, rows) {
   const body = [
-    { type: 'text', text: `📋 ${name} 的工單 · ${rows.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
+    { type: 'text', text: `📋 ${name} 的派工單 · ${rows.length}`, size: 'sm', color: '#64748b', weight: 'bold' },
     { type: 'separator', margin: 'md', color: '#f1f5f9' },
   ];
   rows.forEach((t, i) => {
@@ -79,14 +79,14 @@ function buildOwnList(name, rows) {
         },
         {
           type: 'box', layout: 'vertical', width: '30px',
-          action: { type: 'message', label: '刪除', text: `/工單刪除 ${t.ticket_no}` },
+          action: { type: 'message', label: '刪除', text: `/派工單刪除 ${t.ticket_no}` },
           contents: [{ type: 'text', text: '✕', size: 'lg', align: 'center', color: '#94a3b8' }],
         },
       ],
     });
   });
   return {
-    type: 'flex', altText: '我的工單',
+    type: 'flex', altText: '我的派工單',
     contents: { type: 'bubble', size: 'giga', body: { type: 'box', layout: 'vertical', paddingAll: '18px', contents: body } },
   };
 }
@@ -96,32 +96,32 @@ export default {
   name: 'dept',
   scope: 'all',
 
-  helpText: `📋 部門工單（非本人瑕疵）使用說明
+  helpText: `📋 部門派工單（非本人瑕疵）使用說明
 
 ① 綁定名字（登錄前先做一次）
-　/工單綁定 Steven
+　/派工單綁定 Steven
 
-② 登錄工單（一行：工單號 機關 原因；可多行一次多筆）
-　/工單 UTS060226002 行政院主計總處 非本人瑕疵 接表單流程送件結果寫錯
+② 登錄派工單（一行：派工單號 機關 原因；可多行一次多筆）
+　/派工單 UTS060226002 行政院主計總處 非本人瑕疵 接表單流程送件結果寫錯
 　多筆：第二行起繼續貼，一次送出
 
 ③ 看自己登的（每筆可 ✕ 刪）
-　/我的工單
+　/我的派工單
 
 ④ 刪除
-　/工單刪除 UTS060226002
+　/派工單刪除 UTS060226002
 
 ⑤ 查詢（管理者）— 依登錄人分組列全部
-　/工單查詢　　或　/工單查詢 Steven
+　/派工單查詢　　或　/派工單查詢 Steven
 
 只記非本人瑕疵；判定處理由管理者線下做`,
 
   commands: [
-    // /工單綁定 <名字>
+    // /派工單綁定 <名字>
     {
       name: 'bind',
-      pattern: /^\/工單綁定\s+(.+)$/i,
-      describe: '/工單綁定 <名字> — 綁定登錄人',
+      pattern: /^\/派工單綁定\s+(.+)$/i,
+      describe: '/派工單綁定 <名字> — 綁定登錄人',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -131,19 +131,19 @@ export default {
            ON CONFLICT(user_id) DO UPDATE SET name = excluded.name`,
           ctx.userId, name
         );
-        return flex.mini({ icon: '🔗', title: '已綁定', accent: COLOR, body: `登錄人：${name}\n之後 /工單 ... 會記到你名下`, actions: [{ label: '看我的工單', text: '/我的工單' }] });
+        return flex.mini({ icon: '🔗', title: '已綁定', accent: COLOR, body: `登錄人：${name}\n之後 /派工單 ... 會記到你名下`, actions: [{ label: '看我的派工單', text: '/我的派工單' }] });
       },
     },
-    // /工單 <工單號> <機關> [非本人瑕疵] <原因>（可多行多筆）
+    // /派工單 <派工單號> <機關> [非本人瑕疵] <原因>（可多行多筆）
     {
       name: 'add',
-      pattern: /^\/工單\s+([\s\S]+)$/i,
-      describe: '/工單 <工單號> <機關> <原因> — 登錄非本人瑕疵工單',
+      pattern: /^\/派工單\s+([\s\S]+)$/i,
+      describe: '/派工單 <派工單號> <機關> <原因> — 登錄非本人瑕疵派工單',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
         const name = getName(ctx.userId);
-        if (!name) return '請先綁定你的名字：\n/工單綁定 <你的名字>';
+        if (!name) return '請先綁定你的名字：\n/派工單綁定 <你的名字>';
 
         const lines = match[1].split(/\n+/).map(l => l.trim()).filter(Boolean);
         const ok = [];
@@ -159,36 +159,36 @@ export default {
           ok.push(`${t.ticket_no} ${t.agency}`);
         }
         if (!ok.length) {
-          return '格式看不懂 🤔\n一行一筆：<工單號> <機關> <原因>\n例：/工單 UTS060226002 行政院主計總處 非本人瑕疵 接表單流程送件結果寫錯';
+          return '格式看不懂 🤔\n一行一筆：<派工單號> <機關> <原因>\n例：/派工單 UTS060226002 行政院主計總處 非本人瑕疵 接表單流程送件結果寫錯';
         }
         const lines2 = [`登錄人：${name}`, ...ok.map(x => `· ${x}`)];
         if (bad.length) lines2.push(`⚠️ ${bad.length} 行無法解析，已略過`);
-        return flex.mini({ icon: '📋', title: `已登錄 ${ok.length} 筆`, accent: COLOR, body: lines2.join('\n'), actions: [{ label: '看我的工單', text: '/我的工單' }] });
+        return flex.mini({ icon: '📋', title: `已登錄 ${ok.length} 筆`, accent: COLOR, body: lines2.join('\n'), actions: [{ label: '看我的派工單', text: '/我的派工單' }] });
       },
     },
-    // /我的工單
+    // /我的派工單
     {
       name: 'my',
-      pattern: /^\/我的工單$/i,
-      describe: '/我的工單 — 看自己登錄的工單',
+      pattern: /^\/我的派工單$/i,
+      describe: '/我的派工單 — 看自己登錄的派工單',
       type: 'query',
       handler: async (_match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
         const name = getName(ctx.userId);
-        if (!name) return '請先綁定你的名字：\n/工單綁定 <你的名字>';
+        if (!name) return '請先綁定你的名字：\n/派工單綁定 <你的名字>';
         const rows = db.all(
           'SELECT ticket_no, agency, reason FROM dept_tickets WHERE user_id = ? ORDER BY id DESC',
           ctx.userId
         );
-        if (!rows.length) return `${name} 目前沒有登錄工單\n用 /工單 <工單號> <機關> <原因> 登錄`;
+        if (!rows.length) return `${name} 目前沒有登錄派工單\n用 /派工單 <派工單號> <機關> <原因> 登錄`;
         return buildOwnList(name, rows);
       },
     },
-    // /工單刪除 <工單號>（只能刪自己的）
+    // /派工單刪除 <派工單號>（只能刪自己的）
     {
       name: 'del',
-      pattern: /^\/工單刪除\s+(.+)$/i,
-      describe: '/工單刪除 <工單號> — 刪除自己登錄的',
+      pattern: /^\/派工單刪除\s+(.+)$/i,
+      describe: '/派工單刪除 <派工單號> — 刪除自己登錄的',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
@@ -199,21 +199,21 @@ export default {
         return `🗑️ 已刪除：${no}`;
       },
     },
-    // /工單查詢 [名字] — 管理者查全部
+    // /派工單查詢 [名字] — 管理者查全部
     {
       name: 'query',
-      pattern: /^\/工單查詢(?:\s+(.+))?$/i,
-      describe: '/工單查詢 [名字] —（管理者）依登錄人查全部',
+      pattern: /^\/派工單查詢(?:\s+(.+))?$/i,
+      describe: '/派工單查詢 [名字] —（管理者）依登錄人查全部',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        if (!isManager(ctx.userId)) return '⛔ 僅管理者可查詢全部\n看自己的請用 /我的工單';
+        if (!isManager(ctx.userId)) return '⛔ 僅管理者可查詢全部\n看自己的請用 /我的派工單';
 
         const filter = (match[1] || '').trim();
         const rows = filter
           ? db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets WHERE name = ? ORDER BY id', filter)
           : db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets ORDER BY name, id');
-        if (!rows.length) return filter ? `「${filter}」沒有工單記錄` : '目前沒有任何工單記錄';
+        if (!rows.length) return filter ? `「${filter}」沒有派工單記錄` : '目前沒有任何派工單記錄';
 
         // 依登錄人分組
         const groups = new Map();
@@ -221,7 +221,7 @@ export default {
           if (!groups.has(r.name)) groups.set(r.name, []);
           groups.get(r.name).push(r);
         }
-        const lines = [`📋 非本人瑕疵工單（共 ${rows.length} 筆 · ${groups.size} 人）`];
+        const lines = [`📋 非本人瑕疵派工單（共 ${rows.length} 筆 · ${groups.size} 人）`];
         for (const [name, items] of groups) {
           lines.push('════════════');
           lines.push(`【${name}】${items.length} 筆`);
