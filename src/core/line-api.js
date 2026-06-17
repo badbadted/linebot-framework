@@ -81,6 +81,16 @@ export function createLineAPI(channelAccessToken) {
   }
 
   /**
+   * 查詢群組成員的 profile（群組成員不一定是好友，需用此端點）
+   * @returns {{ displayName, userId, pictureUrl }}
+   */
+  async function getGroupMemberProfile(groupId, userId) {
+    const res = await fetch(`https://api.line.me/v2/bot/group/${groupId}/member/${userId}`, { headers });
+    if (!res.ok) return null;
+    return JSON.parse(await res.text());
+  }
+
+  /**
    * 讓 bot 離開群組（C 開頭）或聊天室（R 開頭）
    */
   async function leaveChat(id) {
@@ -90,5 +100,5 @@ export function createLineAPI(channelAccessToken) {
     if (!res.ok) throw new Error(`LINE leave failed: ${res.status} ${body}`);
   }
 
-  return { reply, push, multicast, getProfile, getGroupSummary, leaveChat };
+  return { reply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, leaveChat };
 }
