@@ -18,7 +18,8 @@
       "travel",
       "bike",
       "swim",
-      "dept"
+      "dept",
+      "remind"
     ]
   },
   "scheduler": {
