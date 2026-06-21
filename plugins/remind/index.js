@@ -18,8 +18,12 @@ import { flex } from '../../src/utils/flex.js';
 let db, scheduler, lineApi;
 const COLOR = '#f59e0b'; // 琥珀
 
+// 「現在」這個瞬間與時區無關，直接用 new Date()——原本的 toLocaleString round-trip 在非台北主機會
+// 把牆鐘字串用伺服器本地時區誤判，導致所有提醒偏移數小時。
+// 注意：下方絕對時間分支（setHours / new Date(y,mo,d,...)）以伺服器本地時區建構牆鐘時間，
+// 假設部署主機時區為 Asia/Taipei（台灣固定 UTC+8、無日光節約）；若改部署到非台北主機需改用具時區能力的方式建構。
 function nowTW() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  return new Date();
 }
 function fmt(isoOrDate) {
   const d = typeof isoOrDate === 'string' ? new Date(isoOrDate) : isoOrDate;
@@ -48,7 +52,10 @@ function parseReminder(input) {
   }
   if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})\s+(.+)$/))) {
     const now = nowTW();
-    return { remindAt: new Date(now.getFullYear(), +m[1] - 1, +m[2], +m[3], +m[4]), content: m[5].trim() };
+    let d = new Date(now.getFullYear(), +m[1] - 1, +m[2], +m[3], +m[4]);
+    // 已過的月/日視為指明年（如年底設 12/25 隔年聖誕），比照 HH:MM 分支的 roll-forward
+    if (d <= now) d = new Date(now.getFullYear() + 1, +m[1] - 1, +m[2], +m[3], +m[4]);
+    return { remindAt: d, content: m[5].trim() };
   }
   if ((m = s.match(/^(\d{1,2}):(\d{2})\s+(.+)$/))) {
     const d = nowTW(); d.setHours(+m[1], +m[2], 0, 0);
