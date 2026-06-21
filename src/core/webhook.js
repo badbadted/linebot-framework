@@ -9,6 +9,12 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 
 export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, onChatSeen, logger }) {
+  // 啟動期告警：未設 channelSecret 時 webhook 會對所有請求靜默 return，bot 變成「活著但永不回應」
+  // 且沒有任何錯誤訊息可察覺。這裡在建構時（啟動一次）大聲提示，避免部署忘了設 secret 後默默失效。
+  if (!channelSecret) {
+    console.error('[webhook] ⚠️ 未設定 LINE_CHANNEL_SECRET — webhook 將忽略所有請求，bot 不會回應任何訊息！請檢查設定。');
+  }
+
   // 事件去重：防止同一 webhookEventId 被重複處理
   const recentEventIds = new Map(); // eventId → timestamp
   const DEDUP_WINDOW = 5 * 60_000;  // 5 分鐘
