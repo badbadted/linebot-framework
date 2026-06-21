@@ -32,14 +32,20 @@ let scheduler;
  */
 function parseWeekdays(text) {
   if (text === '每天') return [0, 1, 2, 3, 4, 5, 6];
+  if (text === '週末') return [6, 0];
+  if (text === '平日' || text === '工作日') return [1, 2, 3, 4, 5];
 
   const rangeMatch = text.match(/週(.)到(.)/);
   if (rangeMatch) {
     const start = WEEKDAY_MAP[rangeMatch[1]];
     const end = WEEKDAY_MAP[rangeMatch[2]];
     if (start !== undefined && end !== undefined) {
+      // 支援跨週反向範圍（如 週六到日 = 6→0、週五到一 = 5→1）：環繞補滿至 end
       const days = [];
-      for (let i = start; i <= end; i++) days.push(i);
+      for (let i = start; ; i = (i + 1) % 7) {
+        days.push(i);
+        if (i === end) break;
+      }
       return days;
     }
   }
@@ -87,6 +93,10 @@ function parseRoutinesFile() {
       const match = timePart.match(/^(.+?)\s+(\d{1,2}):(\d{2})$/);
       if (match) {
         const weekdays = parseWeekdays(match[1]);
+        if (!weekdays.length) {
+          console.warn(`[routines] 略過無法解析星期的例行事項：「${timePart}」`);
+          continue;
+        }
         const hour = parseInt(match[2]);
         const minute = parseInt(match[3]);
         // 轉成 cron: "20 7 * * 1-5" 或 "20 7 * * 1,3,5"
