@@ -9,6 +9,29 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 let model = null;
 
+const FETCH_TIMEOUT_MS = 8000;
+const GEMINI_TIMEOUT_MS = 20000;
+
+// 帶逾時的 fetch：目標網站卡住時主動 abort，避免 /美食 整個請求無限掛住、replyToken 失效
+async function fetchWithTimeout(url, opts = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// 為任意 promise 加逾時上限（Gemini SDK 無原生 timeout 參數）
+function withTimeout(promise, timeoutMs, label) {
+  let t;
+  const timeout = new Promise((_, reject) => {
+    t = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
 // ── 初始化 ──────────────────────────────────────────
 
 export function initGemini() {
@@ -98,7 +121,7 @@ function parseLongUrl(url) {
 }
 
 export async function resolveGoogleMapsUrl(shortUrl) {
-  const res = await fetch(shortUrl, {
+  const res = await fetchWithTimeout(shortUrl, {
     redirect: 'follow',
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -125,7 +148,7 @@ export async function resolveExternalUrl(url) {
   // 先嘗試 fetch OG meta 取得線索
   let hint = '';
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       redirect: 'follow',
       headers: { 'User-Agent': 'facebookexternalhit/1.1' },
     });
@@ -172,7 +195,7 @@ ${url}${hintBlock}${platformWarn}
 - lat/lng 如果知道填數字，不知道填 null
 - 真的找不到就全部填空字串/null，不要猜`;
 
-  const result = await model.generateContent(prompt);
+  const result = await withTimeout(model.generateContent(prompt), GEMINI_TIMEOUT_MS, 'gemini');
   const text = result.response.text();
   console.log('[niujiu-gemini] resolve raw:', text.slice(0, 200));
   const parsed = safeParseJson(text);
@@ -238,7 +261,7 @@ export async function enrichRestaurant(name, address, area) {
   if (!model) throw new Error('Gemini not initialized');
 
   const prompt = buildEnrichPrompt(name, address, area);
-  const result = await model.generateContent(prompt);
+  const result = await withTimeout(model.generateContent(prompt), GEMINI_TIMEOUT_MS, 'gemini');
   const text = result.response.text();
   return parseEnrichResponse(text);
 }
