@@ -23,21 +23,33 @@ export function createScheduler({ lineApi }) {
       jobs.get(name).task?.stop();
     }
 
-    const task = cron.schedule(schedule, async () => {
-      const job = jobs.get(name);
-      if (job && !job.enabled) {
-        console.log(`[scheduler] skipped (disabled): ${name}`);
-        return;
-      }
-      console.log(`[scheduler] firing: ${name}`);
-      try {
-        await handler({ lineApi, jobName: name });
-      } catch (err) {
-        console.error(`[scheduler] error in "${name}": ${err.message}`);
-      }
-    }, {
-      timezone: opts.timezone || 'Asia/Taipei',
-    });
+    // 無效 cron（如 dow 欄為空的 '20 7 * * '）先擋下，避免 cron.schedule 拋例外中斷整批註冊
+    if (!cron.validate(schedule)) {
+      console.error(`[scheduler] invalid cron expression for "${name}": "${schedule}" — 跳過註冊`);
+      return false;
+    }
+
+    let task;
+    try {
+      task = cron.schedule(schedule, async () => {
+        const job = jobs.get(name);
+        if (job && !job.enabled) {
+          console.log(`[scheduler] skipped (disabled): ${name}`);
+          return;
+        }
+        console.log(`[scheduler] firing: ${name}`);
+        try {
+          await handler({ lineApi, jobName: name });
+        } catch (err) {
+          console.error(`[scheduler] error in "${name}": ${err.message}`);
+        }
+      }, {
+        timezone: opts.timezone || 'Asia/Taipei',
+      });
+    } catch (err) {
+      console.error(`[scheduler] failed to schedule "${name}" (${schedule}): ${err.message} — 跳過註冊`);
+      return false;
+    }
 
     jobs.set(name, {
       task,
@@ -50,6 +62,7 @@ export function createScheduler({ lineApi }) {
     });
 
     console.log(`[scheduler] registered: ${name} (${schedule})`);
+    return true;
   }
 
   /**
@@ -132,7 +145,12 @@ export function createScheduler({ lineApi }) {
       return;
     }
 
-    const timer = setTimeout(async () => {
+    // setTimeout 的 delay 是 32-bit 有號整數，上限約 24.8 天；超過會溢位取模導致幾乎立即誤觸發。
+    // 對長延遲分段：先睡到上限再重算剩餘時間續排，直到剩餘落在安全範圍內才真正觸發。
+    const MAX_DELAY = 2147483647;
+    let timer = null;
+
+    const fire = async () => {
       console.log(`[scheduler] firing once: ${name}`);
       try {
         await handler({ lineApi, jobName: name });
@@ -140,9 +158,16 @@ export function createScheduler({ lineApi }) {
         console.error(`[scheduler] once error in "${name}": ${err.message}`);
       }
       jobs.delete(name);
-    }, delay);
+    };
+    const arm = () => {
+      const remaining = targetTime - Date.now();
+      timer = remaining > MAX_DELAY
+        ? setTimeout(arm, MAX_DELAY)
+        : setTimeout(fire, Math.max(0, remaining));
+    };
+    arm();
 
-    // 存入 jobs（stop/list 時可管理）
+    // 存入 jobs（stop/list 時可管理）；timer 由 arm() 動態更新，stop 永遠清掉當前 timer
     jobs.set(name, {
       task: { stop: () => clearTimeout(timer) },
       schedule: `once@${new Date(targetTime).toISOString()}`,
