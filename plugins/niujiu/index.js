@@ -525,9 +525,11 @@ export default {
           });
         }
 
-        // ── 即將額滿通知（只差 1 人）──
+        // ── 即將額滿通知（剩 1 位或一次報名 +2 直接跳到額滿）──
+        // 用 >= 而非 ===：報名一次 +2（大人+小孩）會從 max-2 跳到 max，跳過 max-1，
+        // 嚴格相等會永遠不觸發。與上方 init 區的 >= max-1 判斷統一，並靠 notifiedAlmostFull 去重。
         if (event.maxParticipants > 0
-          && event.currentParticipants === event.maxParticipants - 1
+          && event.currentParticipants >= event.maxParticipants - 1
           && !notifiedAlmostFull.has(event.id)
           && ['voting', 'upcoming', 'ongoing'].includes(event.status)) {
           notifiedAlmostFull.add(event.id);
