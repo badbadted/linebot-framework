@@ -36,33 +36,61 @@ function normalize(s) {
   return String(s).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/　/g, ' ');
 }
 
-/** 解析「<時間> <內容>」→ { remindAt: Date, content } | null */
+// 時段詞 → am / pm / noon
+const PART = { 凌晨: 'am', 早上: 'am', 上午: 'am', 中午: 'noon', 下午: 'pm', 晚上: 'pm', 傍晚: 'pm', 夜晚: 'pm' };
+
+/**
+ * 解析「[日期][星期] [時段] <時間> <內容>」→ { remindAt: Date, content } | null
+ * 支援：18:00 開會 / 明天 09:00 X / 7/1（三）下午5:15維鈞牙醫 / 晚上6:20東區衛生所 /
+ *       30分鐘後 X / 2小時後 X（內容可黏在時間後面）
+ */
 function parseReminder(input) {
-  const s = normalize(input).trim();
+  let s = normalize(input).trim();
   let m;
-  if ((m = s.match(/^(\d+)\s*分鐘?後\s+(.+)$/))) {
-    return { remindAt: new Date(nowTW().getTime() + (+m[1]) * 60000), content: m[2].trim() };
+
+  // 相對時間
+  if ((m = s.match(/^(\d+)\s*分鐘?後\s*(.+)$/))) return { remindAt: new Date(Date.now() + (+m[1]) * 60000), content: m[2].trim() };
+  if ((m = s.match(/^(\d+)\s*(?:小時|時)後\s*(.+)$/))) return { remindAt: new Date(Date.now() + (+m[1]) * 3600000), content: m[2].trim() };
+
+  const now = nowTW();
+  let year = now.getFullYear(), mon = now.getMonth() + 1, day = now.getDate();
+  let dateMode = 'none';
+
+  // 去星期註記：（三）(二)（週五）（星期一）
+  s = s.replace(/[（(]\s*(?:週|星期|禮拜)?[一二三四五六日天]\s*[）)]/g, ' ').trim();
+
+  // 相對日 或 M/D
+  if ((m = s.match(/^(今天|明天|後天)\s*/))) {
+    const add = m[1] === '明天' ? 1 : m[1] === '後天' ? 2 : 0;
+    const d = new Date(now); d.setDate(d.getDate() + add);
+    year = d.getFullYear(); mon = d.getMonth() + 1; day = d.getDate();
+    dateMode = 'rel'; s = s.slice(m[0].length).trim();
+  } else if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\s*/))) {
+    mon = +m[1]; day = +m[2]; dateMode = 'md'; s = s.slice(m[0].length).trim();
   }
-  if ((m = s.match(/^(\d+)\s*(?:小時|時)後\s+(.+)$/))) {
-    return { remindAt: new Date(nowTW().getTime() + (+m[1]) * 3600000), content: m[2].trim() };
-  }
-  if ((m = s.match(/^明天\s*(\d{1,2}):(\d{2})\s+(.+)$/))) {
-    const d = nowTW(); d.setDate(d.getDate() + 1); d.setHours(+m[1], +m[2], 0, 0);
-    return { remindAt: d, content: m[3].trim() };
-  }
-  if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})\s+(.+)$/))) {
-    const now = nowTW();
-    let d = new Date(now.getFullYear(), +m[1] - 1, +m[2], +m[3], +m[4]);
-    // 已過的月/日視為指明年（如年底設 12/25 隔年聖誕），比照 HH:MM 分支的 roll-forward
-    if (d <= now) d = new Date(now.getFullYear() + 1, +m[1] - 1, +m[2], +m[3], +m[4]);
-    return { remindAt: d, content: m[5].trim() };
-  }
-  if ((m = s.match(/^(\d{1,2}):(\d{2})\s+(.+)$/))) {
-    const d = nowTW(); d.setHours(+m[1], +m[2], 0, 0);
-    if (d <= nowTW()) d.setDate(d.getDate() + 1);
-    return { remindAt: d, content: m[3].trim() };
-  }
-  return null;
+
+  // 時段詞（下午/晚上/上午…）
+  let part = null;
+  if ((m = s.match(/^(凌晨|早上|上午|中午|下午|晚上|傍晚|夜晚)\s*/))) { part = PART[m[1]]; s = s.slice(m[0].length).trim(); }
+
+  // 時間 H:MM / H：MM / H點MM分 / H點（內容可緊接其後）
+  if (!(m = s.match(/^(\d{1,2})\s*[:：點]\s*(\d{1,2})?\s*分?/))) return null;
+  let hour = +m[1]; const min = m[2] != null ? +m[2] : 0;
+  s = s.slice(m[0].length).trim();
+
+  // 套用時段
+  if (part === 'pm' && hour < 12) hour += 12;
+  else if (part === 'am' && hour === 12) hour = 0;
+  else if (part === 'noon') hour = 12;
+  if (hour > 23 || min > 59) return null;
+
+  const content = s.trim();
+  if (!content) return null;
+
+  let d = new Date(year, mon - 1, day, hour, min, 0);
+  if (dateMode === 'none' && d <= now) d = new Date(year, mon - 1, day + 1, hour, min, 0); // 沒給日期、已過 → 明天
+  if (dateMode === 'md' && d <= now) d = new Date(year + 1, mon - 1, day, hour, min, 0);   // 給 M/D 已過 → 明年
+  return { remindAt: d, content };
 }
 
 // 待提醒（某 scope 的某人）
@@ -92,9 +120,10 @@ export default {
 設定（時間 + 內容）：
 　/提醒 18:00 開會
 　/提醒 明天 09:00 交報告
-　/提醒 12/25 10:00 聖誕
-　/提醒 30分鐘後 倒垃圾
-　/提醒 2小時後 回電
+　/提醒 7/1（三）下午5:15 維鈞牙醫
+　/提醒 晚上6:20 東區衛生所
+　/提醒 30分鐘後 倒垃圾　/提醒 2小時後 回電
+　（內容可緊接時間，不用空格；可加上下午/晚上/星期）
 
 看清單：/提醒
 取消：/提醒取消 1（或點清單的 ✕）
