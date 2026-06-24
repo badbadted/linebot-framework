@@ -168,6 +168,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
   const MODULE_NAMES = {
     bike: '🚲 滑步車', swim: '🏊 游泳', todo: '📋 待辦', work: '💼 工作',
     travel: '🧳 旅遊', niujiu: '🍜 妞揪', fitness: '💪 健身', routines: '⏰ 例行',
+    dept: '📑 派工單', remind: '🔔 提醒',
     _system: '⚙️ 系統',
   };
   const moduleLabel = (p) => MODULE_NAMES[p] || p;
