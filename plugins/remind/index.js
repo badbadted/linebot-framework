@@ -90,7 +90,7 @@ function parseReminder(input) {
   let d = new Date(year, mon - 1, day, hour, min, 0);
   if (dateMode === 'none' && d <= now) d = new Date(year, mon - 1, day + 1, hour, min, 0); // 沒給日期、已過 → 明天
   if (dateMode === 'md' && d <= now) d = new Date(year + 1, mon - 1, day, hour, min, 0);   // 給 M/D 已過 → 明年
-  return { remindAt: d, content };
+  return { remindAt: d, content, dated: dateMode !== 'none' }; // dated=有明確給日期（明天/後天/M/D）
 }
 
 // 待提醒（某 scope 的某人）
@@ -128,8 +128,9 @@ export default {
 看清單：/提醒
 取消：/提醒取消 1（或點清單的 ✕）
 
+🔸 有指定日期（7/1、明天…）→ 當天早上 7:00 提醒一次
+🔸 當天/相對（今天某點、30分鐘後）→ 準時提醒
 🔸 在群組設→提醒到群組；私訊設→提醒給你
-🔸 每早 7:00 會先推「今天的提醒」摘要
 🔸 重啟不會掉、過期會補推`,
 
   commands: [
@@ -204,15 +205,23 @@ export default {
         if (ctx.groupId) {
           try { const p = await ctx.lineApi.getGroupMemberProfile(ctx.groupId, ctx.userId); addedBy = p?.displayName || ''; } catch { /* ignore */ }
         }
+        // 有未來日期 → 當天早上提醒（morning）；當天/相對 → 準時提醒（exact）
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+        const rd = parsed.remindAt.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+        const mode = (parsed.dated && rd > today) ? 'morning' : 'exact';
+
         const result = db.run(
-          `INSERT INTO reminders (user_id, scope_id, added_by, content, remind_at, fired, created_at)
-           VALUES (?, ?, ?, ?, ?, 0, datetime('now','+8 hours'))`,
-          ctx.userId, ctx.scopeId, addedBy, parsed.content, parsed.remindAt.toISOString()
+          `INSERT INTO reminders (user_id, scope_id, added_by, content, remind_at, mode, fired, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now','+8 hours'))`,
+          ctx.userId, ctx.scopeId, addedBy, parsed.content, parsed.remindAt.toISOString(), mode
         );
-        schedule({ id: result.lastInsertRowid, scope_id: ctx.scopeId, added_by: addedBy, content: parsed.content, remind_at: parsed.remindAt.toISOString() });
+        if (mode === 'exact') {
+          schedule({ id: result.lastInsertRowid, scope_id: ctx.scopeId, added_by: addedBy, content: parsed.content, remind_at: parsed.remindAt.toISOString() });
+        }
+        const when = mode === 'morning' ? `${fmt(parsed.remindAt)}（當天早上 7:00 提醒）` : fmt(parsed.remindAt);
         return flex.mini({
           icon: '⏰', title: '已設定提醒', accent: COLOR,
-          body: `${parsed.content}\n📅 ${fmt(parsed.remindAt)}`,
+          body: `${parsed.content}\n📅 ${when}`,
           actions: [{ label: '看待提醒', text: '/提醒' }],
         });
       },
@@ -227,11 +236,12 @@ export default {
       handler: async () => {
         if (!db) return;
         const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
-        const rows = db.all('SELECT scope_id, content, remind_at FROM reminders WHERE fired = 0');
-        const todays = rows.filter(r => new Date(r.remind_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }) === today);
-        if (!todays.length) return;
+        // 只處理「早上提醒」(morning) 的；當天或更早(漏推)的都推
+        const rows = db.all("SELECT id, scope_id, content, remind_at FROM reminders WHERE fired = 0 AND mode = 'morning'");
+        const due = rows.filter(r => new Date(r.remind_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }) <= today);
+        if (!due.length) return;
         const byScope = new Map();
-        for (const r of todays) {
+        for (const r of due) {
           if (!byScope.has(r.scope_id)) byScope.set(r.scope_id, []);
           byScope.get(r.scope_id).push(r);
         }
@@ -245,6 +255,7 @@ export default {
           try { await lineApi.push(scope, lines.join('\n')); }
           catch (err) { console.error(`[remind] digest push: ${err.message}`); }
         }
+        for (const r of due) db.run('UPDATE reminders SET fired = 1 WHERE id = ?', r.id);
       },
     },
   ],
@@ -263,22 +274,39 @@ export default {
         added_by TEXT,
         content TEXT NOT NULL,
         remind_at TEXT NOT NULL,
+        mode TEXT DEFAULT 'exact',
         fired INTEGER DEFAULT 0,
         created_at TEXT NOT NULL
       )
     `);
+    const cols = db.all('PRAGMA table_info(reminders)').map(c => c.name);
+    if (!cols.includes('mode')) db.exec("ALTER TABLE reminders ADD COLUMN mode TEXT DEFAULT 'exact'");
     db.exec('CREATE INDEX IF NOT EXISTS idx_remind_user ON reminders (user_id, fired)');
 
-    // 重啟恢復：未觸發的 → 未來的重新排程、過期的補推一次
+    // 重啟恢復
     const pending = db.all('SELECT * FROM reminders WHERE fired = 0');
+    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+    const nowHour = new Date().getHours(); // 伺服器=台北
     let restored = 0, overdue = 0;
     for (const r of pending) {
-      if (new Date(r.remind_at) > new Date()) { schedule(r); restored++; }
-      else {
-        const who = r.added_by ? `\n— ${r.added_by}` : '';
-        lineApi.push(r.scope_id, flex.card({ title: '⏰ 提醒（補）', body: `${r.content}${who}`, color: COLOR })).catch(() => {});
-        db.run('UPDATE reminders SET fired = 1 WHERE id = ?', r.id);
-        overdue++;
+      const at = new Date(r.remind_at);
+      const rd = at.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+      if ((r.mode || 'exact') === 'morning') {
+        // 早上提醒：當天且已過 7 點、或更早(漏推) → 補推；否則交給 7 點排程
+        if (rd < todayStr || (rd === todayStr && nowHour >= 7)) {
+          const tm = at.toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false });
+          lineApi.push(r.scope_id, `☀️ 今天的提醒\n\n${tm}　${r.content}`).catch(() => {});
+          db.run('UPDATE reminders SET fired = 1 WHERE id = ?', r.id);
+          overdue++;
+        }
+      } else { // exact
+        if (at > new Date()) { schedule(r); restored++; }
+        else {
+          const who = r.added_by ? `\n— ${r.added_by}` : '';
+          lineApi.push(r.scope_id, flex.card({ title: '⏰ 提醒（補）', body: `${r.content}${who}`, color: COLOR })).catch(() => {});
+          db.run('UPDATE reminders SET fired = 1 WHERE id = ?', r.id);
+          overdue++;
+        }
       }
     }
     if (restored || overdue) console.log(`[remind] restored ${restored}, overdue-pushed ${overdue}`);
