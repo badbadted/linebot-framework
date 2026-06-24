@@ -129,6 +129,7 @@ export default {
 取消：/提醒取消 1（或點清單的 ✕）
 
 🔸 在群組設→提醒到群組；私訊設→提醒給你
+🔸 每早 7:00 會先推「今天的提醒」摘要
 🔸 重啟不會掉、過期會補推`,
 
   commands: [
@@ -218,7 +219,35 @@ export default {
     },
   ],
 
-  schedules: [],
+  schedules: [
+    {
+      name: 'remind-morning-digest',
+      cron: '0 7 * * *', // 每天早上 7:00
+      describe: '每早 7:00 推「今天的提醒」摘要（依設定的群組/私訊分送）',
+      handler: async () => {
+        if (!db) return;
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+        const rows = db.all('SELECT scope_id, content, remind_at FROM reminders WHERE fired = 0');
+        const todays = rows.filter(r => new Date(r.remind_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }) === today);
+        if (!todays.length) return;
+        const byScope = new Map();
+        for (const r of todays) {
+          if (!byScope.has(r.scope_id)) byScope.set(r.scope_id, []);
+          byScope.get(r.scope_id).push(r);
+        }
+        for (const [scope, items] of byScope) {
+          items.sort((a, b) => new Date(a.remind_at) - new Date(b.remind_at));
+          const lines = ['☀️ 今天的提醒', ''];
+          for (const it of items) {
+            const t = new Date(it.remind_at).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false });
+            lines.push(`${t}　${it.content}`);
+          }
+          try { await lineApi.push(scope, lines.join('\n')); }
+          catch (err) { console.error(`[remind] digest push: ${err.message}`); }
+        }
+      },
+    },
+  ],
 
   init: async (ctx) => {
     db = ctx.db;
