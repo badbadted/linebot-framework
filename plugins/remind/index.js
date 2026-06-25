@@ -119,6 +119,26 @@ function schedule(r) {
   });
 }
 
+// 有未來日期 → 早上提醒（morning）；當天/相對 → 準時提醒（exact）
+function computeMode(parsed) {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+  const rd = parsed.remindAt.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+  return (parsed.dated && rd > today) ? 'morning' : 'exact';
+}
+
+// 寫入一筆提醒 + 排程，回傳給使用者看的時間描述
+function createReminder(ctx, parsed, addedBy) {
+  const mode = computeMode(parsed);
+  const result = db.run(
+    `INSERT INTO reminders (user_id, scope_id, added_by, content, remind_at, mode, fired, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now','+8 hours'))`,
+    ctx.userId, ctx.scopeId, addedBy, parsed.content, parsed.remindAt.toISOString(), mode
+  );
+  schedule({ id: result.lastInsertRowid, scope_id: ctx.scopeId, added_by: addedBy, content: parsed.content, remind_at: parsed.remindAt.toISOString(), mode });
+  const when = mode === 'morning' ? `${fmt(parsed.remindAt)}（早上7點＋前30分）` : fmt(parsed.remindAt);
+  return { content: parsed.content, when };
+}
+
 export default {
   name: 'remind',
   scope: 'all',
@@ -195,42 +215,53 @@ export default {
         return { type: 'flex', altText: '待提醒', contents: { type: 'bubble', size: 'giga', body: { type: 'box', layout: 'vertical', paddingAll: '18px', contents: body } } };
       },
     },
-    // /提醒 <時間> <內容> → 設定
+    // /提醒 <時間> <內容> → 設定（[\s\S] 才能跨行：一則訊息多行 = 多筆提醒）
     {
       name: 'set',
-      pattern: /^\/提醒\s+(.+)$/i,
+      pattern: /^\/提醒\s+([\s\S]+)$/i,
       describe: '/提醒 <時間> <內容> — 設定定時提醒',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
-        const parsed = parseReminder(match[1]);
-        if (!parsed) {
-          return '看不懂時間格式 🤔\n例：\n/提醒 18:00 開會\n/提醒 明天 09:00 交報告\n/提醒 30分鐘後 倒垃圾';
+
+        // 支援一則訊息多行，每行一個 /提醒；單行則退回整段參數
+        const raw = ctx.event?.message?.text ?? `/提醒 ${match[1]}`;
+        const specs = [];
+        for (const line of raw.split(/\r?\n/)) {
+          const mm = line.trim().match(/^\/提醒\s+(.+)$/i);
+          if (mm) specs.push(mm[1].trim());
         }
-        if (parsed.remindAt <= nowTW()) return '提醒時間已經過了，請給未來的時間';
+        if (!specs.length) specs.push(match[1].trim());
 
         let addedBy = '';
         if (ctx.groupId) {
           try { const p = await ctx.lineApi.getGroupMemberProfile(ctx.groupId, ctx.userId); addedBy = p?.displayName || ''; } catch { /* ignore */ }
         }
-        // 有未來日期 → 當天早上提醒（morning）；當天/相對 → 準時提醒（exact）
-        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
-        const rd = parsed.remindAt.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
-        const mode = (parsed.dated && rd > today) ? 'morning' : 'exact';
 
-        const result = db.run(
-          `INSERT INTO reminders (user_id, scope_id, added_by, content, remind_at, mode, fired, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now','+8 hours'))`,
-          ctx.userId, ctx.scopeId, addedBy, parsed.content, parsed.remindAt.toISOString(), mode
-        );
-        // 一律排「響」的提醒（morning 在事件前30分、exact 在該時間）；morning 另由 7 點摘要 heads-up
-        schedule({ id: result.lastInsertRowid, scope_id: ctx.scopeId, added_by: addedBy, content: parsed.content, remind_at: parsed.remindAt.toISOString(), mode });
-        const when = mode === 'morning' ? `${fmt(parsed.remindAt)}\n（當天早上 7:00 + 事件前 30 分提醒）` : fmt(parsed.remindAt);
-        return flex.mini({
-          icon: '⏰', title: '已設定提醒', accent: COLOR,
-          body: `${parsed.content}\n📅 ${when}`,
-          actions: [{ label: '看待提醒', text: '/提醒' }],
-        });
+        const ok = [], bad = [];
+        for (const spec of specs) {
+          const parsed = parseReminder(spec);
+          if (!parsed) { bad.push(spec); continue; }
+          if (parsed.remindAt <= nowTW()) { bad.push(`${spec}（時間已過）`); continue; }
+          ok.push(createReminder(ctx, parsed, addedBy));
+        }
+
+        if (!ok.length) {
+          return '看不懂時間格式 🤔\n例：\n/提醒 18:00 開會\n/提醒 明天 09:00 交報告\n/提醒 30分鐘後 倒垃圾';
+        }
+
+        // 單筆 → 卡片；多筆 → 條列摘要
+        if (ok.length === 1 && !bad.length) {
+          return flex.mini({
+            icon: '⏰', title: '已設定提醒', accent: COLOR,
+            body: `${ok[0].content}\n📅 ${ok[0].when}`,
+            actions: [{ label: '看待提醒', text: '/提醒' }],
+          });
+        }
+        const lines = [`⏰ 已設定 ${ok.length} 筆提醒`, ''];
+        for (const o of ok) lines.push(`• ${o.content}\n　📅 ${o.when}`);
+        if (bad.length) { lines.push('', `⚠️ 看不懂 ${bad.length} 筆：`); for (const b of bad) lines.push(`• ${b}`); }
+        return flex.card({ title: '已設定提醒', body: lines.slice(1).join('\n'), color: COLOR });
       },
     },
   ],
