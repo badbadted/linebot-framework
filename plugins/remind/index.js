@@ -101,11 +101,19 @@ function myPending(userId) {
   );
 }
 
+const hhmm = (d) => new Date(d).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false });
+
+// 響的時間：morning（有日期的）→ 事件前 30 分；exact（當天/相對）→ 就是該時間
+function pingTimeOf(r) {
+  const ev = new Date(r.remind_at);
+  return r.mode === 'morning' ? new Date(ev.getTime() - 30 * 60000) : ev;
+}
 function schedule(r) {
-  scheduler.addOnce(`remind-${r.id}`, new Date(r.remind_at), async () => {
+  scheduler.addOnce(`remind-${r.id}`, pingTimeOf(r), async () => {
     const who = r.added_by ? `\n— ${r.added_by}` : '';
+    const lead = r.mode === 'morning' ? `${hhmm(r.remind_at)}（30 分鐘後）\n` : '';
     try {
-      await lineApi.push(r.scope_id, flex.card({ title: '⏰ 提醒', body: `${r.content}${who}`, color: COLOR }));
+      await lineApi.push(r.scope_id, flex.card({ title: '⏰ 提醒', body: `${lead}${r.content}${who}`, color: COLOR }));
     } catch (err) { console.error(`[remind] push error: ${err.message}`); }
     db.run('UPDATE reminders SET fired = 1 WHERE id = ?', r.id);
   });
@@ -128,7 +136,7 @@ export default {
 看清單：/提醒
 取消：/提醒取消 1（或點清單的 ✕）
 
-🔸 有指定日期（7/1、明天…）→ 當天早上 7:00 提醒一次
+🔸 有指定日期（7/1、明天…）→ 當天早上 7:00 先提醒，事件前 30 分再提醒一次
 🔸 當天/相對（今天某點、30分鐘後）→ 準時提醒
 🔸 在群組設→提醒到群組；私訊設→提醒給你
 🔸 重啟不會掉、過期會補推`,
@@ -215,10 +223,9 @@ export default {
            VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now','+8 hours'))`,
           ctx.userId, ctx.scopeId, addedBy, parsed.content, parsed.remindAt.toISOString(), mode
         );
-        if (mode === 'exact') {
-          schedule({ id: result.lastInsertRowid, scope_id: ctx.scopeId, added_by: addedBy, content: parsed.content, remind_at: parsed.remindAt.toISOString() });
-        }
-        const when = mode === 'morning' ? `${fmt(parsed.remindAt)}（當天早上 7:00 提醒）` : fmt(parsed.remindAt);
+        // 一律排「響」的提醒（morning 在事件前30分、exact 在該時間）；morning 另由 7 點摘要 heads-up
+        schedule({ id: result.lastInsertRowid, scope_id: ctx.scopeId, added_by: addedBy, content: parsed.content, remind_at: parsed.remindAt.toISOString(), mode });
+        const when = mode === 'morning' ? `${fmt(parsed.remindAt)}\n（當天早上 7:00 + 事件前 30 分提醒）` : fmt(parsed.remindAt);
         return flex.mini({
           icon: '⏰', title: '已設定提醒', accent: COLOR,
           body: `${parsed.content}\n📅 ${when}`,
@@ -236,8 +243,9 @@ export default {
       handler: async () => {
         if (!db) return;
         const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
-        // 只處理「早上提醒」(morning) 的；當天或更早(漏推)的都推
-        const rows = db.all("SELECT id, scope_id, content, remind_at FROM reminders WHERE fired = 0 AND mode = 'morning'");
+        // 只處理「早上提醒」(morning) 中尚未推過 7 點摘要的；當天或更早(漏推)的都推
+        // morning_done 與 fired 分開：7 點摘要 → morning_done；事件前 30 分 ping → fired，兩者獨立
+        const rows = db.all("SELECT id, scope_id, content, remind_at FROM reminders WHERE fired = 0 AND morning_done = 0 AND mode = 'morning'");
         const due = rows.filter(r => new Date(r.remind_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }) <= today);
         if (!due.length) return;
         const byScope = new Map();
@@ -255,7 +263,7 @@ export default {
           try { await lineApi.push(scope, lines.join('\n')); }
           catch (err) { console.error(`[remind] digest push: ${err.message}`); }
         }
-        for (const r of due) db.run('UPDATE reminders SET fired = 1 WHERE id = ?', r.id);
+        for (const r of due) db.run('UPDATE reminders SET morning_done = 1 WHERE id = ?', r.id);
       },
     },
   ],
@@ -276,11 +284,13 @@ export default {
         remind_at TEXT NOT NULL,
         mode TEXT DEFAULT 'exact',
         fired INTEGER DEFAULT 0,
+        morning_done INTEGER DEFAULT 0,
         created_at TEXT NOT NULL
       )
     `);
     const cols = db.all('PRAGMA table_info(reminders)').map(c => c.name);
     if (!cols.includes('mode')) db.exec("ALTER TABLE reminders ADD COLUMN mode TEXT DEFAULT 'exact'");
+    if (!cols.includes('morning_done')) db.exec('ALTER TABLE reminders ADD COLUMN morning_done INTEGER DEFAULT 0');
     db.exec('CREATE INDEX IF NOT EXISTS idx_remind_user ON reminders (user_id, fired)');
 
     // 重啟恢復
@@ -292,10 +302,18 @@ export default {
       const at = new Date(r.remind_at);
       const rd = at.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
       if ((r.mode || 'exact') === 'morning') {
-        // 早上提醒：當天且已過 7 點、或更早(漏推) → 補推；否則交給 7 點排程
-        if (rd < todayStr || (rd === todayStr && nowHour >= 7)) {
+        // (a) 7 點摘要 heads-up：尚未推過、且當天已過 7 點或更早(漏推) → 補推；否則交給 7 點排程
+        if (!r.morning_done && (rd < todayStr || (rd === todayStr && nowHour >= 7))) {
           const tm = at.toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false });
           lineApi.push(r.scope_id, `☀️ 今天的提醒\n\n${tm}　${r.content}`).catch(() => {});
+          db.run('UPDATE reminders SET morning_done = 1 WHERE id = ?', r.id);
+        }
+        // (b) 事件前 30 分 ping（與摘要獨立，標 fired）
+        const ping = pingTimeOf(r);
+        if (ping > new Date()) { schedule(r); restored++; }
+        else {
+          const who = r.added_by ? `\n— ${r.added_by}` : '';
+          lineApi.push(r.scope_id, flex.card({ title: '⏰ 提醒（補）', body: `${r.content}${who}`, color: COLOR })).catch(() => {});
           db.run('UPDATE reminders SET fired = 1 WHERE id = ?', r.id);
           overdue++;
         }
