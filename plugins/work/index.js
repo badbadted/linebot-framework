@@ -277,7 +277,8 @@ export default {
     const cols = db.all('PRAGMA table_info(work_items)').map(c => c.name);
     if (!cols.includes('scope_id')) db.exec('ALTER TABLE work_items ADD COLUMN scope_id TEXT');
     if (!cols.includes('added_by')) db.exec('ALTER TABLE work_items ADD COLUMN added_by TEXT');
-    db.exec('UPDATE work_items SET scope_id = user_id WHERE scope_id IS NULL OR scope_id = ""');
+    // 注意：SQLite 把雙引號當識別字（欄名），空字串字面值必須用單引號，否則報 no such column: ""
+    db.exec("UPDATE work_items SET scope_id = user_id WHERE scope_id IS NULL OR scope_id = ''");
     db.exec('CREATE INDEX IF NOT EXISTS idx_work_scope ON work_items (scope_id, done)');
   },
 };
