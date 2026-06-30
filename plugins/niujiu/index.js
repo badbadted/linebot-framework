@@ -267,6 +267,7 @@ async function remindTomorrowEvents({ lineApi }) {
         const time = formatTimeRange(event.startTime, event.endTime);
         lines.push(`❌ ${event.title}`);
         if (time) lines.push(`   🕐 ${time}`);
+        if (event.cancelReason) lines.push(`   原因：${event.cancelReason}`);
         lines.push('');
       }
     }
@@ -519,6 +520,7 @@ export default {
           if (event.startDate) {
             lines.push(`原定時間：${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
           }
+          if (event.cancelReason) lines.push(`原因：${event.cancelReason}`);
           console.log(`[niujiu] cancel-notify: ${event.title}`);
           lineApi.push(NOTIFY_GROUP_ID, lines.join('\n')).catch(err => {
             console.error(`[niujiu] cancel-notify push error: ${err.message}`);
