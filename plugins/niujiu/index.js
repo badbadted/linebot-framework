@@ -511,20 +511,38 @@ export default {
         // ── 取消通知 ──
         if (event.status === 'cancelled' && !notifiedCancels.has(event.id)) {
           notifiedCancels.add(event.id);
-          const time = formatTimeRange(event.startTime, event.endTime);
-          const lines = [
-            '❌ 活動取消通知',
-            '',
-            `「${event.title}」已取消`,
-          ];
-          if (event.startDate) {
-            lines.push(`原定時間：${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
-          }
-          if (event.cancelReason) lines.push(`原因：${event.cancelReason}`);
-          console.log(`[niujiu] cancel-notify: ${event.title}`);
-          lineApi.push(NOTIFY_GROUP_ID, lines.join('\n')).catch(err => {
-            console.error(`[niujiu] cancel-notify push error: ${err.message}`);
-          });
+          // 取參加者要查 participants collection（async），用 IIFE 不阻塞 snapshot 迴圈
+          (async () => {
+            const time = formatTimeRange(event.startTime, event.endTime);
+            const lines = [
+              '❌ 活動取消通知',
+              '',
+              `「${event.title}」已取消`,
+            ];
+            if (event.startDate) {
+              lines.push(`原定時間：${formatDate(event.startDate)}${time ? ' ' + time : ''}`);
+            }
+            if (event.cancelReason) lines.push(`原因：${event.cancelReason}`);
+            try {
+              const ps = (await getParticipantsForEvents(db, [event.id])).get(event.id) || [];
+              if (ps.length) {
+                lines.push('', `已報名 ${ps.length} 組（請記得通知）：`);
+                for (const p of ps) {
+                  const cnt = [];
+                  if (p.adults) cnt.push(`大${p.adults}`);
+                  if (p.kids) cnt.push(`小${p.kids}`);
+                  const c = cnt.length ? `（${cnt.join('/')}）` : '';
+                  const note = p.note ? ` 📝${p.note}` : '';
+                  lines.push(`• ${p.userName}${c}${note}`);
+                }
+              }
+            } catch (err) {
+              console.error(`[niujiu] cancel-notify participants: ${err.message}`);
+            }
+            console.log(`[niujiu] cancel-notify: ${event.title}`);
+            try { await lineApi.push(NOTIFY_GROUP_ID, lines.join('\n')); }
+            catch (err) { console.error(`[niujiu] cancel-notify push error: ${err.message}`); }
+          })();
         }
 
         // ── 即將額滿通知（剩 1 位或一次報名 +2 直接跳到額滿）──
