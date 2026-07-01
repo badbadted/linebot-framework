@@ -556,15 +556,9 @@ async function main() {
   //   body: { to, text }                     純文字
   //   body: { to, message: <LINE 訊息物件> } 可帶 Flex
   //   to 支援別名：me = 管理員本人；也可直接給 userId(U…)/groupId(C…)
+  // 由 apiAuth 把關：本機/區網直連免金鑰；外網（經 Cloudflare）需 X-API-Key（API_KEY）。
   const PUSH_ALIASES = { me: adminUserIds[0] || '' };
-  const PUSH_API_KEY = process.env.PUSH_API_KEY || '';
   app.post('/api/push', async (req, res) => {
-    // 專屬金鑰：Cloudflare Tunnel 會讓外網請求在程式端看起來像 localhost，
-    // 不能靠 apiAuth 的「區網放行」把關。這裡強制驗 X-Push-Key；
-    // 未設 PUSH_API_KEY 則整個 endpoint 關閉（fail-closed），避免無金鑰時對外全開。
-    if (!PUSH_API_KEY) return res.status(503).json({ error: 'push api disabled：伺服器未設定 PUSH_API_KEY' });
-    const key = req.headers['x-push-key'] || req.query.key;
-    if (key !== PUSH_API_KEY) return res.status(401).json({ error: 'invalid or missing push key（X-Push-Key）' });
     try {
       const body = req.body || {};
       const to = PUSH_ALIASES[body.to] || body.to;

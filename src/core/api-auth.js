@@ -34,12 +34,19 @@ export function createApiAuth(config = {}) {
     }
 
     // 2. IP 白名單 + 區網自動放行
-    const clientIP = req.ip || req.connection?.remoteAddress || '';
-    if (allowIPs.has(clientIP) || isPrivateIP(clientIP)) return next();
+    // ⚠️ Cloudflare Tunnel 會把外網請求轉發到 localhost，使 req.ip 變成 127.0.0.1，
+    // 若直接用 IP 放行 = 對整個網路開放。凡帶 CF 邊緣標頭（cf-connecting-ip / cf-ray）
+    // 者一律視為「外網來的」，不吃區網放行、只能靠金鑰；真本機/區網直連才免金鑰。
+    const viaCloudflare = !!(req.headers['cf-connecting-ip'] || req.headers['cf-ray']);
+    if (!viaCloudflare) {
+      const clientIP = req.ip || req.connection?.remoteAddress || '';
+      if (allowIPs.has(clientIP) || isPrivateIP(clientIP)) return next();
+    }
 
     // 都不過 → 403
-    console.log(`[api-auth] blocked: ${clientIP} → ${req.path}`);
-    res.status(403).json({ error: 'Forbidden', message: 'API key or allowed IP required' });
+    const src = viaCloudflare ? `cf:${req.headers['cf-connecting-ip'] || '?'}` : (req.ip || '?');
+    console.log(`[api-auth] blocked: ${src} → ${req.path}`);
+    res.status(403).json({ error: 'Forbidden', message: 'API key required (external), or call from LAN' });
   };
 }
 
