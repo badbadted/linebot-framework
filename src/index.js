@@ -365,7 +365,10 @@ async function main() {
   const TTS_URL = 'http://192.168.0.229:9880/tts';
   router.add(/^\/廣播\s+(.+)$/i, async (match, ctx) => {
     if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
-    const text = match[1].trim();
+    let text = match[1].trim();
+    // CosyVoice 對「無結尾標點的超短句」生成會崩潰（HTTP 500 list index out of range），
+    // 且極短音訊易被硬體暖機截頭聽不到。補句號墊穩，確保可生成且長度足夠聽見。
+    if (text && !/[。！？!?～~.…、，,]$/.test(text)) text += '。';
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 25000);
     try {
