@@ -551,6 +551,38 @@ async function main() {
     }
   });
 
+  // ── 對外推播 API：其它系統 POST 一段內容 → 推到指定 LINE 對象 ──
+  // 受 apiAuth 保護（區網免 key、外網需 X-API-Key）。
+  //   body: { to, text }                     純文字
+  //   body: { to, message: <LINE 訊息物件> } 可帶 Flex
+  //   to 支援別名：me = 管理員本人；也可直接給 userId(U…)/groupId(C…)
+  const PUSH_ALIASES = { me: adminUserIds[0] || '' };
+  const PUSH_API_KEY = process.env.PUSH_API_KEY || '';
+  app.post('/api/push', async (req, res) => {
+    // 專屬金鑰：Cloudflare Tunnel 會讓外網請求在程式端看起來像 localhost，
+    // 不能靠 apiAuth 的「區網放行」把關。這裡強制驗 X-Push-Key；
+    // 未設 PUSH_API_KEY 則整個 endpoint 關閉（fail-closed），避免無金鑰時對外全開。
+    if (!PUSH_API_KEY) return res.status(503).json({ error: 'push api disabled：伺服器未設定 PUSH_API_KEY' });
+    const key = req.headers['x-push-key'] || req.query.key;
+    if (key !== PUSH_API_KEY) return res.status(401).json({ error: 'invalid or missing push key（X-Push-Key）' });
+    try {
+      const body = req.body || {};
+      const to = PUSH_ALIASES[body.to] || body.to;
+      if (!to) return res.status(400).json({ error: 'missing "to"（userId / groupId 或 "me"）' });
+
+      const payload = body.message ?? body.flex ?? body.text;
+      if (payload == null || payload === '') {
+        return res.status(400).json({ error: 'missing "text" 或 "message"' });
+      }
+
+      await lineApi.push(to, payload);
+      res.json({ ok: true, to, sentAt: new Date().toISOString() });
+    } catch (err) {
+      console.error(`[api/push] ${err.message}`);
+      res.status(502).json({ error: err.message });
+    }
+  });
+
   // LINE Profile 查詢（Dashboard 用）
   const profileCache = new Map(); // id → { data, ts }
   const PROFILE_TTL = 10 * 60_000; // 10 分鐘快取
