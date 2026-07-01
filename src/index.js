@@ -366,8 +366,9 @@ async function main() {
   router.add(/^\/廣播\s+(.+)$/i, async (match, ctx) => {
     if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
     let text = match[1].trim();
-    // CosyVoice 對「無結尾標點的超短句」生成會崩潰（HTTP 500 list index out of range），
-    // 且極短音訊易被硬體暖機截頭聽不到。補句號墊穩，確保可生成且長度足夠聽見。
+    // CosyVoice 對極短純內容常生不出音訊（0 片段），且極短音訊易被硬體暖機截頭聽不到。
+    // 太短就加「廣播，」前導詞墊足音素；再確保結尾標點。
+    if (text && [...text].length < 6) text = '廣播，' + text;
     if (text && !/[。！？!?～~.…、，,]$/.test(text)) text += '。';
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 25000);
