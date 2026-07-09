@@ -430,7 +430,15 @@ export default {
       const foodUrl = urlMatch[1];
 
       try {
-        const lineProfile = await rctx.lineApi.getProfile(rctx.userId);
+        // 群組成員未加 BOT 好友時 getProfile 會 404 → 群組情境先用群組成員 profile
+        // （回傳的是使用者本人 LINE 名稱，與妞揪 App 登入時存的 displayName 一致）
+        let lineProfile = null;
+        if (rctx.groupId) {
+          try { lineProfile = await rctx.lineApi.getGroupMemberProfile(rctx.groupId, rctx.userId); } catch { /* fall through */ }
+        }
+        if (!lineProfile) {
+          try { lineProfile = await rctx.lineApi.getProfile(rctx.userId); } catch { /* ignore */ }
+        }
         const displayName = lineProfile?.displayName || '';
         const njUser = displayName ? await getUserByDisplayName(db, displayName) : null;
         if (!njUser) {
