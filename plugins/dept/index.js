@@ -142,6 +142,18 @@ function buildQueryFlex(groups) {
   const bubbles = names.slice(0, 12).map(n => personBubble(n, groups.get(n), 'mega'));
   return { type: 'flex', altText: '派工單查詢', contents: { type: 'carousel', contents: bubbles } };
 }
+// 純文字模式：LINE 可長按複製（Flex 不能複製）。超過 5000 字會被 LINE 截斷，目前資料量無虞。
+function buildQueryText(groups) {
+  const out = [];
+  for (const [name, items] of groups) {
+    out.push(`【${name}】${items.length} 筆`);
+    for (const t of items) {
+      out.push(`${t.ticket_no}\t${t.agency || ''}\t${t.reason || ''}`);
+    }
+    out.push('');
+  }
+  return out.join('\n').trimEnd();
+}
 
 // ── Plugin ────────────────────────────────────────────
 export default {
@@ -166,6 +178,7 @@ export default {
 
 ⑤ 查詢（管理者）— 依登錄人分組列全部
 　/派工單查詢　　或　/派工單查詢 Steven
+　可複製純文字：/派工單查詢 文字（可加名字 /派工單查詢 Steven 文字）
 
 ⑥ 清除（管理者）— 審完封存，清單歸零
 　/派工單清除 Steven　　或　/派工單清除 全部
@@ -265,13 +278,16 @@ export default {
     {
       name: 'query',
       pattern: /^\/派工單查詢(?:\s+(.+))?$/i,
-      describe: '/派工單查詢 [名字] —（管理者）依登錄人查全部',
+      describe: '/派工單查詢 [名字] [文字] —（管理者）依登錄人查全部，加「文字」出可複製純文字',
       type: 'query',
       handler: async (match, ctx) => {
         if (!db) return '❌ 此 BOT 未啟用資料庫';
         if (!isManager(ctx.userId)) return '⛔ 僅管理者可查詢全部\n看自己的請用 /我的派工單';
 
-        const filter = (match[1] || '').trim();
+        // 「文字/text/txt」→ 純文字可複製模式；其餘視為登錄人名字過濾
+        const raw = (match[1] || '').trim();
+        const textMode = /(?:^|\s)(文字|text|txt)(?:\s|$)/i.test(raw);
+        const filter = raw.replace(/(?:^|\s)(文字|text|txt)(?:\s|$)/i, ' ').trim();
         const rows = filter
           ? db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets WHERE name = ? AND cleared = 0 ORDER BY id', filter)
           : db.all('SELECT name, ticket_no, agency, reason FROM dept_tickets WHERE cleared = 0 ORDER BY name, id');
@@ -283,7 +299,7 @@ export default {
           if (!groups.has(r.name)) groups.set(r.name, []);
           groups.get(r.name).push(r);
         }
-        return buildQueryFlex(groups);
+        return textMode ? buildQueryText(groups) : buildQueryFlex(groups);
       },
     },
     // /派工單清除 <名字|全部> — 管理者審完封存（軟清除，可復原）
