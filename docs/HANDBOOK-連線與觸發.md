@@ -395,6 +395,32 @@ app.post('/line/webhook', (req, res) => {
 | reply 沒效果 | replyToken 過期（>30s）/ 已用過 | 改判斷 + fallback push |
 | Flex 卡 push 400 | 無效屬性（如 alignItems:baseline） | 看 LINE 回的 error property 路徑 |
 | 排程沒跑 | cron 字串錯 / 時區錯 | 確認 timezone、用 HTTP trigger 手動測 |
+| **完全沒回應，但服務自查一切正常** | Tunnel 斷了（服務健康 ≠ 對外可達） | `curl -o /dev/null -w "%{http_code}" https://網域/dashboard`；**530 / error 1033 = Argo Tunnel 未連線** |
+
+### 9.1 「服務健康但對外是死的」——最難察覺的故障
+
+實戰踩過（2026-08-03，無感 2.5 天）：Mac mini 重開機後 bot 正常起來、
+`/api/health` 回 200、uptime 兩天，但 cloudflared 沒跟著起來。LINE 的 webhook
+打到 Cloudflare 邊緣就斷（530/1033），**訊息根本沒進到 bot**，所以任何
+「bot 自己看自己」的健康檢查都是綠燈。
+
+分層判斷（由外往內，一眼定位斷在哪）：
+
+| 探測 | 結果 | 結論 |
+|------|------|------|
+| 公網 `/dashboard` | 530 / 1033 | Tunnel 沒連上 → 查 cloudflared |
+| 公網 `/dashboard` | 502 / 504 | Tunnel 通了但 origin 沒服務 → 查 bot 行程 |
+| 區網 `:3100/api/health` | 200 | bot 本身沒問題，問題在外層 |
+| 區網 `:3100/api/health` | 連不上 | bot 或整台主機掛了 |
+
+兩個衍生教訓：
+
+1. **launchd 的 `KeepAlive` 別用 `SuccessfulExit: false`**。那代表「只有非正常結束
+   才重啟」——cloudflared 若以 exit 0 收工，launchd 就袖手旁觀。常駐服務一律用
+   `<key>KeepAlive</key><true/>`。驗證方式：`kill <pid>` 送 SIGTERM（正常退出、
+   exit 0），看它會不會自己回來。
+2. **健康檢查必須從機器外面打**。站在主機內部永遠看不到通道故障。
+   本專案的外部監測見 [`ops/README.md`](../ops/README.md)。
 
 ---
 
