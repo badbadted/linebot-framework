@@ -19,14 +19,26 @@
 ' The tidier fix would be LogonType=S4U ("run whether user is logged on or
 ' not"), which runs in session 0 where no window can appear - that needs admin
 ' rights. This wrapper reaches the same visible result without elevation.
+'
+' launcher.log is kept bounded: once it passes 512 KB it is cut down to the
+' last 1000 lines, the same policy linebot-watchdog-run.ps1 uses for runner.log.
 
 Option Explicit
 
-Dim sh, fso, q, cmd, rc, logPath, f
+Const MAX_LOG_BYTES = 524288
+Const KEEP_LINES = 1000
+
+Dim sh, fso, q, cmd, rc, logDir, logPath, f
 Set sh  = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 q = Chr(34)
-logPath = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\linebot-watchdog\launcher.log"
+logDir = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\linebot-watchdog"
+logPath = logDir & "\launcher.log"
+
+' linebot-watchdog-run.ps1 also creates this folder, but on a fresh install it
+' has not run yet, and OpenTextFile fails when the folder is missing.
+If Not fso.FolderExists(logDir) Then fso.CreateFolder logDir
+TrimLog logPath
 
 Set f = fso.OpenTextFile(logPath, 8, True)
 f.WriteLine Now & "  [VBS] start"
@@ -42,3 +54,20 @@ rc = sh.Run(cmd, 0, True)
 Set f = fso.OpenTextFile(logPath, 8, True)
 f.WriteLine Now & "  [VBS] powershell rc=" & rc
 f.Close
+
+Sub TrimLog(path)
+  Dim ts, lines, first, i, out
+  If Not fso.FileExists(path) Then Exit Sub
+  If fso.GetFile(path).Size <= MAX_LOG_BYTES Then Exit Sub
+  Set ts = fso.OpenTextFile(path, 1)
+  lines = Split(ts.ReadAll, vbCrLf)
+  ts.Close
+  first = UBound(lines) - KEEP_LINES
+  If first < 0 Then first = 0
+  Set out = fso.CreateTextFile(path, True)
+  For i = first To UBound(lines)
+    ' Split leaves an empty element after the trailing newline; skip empties
+    If Len(lines(i)) > 0 Then out.WriteLine lines(i)
+  Next
+  out.Close
+End Sub

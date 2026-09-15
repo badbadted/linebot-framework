@@ -40,7 +40,32 @@ powershell -ExecutionPolicy Bypass -File ops\linebot-watchdog.ps1 -SendTestAlert
 schtasks /Delete /TN LinebotWatchdog /F
 ```
 
-狀態與日誌：`%LOCALAPPDATA%\linebot-watchdog\`（`state.json` / `watchdog.log`）
+### 排程怎麼執行
+
+排程工作 `LinebotWatchdog` 不直接跑 `linebot-watchdog.ps1`，而是經過兩層：
+
+```
+wscript.exe → linebot-watchdog-hidden.vbs → linebot-watchdog-run.ps1 → linebot-watchdog.ps1
+```
+
+| 檔案 | 作用 |
+|---|---|
+| `linebot-watchdog-hidden.vbs` | 以隱藏視窗啟動。直接跑 PowerShell 時，Windows 會在 PowerShell 套用 `-WindowStyle Hidden` 前先開主控台，每 5 分鐘閃一次黑色視窗 |
+| `linebot-watchdog-run.ps1` | 用 call operator 執行 watchdog，每次都寫 `runner.log`。排程直接 `-File` 執行時曾回報 exit 0 卻沒真的跑，監測看起來正常其實已經失效 |
+| `linebot-watchdog.ps1` | 真正的探測與通知邏輯 |
+
+`install-watchdog-task.ps1` 會照這個方式註冊。`.vbs` 與 `-run.ps1` 裡寫死了本 repo 的路徑（`C:\Ted\Projects\devtools\linebot-framework\ops\`），搬移 repo 時要一起改。
+
+狀態與日誌都在 `%LOCALAPPDATA%\linebot-watchdog\`：
+
+| 檔案 | 內容 |
+|---|---|
+| `state.json` | 連續失敗次數、是否已告警 |
+| `watchdog.log` | 告警與恢復紀錄 |
+| `runner.log` | 每次執行的結果與輸出（超過 512 KB 只留最後 1000 行） |
+| `launcher.log` | `.vbs` 啟動與 PowerShell 回傳碼（同樣超過 512 KB 只留最後 1000 行） |
+
+排查「監測好像沒在跑」時，先看 `runner.log` 最後一次時間，再看 `launcher.log` 有沒有對應的啟動紀錄。
 
 ### 已知限制
 
