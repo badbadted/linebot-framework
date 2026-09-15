@@ -10,7 +10,13 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 let model = null;
 
 const FETCH_TIMEOUT_MS = 8000;
-const GEMINI_TIMEOUT_MS = 20000;
+const GEMINI_TIMEOUT_MS = 30000;
+
+// LINE reply token 收到訊息後 1 分鐘內要用掉。一次 /美食 可能連續呼叫兩次 Gemini（找店＋補資訊），
+// 兩次都用滿 30 秒會超過期限、回覆變成私訊推播，所以整趟限 50 秒（留時間寫入與回覆）：
+// 補資訊只用剩下的時間，剩不到 MIN_ENRICH_MS 就跳過，直接用找到的資料寫入
+export const REPLY_BUDGET_MS = 50000;
+const MIN_ENRICH_MS = 5000;
 
 // 帶逾時的 fetch：目標網站卡住時主動 abort，避免 /美食 整個請求無限掛住、replyToken 失效
 async function fetchWithTimeout(url, opts = {}, timeoutMs = FETCH_TIMEOUT_MS) {
@@ -325,11 +331,11 @@ function parseEnrichResponse(text) {
  * 對單筆餐廳做 enrich（resolve 完才能跑）
  * @returns {object|null} enriched fields or null
  */
-export async function enrichRestaurant(name, address, area) {
+export async function enrichRestaurant(name, address, area, timeoutMs = GEMINI_TIMEOUT_MS) {
   if (!model) throw new Error('Gemini not initialized');
 
   const prompt = buildEnrichPrompt(name, address, area);
-  const result = await withTimeout(model.generateContent(prompt), GEMINI_TIMEOUT_MS, 'gemini');
+  const result = await withTimeout(model.generateContent(prompt), timeoutMs, 'gemini');
   const text = result.response.text();
   return parseEnrichResponse(text);
 }
@@ -338,33 +344,40 @@ export async function enrichRestaurant(name, address, area) {
  * 完整流程：resolve URL + enrich，回傳合併結果
  * @returns {{ name, address, area, summary, googleRating, ... , status }}
  */
-export async function resolveAndEnrich(url) {
+export async function resolveAndEnrich(url, deadline = Date.now() + REPLY_BUDGET_MS) {
   // Phase 1: Resolve
   const resolved = isGoogleMapsUrl(url)
     ? await resolveGoogleMapsUrl(url)
     : await resolveExternalUrl(url);
-  return enrichResolved(resolved);
+  return enrichResolved(resolved, deadline);
 }
 
 /**
  * 對文字搜尋選定的候選店補資訊，回傳格式同 resolveAndEnrich
+ * @param {number} [deadline] 同一趟回覆的截止時間（ms）；沒給就用完整的 Gemini 逾時
  */
-export async function enrichCandidate(candidate) {
-  return enrichResolved(candidate);
+export async function enrichCandidate(candidate, deadline) {
+  return enrichResolved(candidate, deadline);
 }
 
-async function enrichResolved(resolved) {
+async function enrichResolved(resolved, deadline) {
   if (!resolved.name) {
     return { status: 'failed' };
   }
 
-  // Phase 2: Enrich
+  // Phase 2: Enrich（只用到回覆截止前剩下的時間）
   let enriched = {};
-  try {
-    enriched = await enrichRestaurant(resolved.name, resolved.address, resolved.area);
-  } catch (err) {
-    console.error(`[niujiu-gemini] enrich error for ${resolved.name}:`, err.message);
-    // resolve 成功但 enrich 失敗，仍回傳 resolved 資料
+  const remaining = deadline ? deadline - Date.now() : GEMINI_TIMEOUT_MS;
+  const timeoutMs = Math.min(GEMINI_TIMEOUT_MS, remaining);
+  if (timeoutMs < MIN_ENRICH_MS) {
+    console.warn(`[niujiu-gemini] skip enrich for ${resolved.name}: only ${remaining}ms left before reply deadline`);
+  } else {
+    try {
+      enriched = await enrichRestaurant(resolved.name, resolved.address, resolved.area, timeoutMs);
+    } catch (err) {
+      console.error(`[niujiu-gemini] enrich error for ${resolved.name}:`, err.message);
+      // resolve 成功但 enrich 失敗，仍回傳 resolved 資料
+    }
   }
 
   const merged = {

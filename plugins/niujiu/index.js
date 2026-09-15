@@ -6,7 +6,7 @@
  */
 
 import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName, updateRestaurant, getPendingRestaurants, findDuplicateRestaurant } from './firestore.js';
-import { initGemini, isGeminiReady, resolveAndEnrich, searchTextCandidates, enrichCandidate, buildMapsSearchUrl } from './gemini.js';
+import { initGemini, isGeminiReady, resolveAndEnrich, searchTextCandidates, enrichCandidate, buildMapsSearchUrl, REPLY_BUDGET_MS } from './gemini.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -208,6 +208,8 @@ function truncate(s, max) {
  * 只找到一家就直接加入；多家時列出地點，讓使用者用快速回覆按鈕選
  */
 async function addFoodByText(query, profile, choiceKey) {
+  // 找店與補資訊共用同一個回覆期限（見 gemini.js REPLY_BUDGET_MS）
+  const deadline = Date.now() + REPLY_BUDGET_MS;
   let candidates;
   try {
     candidates = await searchTextCandidates(query);
@@ -218,7 +220,7 @@ async function addFoodByText(query, profile, choiceKey) {
   if (candidates.length === 0) {
     return `❌ 在 Google Maps 找不到「${query}」\n可以加上地區再試，例如：/美食 店名 台南`;
   }
-  if (candidates.length === 1) return addFoodCandidate(candidates[0], profile);
+  if (candidates.length === 1) return addFoodCandidate(candidates[0], profile, deadline);
 
   const now = Date.now();
   for (const [key, entry] of pendingFoodChoices) {
@@ -246,12 +248,15 @@ async function addFoodByText(query, profile, choiceKey) {
   };
 }
 
-/** 加入一家候選店：先判斷重複，再補資訊寫入 */
-async function addFoodCandidate(candidate, profile) {
+/**
+ * 加入一家候選店：先判斷重複，再補資訊寫入
+ * deadline：與找店同一趟回覆時傳入；/美食選 是新訊息、有新的回覆期限，不用傳
+ */
+async function addFoodCandidate(candidate, profile, deadline) {
   const existing = await findDuplicateRestaurant(db, candidate);
   if (existing) return alreadyRecordedReply(existing);
 
-  const result = await enrichCandidate(candidate);
+  const result = await enrichCandidate(candidate, deadline);
   const mapsUrl = buildMapsSearchUrl(result.name, result.address);
   const { status, ...fields } = result;
   const docId = await addPendingRestaurant(db, mapsUrl, profile);
