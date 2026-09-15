@@ -5,7 +5,7 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName, updateRestaurant, getPendingRestaurants, findRestaurantByName } from './firestore.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName, updateRestaurant, getPendingRestaurants, findDuplicateRestaurant } from './firestore.js';
 import { initGemini, isGeminiReady, resolveAndEnrich, resolveTextAndEnrich, buildMapsSearchUrl } from './gemini.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
@@ -184,6 +184,11 @@ async function handleStats(match, ctx) {
   }
 }
 
+function alreadyRecordedReply(existing) {
+  const name = existing.name || '（解析中）';
+  return `這間已經記錄過了 😋\n📍 ${name}${existing.area ? `（${existing.area}）` : ''}`;
+}
+
 /**
  * /美食 <店名 地區> — 沒有連結時，用文字找 Google Maps 上的店再加入
  * 多家符合時由 Gemini 取最相關的一家，回覆附地址與地圖連結供確認
@@ -200,10 +205,8 @@ async function addFoodByText(query, profile) {
     return `❌ 在 Google Maps 找不到「${query}」\n可以加上地區再試，例如：/美食 店名 台南`;
   }
 
-  const existing = await findRestaurantByName(db, result.name);
-  if (existing) {
-    return `這間已經記錄過了 😋\n📍 ${existing.name}`;
-  }
+  const existing = await findDuplicateRestaurant(db, result);
+  if (existing) return alreadyRecordedReply(existing);
 
   const mapsUrl = buildMapsSearchUrl(result.name, result.address);
   const { status, ...fields } = result;
@@ -491,15 +494,15 @@ export default {
         }
 
         const existing = await findRestaurantByUrl(db, foodUrl);
-        if (existing) {
-          const name = existing.name || '（解析中）';
-          return `這間已經記錄過了 😋\n📍 ${name}`;
-        }
+        if (existing) return alreadyRecordedReply(existing);
 
         if (isGeminiReady()) {
           try {
             const result = await resolveAndEnrich(foodUrl);
             if (result.status === 'resolved' && result.name) {
+              // 不同連結也可能是同一家店（重貼另一個短連結、先前用文字加過）
+              const duplicate = await findDuplicateRestaurant(db, result);
+              if (duplicate) return alreadyRecordedReply(duplicate);
               const { status, ...fields } = result;
               const docId = await addPendingRestaurant(db, foodUrl, profile);
               await updateRestaurant(db, docId, { ...fields, status: 'resolved' });

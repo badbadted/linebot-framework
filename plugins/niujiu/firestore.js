@@ -396,15 +396,48 @@ export async function findRestaurantByUrl(db, url) {
   return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
 }
 
+/** 比對用：全半形統一、臺→台、去空白與標點、轉小寫 */
+function normalizeKey(s) {
+  return (s || '').normalize('NFKC').replace(/臺/g, '台').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+}
+
+/** 日本郵遞區號（如 104-0045），用來比對不同語言寫法的同一個地址 */
+function postalCode(address) {
+  return (address || '').normalize('NFKC').replace(/[‐‑–—−ー]/g, '-').match(/\b(\d{3}-\d{4})\b/)?.[1] || '';
+}
+
+function isSamePlace(a, b) {
+  const [areaA, areaB] = [normalizeKey(a.area), normalizeKey(b.area)];
+  const [addrA, addrB] = [normalizeKey(a.address), normalizeKey(b.address)];
+  // 任一方沒有地區也沒有地址（如補資訊失敗只存到店名）→ 無從區分，當成同一家
+  if ((!areaA && !addrA) || (!areaB && !addrB)) return true;
+  if (areaA && areaA === areaB) return true;
+  if (addrA && addrB && (addrA.includes(addrB) || addrB.includes(addrA))) return true;
+  const [zipA, zipB] = [postalCode(a.address), postalCode(b.address)];
+  if (zipA && zipA === zipB) return true;
+  if ([a.lat, a.lng, b.lat, b.lng].every(n => typeof n === 'number')) {
+    // 約 300 公尺內
+    return Math.abs(a.lat - b.lat) < 0.003 && Math.abs(a.lng - b.lng) < 0.003;
+  }
+  return false;
+}
+
 /**
- * 以店名查是否已記錄（文字搜尋沒有原始連結可比對，改用店名去重）
+ * 找已記錄的同一家店：店名（正規化後）相同，且地區／地址／郵遞區號／座標對得上。
+ * 同名但不同城市（如紐約與東京的 Salmon Noodle 3.0）不算重複。
+ * 餐廳筆數少，直接整個 collection 在記憶體比對。
  */
-export async function findRestaurantByName(db, name) {
-  const snap = await db.collection('restaurants')
-    .where('name', '==', name)
-    .limit(1)
-    .get();
-  return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+export async function findDuplicateRestaurant(db, place) {
+  const key = normalizeKey(place.name);
+  if (!key) return null;
+  const snap = await db.collection('restaurants').get();
+  for (const d of snap.docs) {
+    const data = d.data();
+    if (normalizeKey(data.name) === key && isSamePlace(place, data)) {
+      return { id: d.id, ...data };
+    }
+  }
+  return null;
 }
 
 /**
