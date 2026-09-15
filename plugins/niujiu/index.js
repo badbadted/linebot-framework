@@ -6,7 +6,7 @@
  */
 
 import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName, updateRestaurant, getPendingRestaurants, findDuplicateRestaurant } from './firestore.js';
-import { initGemini, isGeminiReady, resolveAndEnrich, resolveTextAndEnrich, buildMapsSearchUrl } from './gemini.js';
+import { initGemini, isGeminiReady, resolveAndEnrich, searchTextCandidates, enrichCandidate, buildMapsSearchUrl } from './gemini.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -189,25 +189,67 @@ function alreadyRecordedReply(existing) {
   return `這間已經記錄過了 😋\n📍 ${name}${existing.area ? `（${existing.area}）` : ''}`;
 }
 
+/** 文字找到多家時，等使用者選的候選清單；key = 群組:使用者，只有發問的人能選 */
+const pendingFoodChoices = new Map();
+const FOOD_CHOICE_TTL_MS = 10 * 60_000;
+
+function foodChoiceKey(rctx) {
+  return `${rctx.groupId || rctx.roomId || 'dm'}:${rctx.userId}`;
+}
+
+/** 依字元（含 emoji）截斷，超過補「…」 */
+function truncate(s, max) {
+  const chars = Array.from(s || '');
+  return chars.length <= max ? chars.join('') : `${chars.slice(0, max - 1).join('')}…`;
+}
+
 /**
- * /美食 <店名 地區> — 沒有連結時，用文字找 Google Maps 上的店再加入
- * 多家符合時由 Gemini 取最相關的一家，回覆附地址與地圖連結供確認
+ * /美食 <店名 地區> — 沒有連結時，用文字找 Google Maps 上的店
+ * 只找到一家就直接加入；多家時列出地點，讓使用者用快速回覆按鈕選
  */
-async function addFoodByText(query, profile) {
-  let result;
+async function addFoodByText(query, profile, choiceKey) {
+  let candidates;
   try {
-    result = await resolveTextAndEnrich(query);
+    candidates = await searchTextCandidates(query);
   } catch (err) {
-    console.error('[niujiu] text resolve error:', err.message);
+    console.error('[niujiu] text search error:', err.message);
     return '❌ 搜尋失敗，請稍後再試';
   }
-  if (result.status !== 'resolved' || !result.name) {
+  if (candidates.length === 0) {
     return `❌ 在 Google Maps 找不到「${query}」\n可以加上地區再試，例如：/美食 店名 台南`;
   }
+  if (candidates.length === 1) return addFoodCandidate(candidates[0], profile);
 
-  const existing = await findDuplicateRestaurant(db, result);
+  const now = Date.now();
+  for (const [key, entry] of pendingFoodChoices) {
+    if (entry.expiresAt < now) pendingFoodChoices.delete(key);
+  }
+  pendingFoodChoices.set(choiceKey, { candidates, profile, expiresAt: now + FOOD_CHOICE_TTL_MS });
+
+  // 版面精簡：標題一行＋每家一行（店名｜地區），選擇放快速回覆按鈕
+  const lines = [`找到 ${candidates.length} 家「${truncate(query, 12)}」，要加哪家？`];
+  candidates.forEach((c, i) => {
+    lines.push(`${i + 1}. ${truncate(c.name, 18)}｜${truncate(c.area || c.address || '地點不明', 12)}`);
+  });
+  return {
+    type: 'text',
+    text: lines.join('\n'),
+    quickReply: {
+      items: candidates.map((c, i) => ({
+        type: 'action',
+        // LINE 快速回覆按鈕文字上限 20 字
+        action: { type: 'message', label: truncate(`${i + 1} ${c.area || c.name}`, 20), text: `/美食選 ${i + 1}` },
+      })),
+    },
+  };
+}
+
+/** 加入一家候選店：先判斷重複，再補資訊寫入 */
+async function addFoodCandidate(candidate, profile) {
+  const existing = await findDuplicateRestaurant(db, candidate);
   if (existing) return alreadyRecordedReply(existing);
 
+  const result = await enrichCandidate(candidate);
   const mapsUrl = buildMapsSearchUrl(result.name, result.address);
   const { status, ...fields } = result;
   const docId = await addPendingRestaurant(db, mapsUrl, profile);
@@ -218,8 +260,27 @@ async function addFoodByText(query, profile) {
   if (result.googleRating) parts.push(`⭐ ${result.googleRating}`);
   if (result.priceDetail) parts.push(`💰 ${result.priceDetail}`);
   parts.push(`🗺️ ${mapsUrl}`);
-  parts.push('', '不是這家？到妞揪 App 刪除後改貼 Google Maps 連結');
   return parts.join('\n');
+}
+
+/** /美食選 <編號> — 從文字搜尋的候選清單選一家加入 */
+async function chooseFoodCandidate(match, rctx) {
+  const key = foodChoiceKey(rctx);
+  const entry = pendingFoodChoices.get(key);
+  if (!entry || entry.expiresAt < Date.now()) {
+    pendingFoodChoices.delete(key);
+    return '找不到你的待選清單（10 分鐘內有效），請重新用 /美食 搜尋';
+  }
+  const candidate = entry.candidates[Number(match[1]) - 1];
+  if (!candidate) return `請選 1–${entry.candidates.length}`;
+
+  pendingFoodChoices.delete(key);
+  try {
+    return await addFoodCandidate(candidate, entry.profile);
+  } catch (err) {
+    console.error('[niujiu] food choose error:', err);
+    return '⚠️ 加入失敗，請稍後再試';
+  }
 }
 
 // ── 排程：活動提醒推播 ──────────────────────────────────
@@ -333,7 +394,7 @@ export default {
 【美食】
 　/美食 <連結>　加入美食記錄
 　Google Maps／IG／FB／部落格都行，AI 自動辨識餐廳
-　/美食 <店名 地區>　沒有連結也行，自動去 Google 找店
+　/美食 <店名 地區>　沒有連結也行，找到多家會讓你選
 
 每晚 8 點自動推播明日活動到妞揪群組
 活動取消、即將額滿也會即時通知`,
@@ -490,7 +551,7 @@ export default {
         };
 
         if (!foodUrl) {
-          return await addFoodByText(input, profile);
+          return await addFoodByText(input, profile, foodChoiceKey(rctx));
         }
 
         const existing = await findRestaurantByUrl(db, foodUrl);
@@ -531,6 +592,14 @@ export default {
       name: 'food',
       plugin: 'niujiu',
       describe: '/美食 <連結或店名> — 加入美食記錄',
+      scope: 'all',
+    });
+
+    router.add(/^\/美食選\s*([1-9])$/, chooseFoodCandidate, {
+      type: 'query',
+      name: 'food-choose',
+      plugin: 'niujiu',
+      describe: '/美食選 <編號> — 文字找到多家時選一家加入',
       scope: 'all',
     });
 

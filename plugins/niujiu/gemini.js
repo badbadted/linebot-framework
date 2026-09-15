@@ -208,15 +208,18 @@ ${url}${hintBlock}${platformWarn}
 
 /** 解析 Phase 1 回傳的 { name, address, area, lat, lng } JSON */
 function parseResolveResponse(text) {
-  const parsed = safeParseJson(text);
-  if (!parsed) return {};
+  return pickPlaceFields(safeParseJson(text));
+}
 
+/** 取出 { name, address, area, lat, lng } 中有值的欄位 */
+function pickPlaceFields(obj) {
+  if (!obj || typeof obj !== 'object') return {};
   const out = {};
-  if (parsed.name?.trim()) out.name = parsed.name.trim();
-  if (parsed.address?.trim()) out.address = parsed.address.trim();
-  if (parsed.area?.trim()) out.area = parsed.area.trim();
-  if (typeof parsed.lat === 'number') out.lat = parsed.lat;
-  if (typeof parsed.lng === 'number') out.lng = parsed.lng;
+  if (typeof obj.name === 'string' && obj.name.trim()) out.name = obj.name.trim();
+  if (typeof obj.address === 'string' && obj.address.trim()) out.address = obj.address.trim();
+  if (typeof obj.area === 'string' && obj.area.trim()) out.area = obj.area.trim();
+  if (typeof obj.lat === 'number') out.lat = obj.lat;
+  if (typeof obj.lng === 'number') out.lng = obj.lng;
   return out;
 }
 
@@ -228,34 +231,51 @@ export function buildMapsSearchUrl(name, address) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 }
 
-export async function resolveTextQuery(query) {
+const MAX_TEXT_CANDIDATES = 3;
+
+/**
+ * 文字找店：回傳最多 3 家候選 [{ name, address, area, lat, lng }]，最相關的在前
+ * 文字有地區線索或明確只有一家時只回一家；找不到回 []
+ */
+export async function searchTextCandidates(query) {
   if (!model) throw new Error('Gemini not initialized');
 
   const prompt = `你是餐廳辨識助手。使用者輸入一段文字，想找 Google Maps 上對應的餐廳：
 「${query}」
 
-請用 Google Search 找出這段文字指的餐廳（文字可能含店名、地區、菜色等線索）。
+請用 Google Search 找出符合的餐廳（文字可能含店名、地區、菜色等線索）。
 回傳嚴格 JSON（不要用 markdown code fence 包裹）：
 
 {
-  "name": "Google Maps 上的店名（找不到填空字串）",
-  "address": "完整地址（找不到填空字串）",
-  "area": "地區，如 台南東區、大阪難波（找不到填空字串）",
-  "lat": null,
-  "lng": null
+  "candidates": [
+    { "name": "Google Maps 上的店名", "address": "完整地址", "area": "簡短地區，如 台南東區、東京築地", "lat": null, "lng": null }
+  ]
 }
 
 規則：
-- 多家符合（連鎖店、分店、同名店）時，優先選符合文字中地區線索的；沒有地區線索就選最知名的那家
-- 只回傳一家
-- 店名與地址以搜尋到的資料為準，不要自行組合或猜測
+- 文字含地區線索時，只回傳該地區符合的店
+- 文字沒有地區線索時，若同名店有多家分店、或在不同城市／國家都有，必須各列一筆（最多 ${MAX_TEXT_CANDIDATES} 筆，最相關的排前面），不要只挑一家
+- 全世界確定只有一家時才只回傳一家
+- 店名與地址以搜尋到的資料為準，不要自行組合或猜測；分店要寫出分店名
 - lat/lng 如果知道填數字，不知道填 null
-- 找不到確定存在的餐廳就全部填空字串/null`;
+- 找不到確定存在的餐廳就回傳 {"candidates": []}`;
 
   const result = await withTimeout(model.generateContent(prompt), GEMINI_TIMEOUT_MS, 'gemini');
   const text = result.response.text();
-  console.log('[niujiu-gemini] text resolve raw:', text.slice(0, 200));
-  return parseResolveResponse(text);
+  console.log('[niujiu-gemini] text candidates raw:', text.slice(0, 300));
+  const list = safeParseJson(text)?.candidates;
+  if (!Array.isArray(list)) return [];
+
+  const seen = new Set();
+  return list
+    .map(pickPlaceFields)
+    .filter(c => {
+      const key = `${c.name}|${c.address || ''}`;
+      if (!c.name || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, MAX_TEXT_CANDIDATES);
 }
 
 // ── Phase 2: Enrich 餐廳資訊（Gemini + Google Search） ──
@@ -327,10 +347,10 @@ export async function resolveAndEnrich(url) {
 }
 
 /**
- * 文字版完整流程：文字找店 + enrich，回傳格式同 resolveAndEnrich
+ * 對文字搜尋選定的候選店補資訊，回傳格式同 resolveAndEnrich
  */
-export async function resolveTextAndEnrich(query) {
-  return enrichResolved(await resolveTextQuery(query));
+export async function enrichCandidate(candidate) {
+  return enrichResolved(candidate);
 }
 
 async function enrichResolved(resolved) {
