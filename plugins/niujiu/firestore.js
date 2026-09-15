@@ -365,15 +365,13 @@ export function extractMapsUrl(text) {
  * @returns {string} docId
  */
 export async function addPendingRestaurant(db, mapsUrl, profile) {
-  const recommender = { uid: profile.userId, name: profile.displayName };
-  if (profile.pictureUrl) recommender.avatarUrl = profile.pictureUrl;
-
   const now = Date.now();
   const doc = {
     googleMapsUrl: mapsUrl,
     name: '',
     status: 'pending',
-    recommenders: [recommender],
+    // 從 LINE 加入只是記錄，不代表分享者推薦；要推薦到 App 按「推薦」
+    recommenders: [],
     cuisineTypes: [],
     photos: [],
     createdBy: profile.userId,
