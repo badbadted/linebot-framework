@@ -203,6 +203,32 @@ function truncate(s, max) {
   return chars.length <= max ? chars.join('') : `${chars.slice(0, max - 1).join('')}…`;
 }
 
+/** 幾個店名共同的開頭「詞」（只切在空白處），如「鼎泰豐 信義店」「鼎泰豐 101店」→「鼎泰豐 」 */
+function commonLeadingWords(names) {
+  if (names.length < 2) return '';
+  const chars = names.map(n => Array.from(n));
+  let len = 0;
+  while (chars.every(c => len < c.length && c[len] === chars[0][len])) len++;
+  const shared = chars[0].slice(0, len).join('');
+  const cut = shared.lastIndexOf(' ');
+  return cut >= 0 ? shared.slice(0, cut + 1) : '';
+}
+
+/**
+ * 快速回覆按鈕文字（LINE 上限 20 字）：地區不重複就顯示地區；
+ * 同地區有多家或沒有地區時改顯示店名，並去掉同地區幾家共同的開頭詞，讓差異留在 20 字內
+ */
+export function choiceLabels(candidates) {
+  const count = new Map();
+  for (const c of candidates) if (c.area) count.set(c.area, (count.get(c.area) || 0) + 1);
+  return candidates.map((c, i) => {
+    if (c.area && count.get(c.area) === 1) return truncate(`${i + 1} ${c.area}`, 20);
+    const group = candidates.filter(o => o.area === c.area).map(o => o.name);
+    const name = c.name.slice(commonLeadingWords(group).length) || c.name;
+    return truncate(`${i + 1} ${name}`, 20);
+  });
+}
+
 /**
  * /美食 <店名 地區> — 沒有連結時，用文字找 Google Maps 上的店
  * 只找到一家就直接加入；多家時列出地點，讓使用者用快速回覆按鈕選
@@ -235,14 +261,14 @@ async function addFoodByText(query, profile, choiceKey) {
   });
   // 群組裡任何人再傳訊息，快速回覆按鈕就會消失，要告訴使用者還能打字選
   lines.push('點下方按鈕，或輸入 /美食選 編號');
+  const labels = choiceLabels(candidates);
   return {
     type: 'text',
     text: lines.join('\n'),
     quickReply: {
       items: candidates.map((c, i) => ({
         type: 'action',
-        // LINE 快速回覆按鈕文字上限 20 字
-        action: { type: 'message', label: truncate(`${i + 1} ${c.area || c.name}`, 20), text: `/美食選 ${i + 1}` },
+        action: { type: 'message', label: labels[i], text: `/美食選 ${i + 1}` },
       })),
     },
   };
