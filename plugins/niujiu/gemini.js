@@ -100,11 +100,16 @@ function parseLongUrl(url) {
       const q = u.searchParams.get('q');
       if (q) {
         const decoded = decodeURIComponent(q);
-        // q 通常是「地址+店名」，取最後一個中文詞組作為店名
+        // 國際格式「店名, 地址」→ 取第一個逗號前
+        // 例：Zaru-Yaki Kobayashi Poultry (Shinbashi Branch), 3 Chome-14-1 Shinbashi, ... → Zaru-Yaki Kobayashi Poultry (Shinbashi Branch)
+        // 台灣格式「地址+店名」→ 去掉地址，取後段中文詞組作為店名
         // 例：701臺南市東區大智里生產路504號佳福川味牛肉麵 → 佳福川味牛肉麵
-        const nameFromQ = decoded.replace(/^\d{3,5}/, '') // 郵遞區號
-          .replace(/^.+?[號巷弄樓室F]+/, '')              // 地址部分
-          .trim();
+        const commaIdx = decoded.search(/[,，]/);
+        const nameFromQ = commaIdx > 0
+          ? decoded.slice(0, commaIdx).trim()
+          : decoded.replace(/^\d{3,5}/, '')              // 郵遞區號
+            .replace(/^.+?[號巷弄樓室F]+/, '')            // 地址部分
+            .trim();
         if (nameFromQ) out.name = nameFromQ;
         // fallback: 整段 q 當作名稱（至少有東西）
         if (!out.name && decoded.length < 50) out.name = decoded;
