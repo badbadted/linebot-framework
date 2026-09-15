@@ -5,8 +5,8 @@
  * Firebase Project: sipangzi003
  */
 
-import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName, updateRestaurant, getPendingRestaurants } from './firestore.js';
-import { initGemini, isGeminiReady, resolveAndEnrich } from './gemini.js';
+import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName, updateRestaurant, getPendingRestaurants, findRestaurantByName } from './firestore.js';
+import { initGemini, isGeminiReady, resolveAndEnrich, resolveTextAndEnrich, buildMapsSearchUrl } from './gemini.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -184,6 +184,41 @@ async function handleStats(match, ctx) {
   }
 }
 
+/**
+ * /美食 <店名 地區> — 沒有連結時，用文字找 Google Maps 上的店再加入
+ * 多家符合時由 Gemini 取最相關的一家，回覆附地址與地圖連結供確認
+ */
+async function addFoodByText(query, profile) {
+  let result;
+  try {
+    result = await resolveTextAndEnrich(query);
+  } catch (err) {
+    console.error('[niujiu] text resolve error:', err.message);
+    return '❌ 搜尋失敗，請稍後再試';
+  }
+  if (result.status !== 'resolved' || !result.name) {
+    return `❌ 在 Google Maps 找不到「${query}」\n可以加上地區再試，例如：/美食 店名 台南`;
+  }
+
+  const existing = await findRestaurantByName(db, result.name);
+  if (existing) {
+    return `這間已經記錄過了 😋\n📍 ${existing.name}`;
+  }
+
+  const mapsUrl = buildMapsSearchUrl(result.name, result.address);
+  const { status, ...fields } = result;
+  const docId = await addPendingRestaurant(db, mapsUrl, profile);
+  await updateRestaurant(db, docId, { ...fields, status: 'resolved' });
+
+  const parts = [`✅ 已新增：${result.name}`];
+  if (result.address || result.area) parts.push(`📍 ${result.address || result.area}`);
+  if (result.googleRating) parts.push(`⭐ ${result.googleRating}`);
+  if (result.priceDetail) parts.push(`💰 ${result.priceDetail}`);
+  parts.push(`🗺️ ${mapsUrl}`);
+  parts.push('', '不是這家？到妞揪 App 刪除後改貼 Google Maps 連結');
+  return parts.join('\n');
+}
+
 // ── 排程：活動提醒推播 ──────────────────────────────────
 
 /**
@@ -295,6 +330,7 @@ export default {
 【美食】
 　/美食 <連結>　加入美食記錄
 　Google Maps／IG／FB／部落格都行，AI 自動辨識餐廳
+　/美食 <店名 地區>　沒有連結也行，自動去 Google 找店
 
 每晚 8 點自動推播明日活動到妞揪群組
 活動取消、即將額滿也會即時通知`,
@@ -423,11 +459,10 @@ export default {
     const router = ctx.router;
     router.add(/^\/美食\s+(.+)$/i, async (match, rctx) => {
       const input = match[1].trim();
-      const urlMatch = input.match(/(https?:\/\/\S+)/i);
-      if (!urlMatch) {
-        return '請貼上連結\n範例：/美食 https://maps.app.goo.gl/xxxxx';
+      const foodUrl = input.match(/(https?:\/\/\S+)/i)?.[1];
+      if (!foodUrl && !isGeminiReady()) {
+        return '目前只能用連結加入（文字搜尋需要 Gemini）\n範例：/美食 https://maps.app.goo.gl/xxxxx';
       }
-      const foodUrl = urlMatch[1];
 
       try {
         // 群組成員未加 BOT 好友時 getProfile 會 404 → 群組情境先用群組成員 profile
@@ -445,17 +480,21 @@ export default {
           return '請先登入妞揪 App 才能使用美食記錄功能 🔒';
         }
 
-        const existing = await findRestaurantByUrl(db, foodUrl);
-        if (existing) {
-          const name = existing.name || '（解析中）';
-          return `這間已經記錄過了 😋\n📍 ${name}`;
-        }
-
         const profile = {
           userId: njUser.id,
           displayName: njUser.displayName || displayName,
           pictureUrl: njUser.avatarUrl || lineProfile?.pictureUrl,
         };
+
+        if (!foodUrl) {
+          return await addFoodByText(input, profile);
+        }
+
+        const existing = await findRestaurantByUrl(db, foodUrl);
+        if (existing) {
+          const name = existing.name || '（解析中）';
+          return `這間已經記錄過了 😋\n📍 ${name}`;
+        }
 
         if (isGeminiReady()) {
           try {
@@ -488,7 +527,7 @@ export default {
       type: 'query',
       name: 'food',
       plugin: 'niujiu',
-      describe: '/美食 <連結> — 加入美食記錄',
+      describe: '/美食 <連結或店名> — 加入美食記錄',
       scope: 'all',
     });
 

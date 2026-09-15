@@ -399,6 +399,17 @@ export async function findRestaurantByUrl(db, url) {
 }
 
 /**
+ * 以店名查是否已記錄（文字搜尋沒有原始連結可比對，改用店名去重）
+ */
+export async function findRestaurantByName(db, name) {
+  const snap = await db.collection('restaurants')
+    .where('name', '==', name)
+    .limit(1)
+    .get();
+  return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+}
+
+/**
  * 更新餐廳文件（resolve/enrich 結果回寫）
  */
 export async function updateRestaurant(db, docId, fields) {

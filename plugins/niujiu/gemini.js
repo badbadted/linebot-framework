@@ -198,6 +198,11 @@ ${url}${hintBlock}${platformWarn}
   const result = await withTimeout(model.generateContent(prompt), GEMINI_TIMEOUT_MS, 'gemini');
   const text = result.response.text();
   console.log('[niujiu-gemini] resolve raw:', text.slice(0, 200));
+  return parseResolveResponse(text);
+}
+
+/** 解析 Phase 1 回傳的 { name, address, area, lat, lng } JSON */
+function parseResolveResponse(text) {
   const parsed = safeParseJson(text);
   if (!parsed) return {};
 
@@ -208,6 +213,44 @@ ${url}${hintBlock}${platformWarn}
   if (typeof parsed.lat === 'number') out.lat = parsed.lat;
   if (typeof parsed.lng === 'number') out.lng = parsed.lng;
   return out;
+}
+
+// ── Phase 1C: 純文字（店名／地區）→ Gemini + Google Search 找 Google Maps 上的店 ──
+
+/** 沒有原始連結時，用店名＋地址組 Google Maps 搜尋連結存檔 */
+export function buildMapsSearchUrl(name, address) {
+  const query = [name, address].filter(Boolean).join(' ');
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+export async function resolveTextQuery(query) {
+  if (!model) throw new Error('Gemini not initialized');
+
+  const prompt = `你是餐廳辨識助手。使用者輸入一段文字，想找 Google Maps 上對應的餐廳：
+「${query}」
+
+請用 Google Search 找出這段文字指的餐廳（文字可能含店名、地區、菜色等線索）。
+回傳嚴格 JSON（不要用 markdown code fence 包裹）：
+
+{
+  "name": "Google Maps 上的店名（找不到填空字串）",
+  "address": "完整地址（找不到填空字串）",
+  "area": "地區，如 台南東區、大阪難波（找不到填空字串）",
+  "lat": null,
+  "lng": null
+}
+
+規則：
+- 多家符合（連鎖店、分店、同名店）時，優先選符合文字中地區線索的；沒有地區線索就選最知名的那家
+- 只回傳一家
+- 店名與地址以搜尋到的資料為準，不要自行組合或猜測
+- lat/lng 如果知道填數字，不知道填 null
+- 找不到確定存在的餐廳就全部填空字串/null`;
+
+  const result = await withTimeout(model.generateContent(prompt), GEMINI_TIMEOUT_MS, 'gemini');
+  const text = result.response.text();
+  console.log('[niujiu-gemini] text resolve raw:', text.slice(0, 200));
+  return parseResolveResponse(text);
 }
 
 // ── Phase 2: Enrich 餐廳資訊（Gemini + Google Search） ──
@@ -272,13 +315,20 @@ export async function enrichRestaurant(name, address, area) {
  */
 export async function resolveAndEnrich(url) {
   // Phase 1: Resolve
-  let resolved;
-  if (isGoogleMapsUrl(url)) {
-    resolved = await resolveGoogleMapsUrl(url);
-  } else {
-    resolved = await resolveExternalUrl(url);
-  }
+  const resolved = isGoogleMapsUrl(url)
+    ? await resolveGoogleMapsUrl(url)
+    : await resolveExternalUrl(url);
+  return enrichResolved(resolved);
+}
 
+/**
+ * 文字版完整流程：文字找店 + enrich，回傳格式同 resolveAndEnrich
+ */
+export async function resolveTextAndEnrich(query) {
+  return enrichResolved(await resolveTextQuery(query));
+}
+
+async function enrichResolved(resolved) {
   if (!resolved.name) {
     return { status: 'failed' };
   }
