@@ -231,6 +231,8 @@ async function addFoodByText(query, profile, choiceKey) {
   candidates.forEach((c, i) => {
     lines.push(`${i + 1}. ${truncate(c.name, 18)}｜${truncate(c.area || c.address || '地點不明', 12)}`);
   });
+  // 群組裡任何人再傳訊息，快速回覆按鈕就會消失，要告訴使用者還能打字選
+  lines.push('點下方按鈕，或輸入 /美食選 編號');
   return {
     type: 'text',
     text: lines.join('\n'),
@@ -267,9 +269,21 @@ async function addFoodCandidate(candidate, profile) {
 async function chooseFoodCandidate(match, rctx) {
   const key = foodChoiceKey(rctx);
   const entry = pendingFoodChoices.get(key);
-  if (!entry || entry.expiresAt < Date.now()) {
+  const now = Date.now();
+  if (!entry || entry.expiresAt < now) {
     pendingFoodChoices.delete(key);
-    return '找不到你的待選清單（10 分鐘內有效），請重新用 /美食 搜尋';
+    // 群組裡的按鈕所有人都按得到：點到別人的清單時說清楚，不要讓人以為壞了
+    // （私訊的 key 都以 dm: 開頭，不能拿來比對別人的清單）
+    const room = rctx.groupId || rctx.roomId;
+    if (room) {
+      const other = [...pendingFoodChoices.entries()]
+        .find(([k, e]) => k.startsWith(`${room}:`) && e.expiresAt >= now);
+      if (other) {
+        const asker = other[1].profile.displayName;
+        return `只有${asker ? ` ${asker} ` : '發問的人'}可以選這份清單\n想加別家請自己用 /美食 搜尋`;
+      }
+    }
+    return '找不到待選清單（10 分鐘內有效），請重新用 /美食 搜尋';
   }
   const candidate = entry.candidates[Number(match[1]) - 1];
   if (!candidate) return `請選 1–${entry.candidates.length}`;
