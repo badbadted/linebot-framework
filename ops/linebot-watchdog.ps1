@@ -80,8 +80,11 @@ $publicCode = Get-HttpCode -Url $PublicUrl
 $publicOk   = ($publicCode -ge 200 -and $publicCode -lt 400)
 
 if ($publicOk) {
-    if ($state.alerted) {
-        Send-Alert "✅ linebot 已恢復：公網入口回應 $publicCode，webhook 可正常收訊。" | Out-Null
+    # 以「達告警門檻」判斷而非 alerted：告警可能一直送不出去（2026-09-28 重開機
+    # 期間區網也斷，告警失敗），這時更需要恢復通知告訴使用者中斷過多久
+    if ($state.alerted -or $state.fails -ge $FailThreshold) {
+        $note = if ($state.alerted) { '' } else { "`n（中斷期間的告警未能送達）" }
+        Send-Alert "✅ linebot 已恢復：公網入口回應 $publicCode，webhook 可正常收訊。`n中斷約 $($state.fails * 5) 分鐘$note" | Out-Null
     } elseif ($state.fails -gt 0) {
         Write-Log "恢復（未達告警門檻，連續失敗 $($state.fails) 次後回復）"
     }
@@ -91,21 +94,21 @@ if ($publicOk) {
     $state.fails++
     Write-Log "探測失敗：$PublicUrl → HTTP $publicCode（連續第 $($state.fails) 次）"
 
-    # 達門檻且尚未告警過 → 發一次，避免每 5 分鐘洗版
+    # 達門檻且尚未成功告警 → 發一次，避免每 5 分鐘洗版；送失敗則下一輪重試
     if ($state.fails -ge $FailThreshold -and -not $state.alerted) {
         # 順手判斷是「通道掛」還是「整台掛」，通知裡直接給出下一步
         $lanCode = Get-HttpCode -Url $LanHealthUrl -TimeoutSec 6
         $lanOk   = ($lanCode -ge 200 -and $lanCode -lt 400)
 
         if ($lanOk) {
-            $diag = "bot 服務本身正常（區網 /api/health 回 $lanCode），問題在 Cloudflare Tunnel。`n處理：ssh macmini 後 pgrep -fl cloudflared，或 launchctl kickstart -k gui/`$(id -u)/com.cloudflare.cloudflared"
+            $diag = "bot 服務本身正常（區網 /api/health 回 $lanCode），問題在 Cloudflare Tunnel。`n處理：ssh macmini 後 pgrep -fl cloudflared，或 launchctl kickstart -k gui/`$(id -u)/com.cloudflare.cloudflared`n若回報找不到服務：launchctl bootstrap gui/`$(id -u) ~/Library/LaunchAgents/com.cloudflare.cloudflared.plist，並檢查「允許在背景執行」裡的 bash 是否被關"
         } else {
             $diag = "區網也連不上（/api/health → $lanCode），可能整台 Mac mini 或 bot 服務都倒了。`n處理：先確認 Mac mini 是否開機。"
         }
 
         $msg = "⚠️ linebot 對外中斷`n公網 $PublicUrl → HTTP $publicCode`n已連續失敗 $($state.fails) 次（約 $($state.fails * 5) 分鐘）`n`n$diag"
-        Send-Alert $msg | Out-Null
-        $state.alerted = $true
+        # 只有真的送出才標記；否則會像 2026-09-28 那樣送失敗後永久靜音
+        $state.alerted = Send-Alert $msg
     }
 }
 
