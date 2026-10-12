@@ -292,11 +292,41 @@ export function needsEnrichment(data) {
   return ENRICHMENT_KEYS.some(key => !data[key] || (typeof data[key] === 'string' && !data[key].trim()));
 }
 
-function buildEnrichPrompt(name, address, area) {
+const GEOCODE_TIMEOUT_MS = 4000;
+
+function hasCoords(place) {
+  return typeof place.lat === 'number' && typeof place.lng === 'number';
+}
+
+/**
+ * 座標 → 所在位置文字（如「羽田四丁目, 羽田, 大田區, 東京都, 144-0043, 日本」），查不到回 ''
+ * 用 OpenStreetMap Nominatim（免金鑰）。Gemini 光看座標數字會判錯行政區，所以先查好再給它
+ */
+export async function reverseGeocode(lat, lng) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=16&accept-language=zh-TW&lat=${lat}&lon=${lng}`;
+    const res = await fetchWithTimeout(url, {
+      headers: { 'User-Agent': 'linebot-framework-niujiu/1.0' },
+    }, GEOCODE_TIMEOUT_MS);
+    if (!res.ok) return '';
+    const data = await res.json();
+    return typeof data.display_name === 'string' ? data.display_name.trim() : '';
+  } catch (err) {
+    console.warn('[niujiu-gemini] reverse geocode failed:', err.message);
+    return '';
+  }
+}
+
+// Google Maps 連結只解得出店名與座標。只給店名的話，同名店（如東京與神戶的 Takakura）
+// 會被補成另一家的資料，所以有座標就把搜尋鎖在那個位置
+function buildEnrichPrompt({ name, address, area, lat, lng, locality }) {
+  const pinned = hasCoords({ lat, lng });
   return `你是餐廳資訊整理助手。搜尋以下餐廳的最新資訊，回傳嚴格 JSON（不要用 markdown code fence 包裹）：
 餐廳：${name}
 ${address ? `地址：${address}` : ''}
 ${area ? `地區：${area}` : ''}
+${pinned ? `座標：${lat}, ${lng}（這家店在 Google Maps 上的實際位置）` : ''}
+${locality ? `座標所在位置：${locality}` : ''}
 
 請回傳以下格式的 JSON：
 {
@@ -312,7 +342,9 @@ ${area ? `地區：${area}` : ''}
 
 規則：
 - 找不到的欄位填空字串 ""
-- 不要加任何解釋或前後文，只回傳純 JSON`;
+${pinned ? `- 只採用位於座標所在位置的這家店的資料；其他城市或國家的同名店不是這家，資料一律不可使用
+- 在座標所在位置找不到這家店時，area 填座標所在的城市行政區${locality ? '' : '（無法確定就填空字串）'}，其餘欄位全部填空字串，不要拿同名店的資料來填
+` : ''}- 不要加任何解釋或前後文，只回傳純 JSON`;
 }
 
 function parseEnrichResponse(text) {
@@ -331,10 +363,10 @@ function parseEnrichResponse(text) {
  * 對單筆餐廳做 enrich（resolve 完才能跑）
  * @returns {object|null} enriched fields or null
  */
-export async function enrichRestaurant(name, address, area, timeoutMs = GEMINI_TIMEOUT_MS) {
+export async function enrichRestaurant(place, timeoutMs = GEMINI_TIMEOUT_MS) {
   if (!model) throw new Error('Gemini not initialized');
 
-  const prompt = buildEnrichPrompt(name, address, area);
+  const prompt = buildEnrichPrompt(place);
   const result = await withTimeout(model.generateContent(prompt), timeoutMs, 'gemini');
   const text = result.response.text();
   return parseEnrichResponse(text);
@@ -373,7 +405,13 @@ async function enrichResolved(resolved, deadline) {
     console.warn(`[niujiu-gemini] skip enrich for ${resolved.name}: only ${remaining}ms left before reply deadline`);
   } else {
     try {
-      enriched = await enrichRestaurant(resolved.name, resolved.address, resolved.area, timeoutMs);
+      // 只有店名＋座標（Maps 連結）時先查出所在位置，當成找店的地區線索
+      const locality = hasCoords(resolved) && !resolved.address && !resolved.area
+        ? await reverseGeocode(resolved.lat, resolved.lng)
+        : '';
+      // 查位置最多花掉 GEOCODE_TIMEOUT_MS，Gemini 用扣掉之後剩下的時間
+      const left = deadline ? Math.min(GEMINI_TIMEOUT_MS, deadline - Date.now()) : timeoutMs;
+      enriched = await enrichRestaurant({ ...resolved, locality }, left);
     } catch (err) {
       console.error(`[niujiu-gemini] enrich error for ${resolved.name}:`, err.message);
       // resolve 成功但 enrich 失敗，仍回傳 resolved 資料
