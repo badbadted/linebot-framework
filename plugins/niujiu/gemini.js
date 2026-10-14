@@ -332,7 +332,7 @@ ${locality ? `座標所在位置：${locality}` : ''}
 {
   "address": "完整地址，如 台南市東區崇明路482號（${address ? '已知可跳過' : '必填'}）",
   "area": "簡短地區名，如 台南東區、大阪難波（${area ? '已知可跳過' : '必填'}）",
-  "summary": "一句話描述餐廳特色（30字以內）",
+  "summary": "一句話描述餐廳特色（${SUMMARY_PROMPT_CHARS}字以內，不要換行）",
   "googleRating": "Google 評分數字，如 4.6（找不到填空字串）",
   "tabelogRating": "食べログ評分，如 3.43（找不到填空字串）",
   "priceDetail": "價位範圍，如 午餐 ¥3,000–4,000・晚餐 ¥10,000–15,000",
@@ -347,7 +347,37 @@ ${pinned ? `- 只採用位於座標所在位置的這家店的資料；其他城
 ` : ''}- 不要加任何解釋或前後文，只回傳純 JSON`;
 }
 
-function parseEnrichResponse(text) {
+export const SUMMARY_MAX_CHARS = 30;
+// 提示裡要求的字數比上限短，讓多數回覆本來就不必截
+const SUMMARY_PROMPT_CHARS = 20;
+// 在標點截斷後至少要留這麼多字，不然寧可硬切（避免「好吃，……」只剩「好吃」）
+const SUMMARY_MIN_CLAUSE_CHARS = 10;
+const SUMMARY_BREAK_RE = /[，、；。！？,;!?]/;
+const SUMMARY_TRAILING_RE = /[\s，、；。！？,;!?：:]+$/;
+
+/**
+ * summary 超過上限時截短：優先在上限內最後一個標點處斷句，沒有合適的標點才硬切加「…」
+ * Gemini 不一定遵守提示裡的字數要求，所以收到後一律過這道
+ * 字數以 code point 計（emoji、罕用字算一個字）
+ */
+export function clampSummary(text, max = SUMMARY_MAX_CHARS) {
+  if (typeof text !== 'string') return '';
+  const chars = Array.from(text.replace(/\s+/g, ' ').trim());
+  if (chars.length <= max) return chars.join('');
+
+  // 斷點可以落在第 max 個字之後的那個標點（剛好 max 個字＋標點的情況）
+  const head = chars.slice(0, max + 1);
+  let cut = -1;
+  for (let i = head.length - 1; i >= SUMMARY_MIN_CLAUSE_CHARS; i--) {
+    if (SUMMARY_BREAK_RE.test(head[i])) { cut = i; break; }
+  }
+  if (cut !== -1) {
+    return chars.slice(0, cut).join('').replace(SUMMARY_TRAILING_RE, '');
+  }
+  return chars.slice(0, max - 1).join('').replace(SUMMARY_TRAILING_RE, '') + '…';
+}
+
+export function parseEnrichResponse(text) {
   const parsed = safeParseJson(text);
   if (!parsed) return {};
   const fields = {};
@@ -355,6 +385,13 @@ function parseEnrichResponse(text) {
     if (parsed[key] && typeof parsed[key] === 'string' && parsed[key].trim()) {
       fields[key] = parsed[key].trim();
     }
+  }
+  if (fields.summary) {
+    const clamped = clampSummary(fields.summary);
+    if (clamped !== fields.summary) {
+      console.log(`[niujiu-gemini] summary clamped ${Array.from(fields.summary).length} → ${Array.from(clamped).length} chars`);
+    }
+    fields.summary = clamped;
   }
   return fields;
 }
