@@ -352,7 +352,8 @@ export const SUMMARY_MAX_CHARS = 30;
 const SUMMARY_PROMPT_CHARS = 20;
 // 在標點截斷後至少要留這麼多字，不然寧可硬切（避免「好吃，……」只剩「好吃」）
 const SUMMARY_MIN_CLAUSE_CHARS = 10;
-const SUMMARY_BREAK_RE = /[，、；。！？,;!?]/;
+// 頓號不當斷點：它分隔的是並列項目，在那裡斷會留下「招牌是芋頭米粉」這種只列一半的清單
+const SUMMARY_BREAK_RE = /[，；。！？,;!?]/;
 const SUMMARY_TRAILING_RE = /[\s，、；。！？,;!?：:]+$/;
 
 /**

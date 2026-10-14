@@ -63,6 +63,11 @@ check('硬切位置落在標點上：不留下「，…」', () => {
   assert.ok(!/[，、；。]…?$/.test(out.replace(/…$/, '')));
 });
 
+check('頓號不當斷點：不會只留下並列清單的前半', () => {
+  const s = '台東在地老字號海鮮熱炒，囊括山珍海味，芋頭米粉、四季酥排骨為招牌菜，曾獲500盤推薦。';
+  assert.equal(clampSummary(s), '台東在地老字號海鮮熱炒，囊括山珍海味');
+});
+
 check('半形標點也算斷點', () => {
   const s = 'Famous tonkotsu ramen shop, rich broth and handmade noodles daily';
   const out = clampSummary(s);
