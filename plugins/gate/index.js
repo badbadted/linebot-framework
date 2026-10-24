@@ -1,10 +1,13 @@
 /**
- * Gate Plugin — 家用遊戲大廳的對外開關（只限管理員私訊）
+ * Gate Plugin — 家用遊戲大廳的對外開關
  *
  * - /開遊戲 [2小時｜30分]  打開外網，預設 2 小時，最長 6 小時，22:00 一律關
  * - /關遊戲               立刻關閉外網
  * - /遊戲狀態             查看是否開放、幾點關
  * - /延長 [1小時]          延後關門時間（不超過 22:00、開門後 6 小時）
+ *
+ * 誰能用：私訊只限管理員。群組要先 `/開通 gate`，開通後群組成員可以
+ * /開遊戲、/遊戲狀態；/關遊戲、/延長 仍只限管理員。
  *
  * 實際開關由 Mac mini 的 ~/apps/web-hub/bin/web-gate.mjs 執行；
  * 自動關閉與通知由 web-hub 的 launchd 每分鐘檢查，不靠這個 plugin。
@@ -51,30 +54,45 @@ function parseHours(num, unit) {
 
 const DURATION = '(?:\\s*(\\d+(?:\\.\\d+)?)\\s*(小時|h|H|分鐘|分)?)?';
 const NOT_ADMIN = '這個指令只有管理員能用。';
+const ADMIN_ONLY_IN_GROUP = '關閉和延長只有管理員能用，請找管理員。';
+
+const inGroup = (sourceType) => sourceType === 'group' || sourceType === 'room';
+
+/**
+ * 能不能用這個指令。
+ * memberOk=true 的指令（開、查）在群組裡成員也能用；群組有沒有開通 gate 由 router 先擋。
+ */
+export function canUse({ admin, sourceType, memberOk }) {
+  if (admin) return true;
+  return Boolean(memberOk && inGroup(sourceType));
+}
+
+const deny = (ctx) => (inGroup(ctx.sourceType) ? ADMIN_ONLY_IN_GROUP : NOT_ADMIN);
 
 export default {
   name: 'gate',
-  scope: 'private',
+  scope: 'all',
 
   commands: [
     {
       name: 'gate-open',
       pattern: new RegExp(`^\\/開遊戲${DURATION}$`),
-      describe: '/開遊戲 [2小時] — （管理員）打開遊戲大廳外網',
+      describe: '/開遊戲 [2小時] — 打開遊戲大廳外網（私訊限管理員；開通的群組成員可用）',
       type: 'query',
       handler: async (m, ctx) => {
-        if (!isAdmin(ctx.userId)) return NOT_ADMIN;
+        const admin = isAdmin(ctx.userId);
+        if (!canUse({ admin, sourceType: ctx.sourceType, memberOk: true })) return deny(ctx);
         const hours = parseHours(m[1], m[2]);
         const r = await gate('start', ...(hours ? [String(hours)] : []));
         if (r.ok) {
           return [
             `🔓 遊戲大廳已開放外網，${r.closesAtText} 自動關閉（約 ${r.minutesLeft} 分鐘）`,
             `🌐 ${r.url}/`,
-            '要延長傳「/延長 1小時」，提早關傳「/關遊戲」。',
+            admin ? '要延長傳「/延長 1小時」，提早關傳「/關遊戲」。' : '要延長或提早關請找管理員。',
             '關閉後打開網址會看到 Cloudflare 錯誤頁，是正常的。',
           ].join('\n');
         }
-        if (r.reason === 'already') return `已經是開的，${r.minutesLeft} 分鐘後關。要延長傳「/延長 1小時」。`;
+        if (r.reason === 'already') return `已經是開的，${r.minutesLeft} 分鐘後關。${admin ? '要延長傳「/延長 1小時」。' : '要延長請找管理員。'}`;
         if (r.reason === 'quiet') return '🌙 22:00～06:00 是休息時間，不能開外網。';
         return `⚠️ 開啟失敗：${r.message || r.reason}`;
       },
@@ -85,7 +103,7 @@ export default {
       describe: '/關遊戲 — （管理員）關閉遊戲大廳外網',
       type: 'query',
       handler: async (_m, ctx) => {
-        if (!isAdmin(ctx.userId)) return NOT_ADMIN;
+        if (!canUse({ admin: isAdmin(ctx.userId), sourceType: ctx.sourceType, memberOk: false })) return deny(ctx);
         const r = await gate('stop');
         if (!r.ok) return `⚠️ 關閉失敗：${r.message || r.reason}`;
         return r.wasOpen ? '🔒 已關閉外網。區網照常可以玩。' : '本來就是關的。';
@@ -94,10 +112,10 @@ export default {
     {
       name: 'gate-status',
       pattern: /^\/遊戲狀態$/,
-      describe: '/遊戲狀態 — （管理員）查看遊戲大廳是否開放',
+      describe: '/遊戲狀態 — 查看遊戲大廳是否開放（私訊限管理員；開通的群組成員可用）',
       type: 'query',
       handler: async (_m, ctx) => {
-        if (!isAdmin(ctx.userId)) return NOT_ADMIN;
+        if (!canUse({ admin: isAdmin(ctx.userId), sourceType: ctx.sourceType, memberOk: true })) return deny(ctx);
         const r = await gate('status');
         if (!r.ok) return `⚠️ 查詢失敗：${r.message || r.reason}`;
         return r.open
@@ -111,7 +129,7 @@ export default {
       describe: '/延長 [1小時] — （管理員）延後遊戲大廳關閉時間',
       type: 'query',
       handler: async (m, ctx) => {
-        if (!isAdmin(ctx.userId)) return NOT_ADMIN;
+        if (!canUse({ admin: isAdmin(ctx.userId), sourceType: ctx.sourceType, memberOk: false })) return deny(ctx);
         const hours = parseHours(m[1], m[2]) ?? 1;
         const r = await gate('extend', String(hours));
         if (!r.ok) return r.reason === 'closed' ? '外網目前是關的，請用「/開遊戲」。' : `⚠️ 延長失敗：${r.message || r.reason}`;
