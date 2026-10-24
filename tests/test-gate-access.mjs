@@ -32,7 +32,7 @@ console.log('=== canUse ===');
 check('管理員私訊可關', canUse({ admin: true, sourceType: 'user', memberOk: false }));
 check('非管理員私訊不能開', !canUse({ admin: false, sourceType: 'user', memberOk: true }));
 check('群組成員可開', canUse({ admin: false, sourceType: 'group', memberOk: true }));
-check('聊天室成員可開', canUse({ admin: false, sourceType: 'room', memberOk: true }));
+check('聊天室成員不能開（room 無法開通）', !canUse({ admin: false, sourceType: 'room', memberOk: true }));
 check('群組成員不能關', !canUse({ admin: false, sourceType: 'group', memberOk: false }));
 
 console.log('\n=== handler（非管理員）===');
@@ -49,6 +49,20 @@ check('群組成員 /遊戲狀態 可查', (await run('gate-status', group, '/�
 check('群組成員 /關遊戲 被擋', (await run('gate-close', group, '/關遊戲')).includes('只有管理員'));
 check('群組成員 /延長 被擋', (await run('gate-extend', group, '/延長 1小時')).includes('只有管理員'));
 check('私訊非管理員 /開遊戲 被擋', (await run('gate-open', priv, '/開遊戲')) === '這個指令只有管理員能用。');
+
+// 開關腳本壞掉時，成員只看到通用訊息，不看到內部錯誤
+writeFileSync(fake, `process.stderr.write('boom /secret/path'); process.exit(2);`);
+check('開關失敗時成員只看到通用訊息', (await run('gate-open', group, '/開遊戲')) === '開關暫時無法使用，請找管理員。');
+check('開關失敗時查狀態也是通用訊息', (await run('gate-status', group, '/遊戲狀態')) === '開關暫時無法使用，請找管理員。');
+
+console.log('\n=== router：聊天室走群組權限 ===');
+const { createRouter } = await import('../src/core/router.js');
+const router = createRouter();
+router.setGroupPermissions({ Cgroup: ['gate'] });
+router.add(cmd('gate-open').pattern, async () => 'x', { name: 'gate-open', plugin: 'gate', scope: 'all' });
+check('開通的群組不擋', !router.match('/開遊戲', { sourceType: 'group', groupId: 'Cgroup' }).groupBlocked);
+check('沒開通的群組擋', router.match('/開遊戲', { sourceType: 'group', groupId: 'Cother' }).groupBlocked);
+check('聊天室帶 roomId 會擋', router.match('/開遊戲', { sourceType: 'room', groupId: 'Rroom' }).groupBlocked);
 
 console.log(fail ? `\n${fail} 項失敗` : '\n全部通過');
 process.exit(fail ? 1 : 0);

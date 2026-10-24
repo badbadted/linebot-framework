@@ -39,7 +39,9 @@ function gate(...args) {
       try {
         ok(JSON.parse(line));
       } catch {
-        ok({ ok: false, reason: 'exec', message: err ? err.message : '開關沒有回應' });
+        // 原始錯誤只記在伺服器 log，不回給 LINE（可能含路徑等內部資訊）
+        if (err) console.error(`[gate] ${args[0]} failed: ${err.message}`);
+        ok({ ok: false, reason: 'exec', message: '開關沒有回應' });
       }
     });
   });
@@ -55,19 +57,22 @@ function parseHours(num, unit) {
 const DURATION = '(?:\\s*(\\d+(?:\\.\\d+)?)\\s*(小時|h|H|分鐘|分)?)?';
 const NOT_ADMIN = '這個指令只有管理員能用。';
 const ADMIN_ONLY_IN_GROUP = '關閉和延長只有管理員能用，請找管理員。';
-
-const inGroup = (sourceType) => sourceType === 'group' || sourceType === 'room';
+const MEMBER_FAIL = '開關暫時無法使用，請找管理員。';
 
 /**
  * 能不能用這個指令。
  * memberOk=true 的指令（開、查）在群組裡成員也能用；群組有沒有開通 gate 由 router 先擋。
+ * 只認 group：聊天室（room）無法 /開通，成員一律不給用。
  */
 export function canUse({ admin, sourceType, memberOk }) {
   if (admin) return true;
-  return Boolean(memberOk && inGroup(sourceType));
+  return Boolean(memberOk && sourceType === 'group');
 }
 
-const deny = (ctx) => (inGroup(ctx.sourceType) ? ADMIN_ONLY_IN_GROUP : NOT_ADMIN);
+const deny = (ctx) => (ctx.sourceType === 'group' ? ADMIN_ONLY_IN_GROUP : NOT_ADMIN);
+
+/** 失敗訊息：管理員看原因，成員只看通用訊息 */
+const failText = (admin, label, r) => (admin ? `⚠️ ${label}失敗：${r.message || r.reason}` : MEMBER_FAIL);
 
 export default {
   name: 'gate',
@@ -94,7 +99,7 @@ export default {
         }
         if (r.reason === 'already') return `已經是開的，${r.minutesLeft} 分鐘後關。${admin ? '要延長傳「/延長 1小時」。' : '要延長請找管理員。'}`;
         if (r.reason === 'quiet') return '🌙 22:00～06:00 是休息時間，不能開外網。';
-        return `⚠️ 開啟失敗：${r.message || r.reason}`;
+        return failText(admin, '開啟', r);
       },
     },
     {
@@ -115,9 +120,10 @@ export default {
       describe: '/遊戲狀態 — 查看遊戲大廳是否開放（私訊限管理員；開通的群組成員可用）',
       type: 'query',
       handler: async (_m, ctx) => {
-        if (!canUse({ admin: isAdmin(ctx.userId), sourceType: ctx.sourceType, memberOk: true })) return deny(ctx);
+        const admin = isAdmin(ctx.userId);
+        if (!canUse({ admin, sourceType: ctx.sourceType, memberOk: true })) return deny(ctx);
         const r = await gate('status');
-        if (!r.ok) return `⚠️ 查詢失敗：${r.message || r.reason}`;
+        if (!r.ok) return failText(admin, '查詢', r);
         return r.open
           ? `🔓 外網開放中，${r.closesAtText} 關閉（還剩 ${r.minutesLeft} 分鐘）\n🌐 ${r.url}/`
           : `🔒 外網目前關閉。\n🏠 家裡 Wi-Fi：${LAN_URL}`;

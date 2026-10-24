@@ -139,9 +139,10 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       // scopeId：私訊 = userId，群組 = groupId，聊天室 = roomId
       const scopeId = groupId || roomId || userId;
 
-      // Router 比對（帶 sourceType + groupId 做 scope 和群組權限過濾）
+      // Router 比對（帶 sourceType + 群組/聊天室 ID 做 scope 和群組權限過濾；
+      // 聊天室沒有 groupId，不帶 roomId 會被當成私訊而跳過權限檢查）
       const t0 = Date.now();
-      const matchResult = router.match(text, { sourceType, groupId });
+      const matchResult = router.match(text, { sourceType, groupId: groupId || roomId });
       if (matchResult.matched) {
         // scope 限制：指令不適用於此對話場景
         if (matchResult.scopeBlocked) {
