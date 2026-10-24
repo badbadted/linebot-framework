@@ -361,8 +361,8 @@ async function main() {
     return `🗑️ 已關閉：${removed.join('、')}\n本群現可用：${groupPerms[ctx.groupId].join('、') || '（無）'}`;
   }, { type: 'query', name: 'close-plugin', plugin: '_system', describe: '/關閉 <功能> — （管理員）移除本群功能', scope: 'all' });
 
-  // /廣播 <內容> — 透過家裡 PC（192.168.0.229:9880）TTS 語音廣播（管理員）
-  const TTS_URL = 'http://192.168.0.229:9880/tts';
+  // /廣播 <內容> — 透過 Mac mini 本機 Luna → GPT-SoVITS TTS 語音廣播（管理員）
+  const TTS_URL = 'http://127.0.0.1:18797/api/notify/tts';
   router.add(/^\/廣播\s+(.+)$/i, async (match, ctx) => {
     if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
     let text = match[1].trim();
@@ -376,21 +376,20 @@ async function main() {
       const res = await fetch(TTS_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, play: true, volume: 1.0 }),
+        body: JSON.stringify({ text }),
         signal: ctrl.signal,
       });
       const body = await res.json().catch(() => ({}));
-      if (res.ok && body.status === 'played') return `🔊 已廣播：${text}`;
-      if (res.ok && body.status === 'muted') return '🔇 已生成語音，但播放目前靜音中';
-      return `⚠️ 廣播失敗（HTTP ${res.status}${body.status ? ' ' + body.status : ''}）`;
+      if (res.ok && body.ok) return `🔊 已廣播：${text}`;
+      return `⚠️ 廣播失敗（HTTP ${res.status}${body.error ? ' ' + body.error : ''}）`;
     } catch (err) {
       console.error(`[broadcast] error: ${err.message}`);
       const reason = err.name === 'AbortError' ? 'PC 無回應（逾時）' : err.message;
-      return `⚠️ 廣播失敗：${reason}\n（確認家裡 PC 與 TTS server 9880 有開）`;
+      return `⚠️ 廣播失敗：${reason}\n（確認 Mac mini 的 Luna 與 tts-engine 有在跑）`;
     } finally {
       clearTimeout(timer);
     }
-  }, { type: 'query', name: 'broadcast', plugin: '_system', describe: '/廣播 <內容> — （管理員）家裡 PC 語音廣播', scope: 'all' });
+  }, { type: 'query', name: 'broadcast', plugin: '_system', describe: '/廣播 <內容> — （管理員）管家廣播', scope: 'all' });
 
   // /私訊開通 <userId> — 核可某人可私訊（管理員）
   router.add(/^\/私訊開通\s+(.+)$/i, async (match, ctx) => {
