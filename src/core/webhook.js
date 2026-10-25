@@ -112,6 +112,19 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       const src = event.source?.groupId ? `group:${event.source.groupId.slice(0, 8)}`
         : event.source?.roomId ? `room:${event.source.roomId.slice(0, 8)}`
         : (evUserId || '').slice(0, 8);
+      // 群組裡分享位置：轉成一句文字給 plugin 記進對話（如小帥答「附近有什麼」），不觸發回覆
+      if (event.type === 'message' && event.message?.type === 'location' && onGroupText) {
+        const chat = event.source?.groupId || event.source?.roomId;
+        const m = event.message;
+        if (chat) {
+          const where = [m.title, m.address].filter(Boolean).join(' ') || '（沒有地址）';
+          const text = `［分享位置］${where}（緯度 ${m.latitude}，經度 ${m.longitude}）`;
+          console.log(`[webhook] ${src}... ${(evUserId || '').slice(0, 8)}: location`);
+          try { onGroupText({ chatId: chat, userId: evUserId, text, event }); }
+          catch (err) { console.error(`[webhook] groupText hook error: ${err.message}`); }
+          continue;
+        }
+      }
       if (event.type !== 'message' || event.message?.type !== 'text') {
         if (event.type === 'message') {
           console.log(`[webhook] skipped non-text ${src}... ${(evUserId || '').slice(0, 8)}: ${event.message?.type || 'unknown'}`);
