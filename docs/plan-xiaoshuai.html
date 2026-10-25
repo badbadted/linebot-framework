@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小帥群組聊天計畫書</title>
+<style>
+  :root{--bg:#ffffff;--s1:#f8fafc;--s2:#e2e8f0;--t1:#1e293b;--t2:#64748b;--ac:#2563eb;--warn:#b45309}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--t1);font:16px/1.7 "Noto Sans TC","Microsoft JhengHei",sans-serif}
+  main{max-width:860px;margin:0 auto;padding:32px 16px 64px}
+  h1{font-size:26px;margin:0 0 4px}
+  .sub{color:var(--t2);margin:0 0 28px}
+  h2{font-size:19px;margin:32px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--s2)}
+  .card{background:var(--s1);border:1px solid var(--s2);border-radius:10px;padding:14px 18px;margin:10px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+  .grid .card h3{margin:0 0 6px;font-size:16px}
+  .grid .card p{margin:0;color:var(--t2);font-size:15px}
+  table{width:100%;border-collapse:collapse;font-size:15px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--s2);vertical-align:top}
+  th{background:var(--s1);color:var(--t2);font-weight:600}
+  code{background:var(--s2);padding:1px 6px;border-radius:4px;font-size:14px}
+  .warn{border-left:4px solid var(--warn)}
+  ol,ul{padding-left:22px;margin:6px 0}
+  li{margin:3px 0}
+  .tag{display:inline-block;font-size:13px;color:var(--ac);border:1px solid var(--ac);border-radius:99px;padding:0 8px;margin-left:6px}
+</style>
+</head>
+<body>
+<main>
+<h1>小帥群組聊天</h1>
+<p class="sub">linebot-framework ＋ Luna｜2026-10-25 計畫書，確認後動工</p>
+
+<h2>小帥會怎麼講話</h2>
+<div class="grid">
+  <div class="card"><h3>1. 被點名就回</h3><p>訊息裡有「小帥」或 @小帥 → 看最近 30 則對話＋這個群的記憶，回一句。</p></div>
+  <div class="card"><h3>2. 冷場插話</h3><p>連續 20 則沒人提到小帥 → 把這 20 則交給它，它覺得有梗才接，沒梗就不講。</p></div>
+  <div class="card"><h3>3. 聊開了會自己接</h3><p>小帥開口後 5 分鐘內，每則新訊息都讓它判斷要不要接話；時間到就回到只聽點名。</p></div>
+</div>
+<div class="card">
+  <ul>
+    <li><b>講話時段：</b>09:00～22:30。時段外被點名也不回。</li>
+    <li><b>像真人打字：</b>回之前隨機等 2～6 秒；等的時候又有人講話，就改看最新那句再決定。</li>
+    <li><b>個性：</b>愛搞笑的年輕男生，台灣口語，一次 1～2 句，會吐槽接梗，不用 emoji 洗版。</li>
+    <li><b>不洗版：</b>同一群 15 秒內最多回一次；一個 5 分鐘視窗最多判斷 10 次。</li>
+  </ul>
+</div>
+
+<h2>記憶</h2>
+<div class="card">
+  <ul>
+    <li><b>每群各記各的：</b>小帥只記得在這個群聊過的事（例如滑雪群記住行程、誰怕冷），<b>不讀 Luna 的家庭記憶</b>，在外人群不會講出家裡的事。</li>
+    <li>每次回話時，AI 可以順手留下 0～2 條「值得記住的事」；每群最多留 30 條，滿了丟最舊的。</li>
+    <li>大家可以打 <code>/小帥 記憶</code> 看它記了什麼、<code>/小帥 忘記</code> 全部清掉。</li>
+  </ul>
+</div>
+
+<h2>指令</h2>
+<table>
+  <tr><th>指令</th><th>誰能用</th><th>做什麼</th></tr>
+  <tr><td><code>/小帥 開</code></td><td>你（管理員）</td><td>這個群開始有小帥</td></tr>
+  <tr><td><code>/小帥 關</code></td><td>你（管理員）</td><td>小帥閉嘴，記憶保留</td></tr>
+  <tr><td><code>/小帥 狀態</code></td><td>群組任何人</td><td>開了沒、時段、記了幾條</td></tr>
+  <tr><td><code>/小帥 記憶</code></td><td>群組任何人</td><td>列出這群的記憶</td></tr>
+  <tr><td><code>/小帥 忘記</code></td><td>群組任何人</td><td>清掉這群的記憶</td></tr>
+</table>
+
+<h2>怎麼做</h2>
+<table>
+  <tr><th>位置</th><th>改什麼</th></tr>
+  <tr><td>bot：新外掛 <code>plugins/xiaoshuai/</code></td><td>指令、每群最近 30 則訊息（只放記憶體，重啟就清）、未提及計數、視窗計時、時段判斷、記憶存 SQLite、人設文字</td></tr>
+  <tr><td>bot：<code>src/core/webhook.js</code>、<code>plugin-loader.js</code></td><td>讓外掛看得到每則群組文字訊息，並能接手沒命中指令的訊息</td></tr>
+  <tr><td>Luna：新 <code>/api/ext/llm</code></td><td>純文字 AI（Claude Haiku），<b>不帶任何工具</b>，只收本機呼叫</td></tr>
+</table>
+<div class="card warn">
+  <b>為什麼不用現有的 Luna 對話：</b>那條路會帶工具（控制家電、Mac、捷徑），人設也是嘉嵐。群組裡有外人，叫小帥不能連帶動到家裡的東西。
+</div>
+<div class="card warn">
+  <b>智能管家群要注意：</b>這群現在由嘉嵐回每一句沒命中指令的話。在這群 <code>/小帥 開</code> 之後，聊天改由小帥接手，嘉嵐在這群停話；<code>/小帥 關</code> 就恢復嘉嵐。其他群原本沒有 AI，沒有這個問題。
+</div>
+<div class="card">
+  <b>不額外花訊息額度：</b>小帥一律用「回覆觸發的那則訊息」的方式發話，不用主動推播。
+</div>
+
+<h2>驗收</h2>
+<ol>
+  <li>判斷邏輯單元測試：點名、20 則插話、5 分鐘視窗、時段外不回、15 秒冷卻、等待中有新訊息改看最新那句</li>
+  <li>Luna <code>/api/ext/llm</code>：從區網其他電腦打會被擋；本機打回純文字、沒呼叫任何工具</li>
+  <li>部署後 bot 健康檢查正常、原本 78 個指令都還在</li>
+  <li>智能管家群實測：開、點名回話、聊開了自己接、關掉後嘉嵐恢復</li>
+</ol>
+
+<h2>上線順序</h2>
+<ol>
+  <li>寫好、測完、commit</li>
+  <li>部署 Luna 與 bot（各自先備份）</li>
+  <li>先在智能管家群開給你試，沒問題你再自己到其他群 <code>/小帥 開</code></li>
+</ol>
+</main>
+</body>
+</html>
