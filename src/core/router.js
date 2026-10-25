@@ -37,9 +37,10 @@ export function createRouter() {
    * - 私訊 → 永遠允許
    * - 群組 → 查 groupPermissions[groupId] 或 groupPermissions["*"]，預設全關
    */
-  function isPluginAllowedInGroup(plugin, groupId) {
+  function isPluginAllowedInGroup(plugin, groupId, route) {
     if (!groupId) return true; // 私訊不受限
     if (plugin === '_system') return true; // 系統指令不受群組限制
+    if (route?.ungated) return true; // plugin 自己管群組開關（如小帥的 /小帥 開）
     const allowed = groupPermissions[groupId] || groupPermissions['*'] || [];
     return allowed.includes(plugin);
   }
@@ -53,6 +54,7 @@ export function createRouter() {
    * @param {string} opts.name - 路由名稱（debug 用）
    * @param {string} opts.plugin - 來源 plugin 名稱
    * @param {string} opts.scope - 'all' | 'private' | 'group'（預設 'all'）
+   * @param {boolean} opts.ungated - true = 不受 groups.json 群組權限限制
    */
   function add(pattern, handler, opts = {}) {
     routes.push({
@@ -63,6 +65,7 @@ export function createRouter() {
       plugin: opts.plugin || 'unknown',
       describe: opts.describe || '',
       scope: opts.scope || 'all',
+      ungated: !!opts.ungated,
     });
   }
 
@@ -89,7 +92,7 @@ export function createRouter() {
           return { matched: true, route, match: m, scopeBlocked: true, groupBlocked: false };
         }
         // 群組權限過濾
-        if (isGroup && !isPluginAllowedInGroup(route.plugin, groupId)) {
+        if (isGroup && !isPluginAllowedInGroup(route.plugin, groupId, route)) {
           return { matched: true, route, match: m, scopeBlocked: false, groupBlocked: true };
         }
         return { matched: true, route, match: m, scopeBlocked: false, groupBlocked: false };
@@ -118,6 +121,7 @@ export function createRouter() {
       plugin: r.plugin,
       describe: r.describe,
       scope: r.scope,
+      ungated: r.ungated,
     }));
   }
 

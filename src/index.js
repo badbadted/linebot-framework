@@ -98,12 +98,15 @@ async function main() {
   const logger = createLogger(dataDir);
 
   // 載入 plugins（傳入所有 providers）
+  const pluginHooks = { groupText: [], unmatched: [] };
   const loaded = await loadPlugins(config.plugins.dir, {
     router,
     scheduler,
     lineApi,
     providers: registry,
     enabledList: config.plugins.enabled,
+    isAdmin: (uid) => isAdmin(uid), // isAdmin 宣告在後面，包一層延後取值
+    hooks: pluginHooks,
   });
 
   // Express
@@ -481,7 +484,12 @@ async function main() {
     onJoin: async ({ groupId }) => { await onBotJoin(groupId); },
     onLeave: async ({ groupId }) => { await onBotLeave(groupId); },
     onChatSeen: async ({ chatId }) => { await onChatSeen(chatId); },
-    onUnmatched: async ({ userId, groupId, sourceType, text, replyToken }) => {
+    onGroupText: (ctx) => {
+      for (const h of pluginHooks.groupText) {
+        try { h.fn(ctx); } catch (err) { console.error(`[hook:${h.plugin}] groupText error: ${err.message}`); }
+      }
+    },
+    onUnmatched: async ({ userId, groupId, roomId, sourceType, text, replyToken, event }) => {
       const isGroup = sourceType === 'group' || sourceType === 'room';
       const trimmed = (text || '').trim();
 
@@ -497,6 +505,15 @@ async function main() {
           } catch { /* replyToken 過期就算了 */ }
         }
         return;
+      }
+
+      // 群組：plugin 先接手（如小帥）；接手的群組不再交給 LLM fallback
+      if (isGroup) {
+        for (const h of pluginHooks.unmatched) {
+          try {
+            if (await h.fn({ userId, chatId: groupId || roomId, sourceType, text, replyToken, event })) return;
+          } catch (err) { console.error(`[hook:${h.plugin}] unmatched error: ${err.message}`); }
+        }
       }
 
       if (!llm) {

@@ -8,7 +8,7 @@
 
 import { createHmac, timingSafeEqual } from 'crypto';
 
-export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, onChatSeen, logger }) {
+export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, onChatSeen, onGroupText, logger }) {
   // 啟動期告警：未設 channelSecret 時 webhook 會對所有請求靜默 return，bot 變成「活著但永不回應」
   // 且沒有任何錯誤訊息可察覺。這裡在建構時（啟動一次）大聲提示，避免部署忘了設 secret 後默默失效。
   if (!channelSecret) {
@@ -124,6 +124,12 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       // 延遲發現：群組/聊天室訊息 → 讓上層登記未知群組（fire-and-forget，不阻塞）
       const chatId = groupId || roomId;
       if (chatId && onChatSeen) { Promise.resolve(onChatSeen({ chatId })).catch(() => {}); }
+
+      // 群組／聊天室每則文字訊息都讓 plugin 看一眼（如小帥記最近對話），同步執行、出錯不影響主流程
+      if (chatId && onGroupText) {
+        try { onGroupText({ chatId, userId, text, event }); }
+        catch (err) { console.error(`[webhook] groupText hook error: ${err.message}`); }
+      }
 
       // 白名單檢查（可選，僅對個人訊息生效）
       if (allowlist && sourceType === 'user' && !allowlist.has(userId)) {

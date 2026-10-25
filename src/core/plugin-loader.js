@@ -17,7 +17,10 @@
  *       scope?: 'all'|'private'|'group',  // 可選：覆蓋 plugin 層級
  *     }],
  *     schedules: [{ name: string, cron: string, handler: fn }],
- *     init?: async (ctx) => void,
+ *     init?: async (ctx) => void,  // ctx 含 isAdmin(userId)
+ *     ungated?: boolean,         // 可選：指令不受 groups.json 群組權限限制（plugin 自己管開關）
+ *     onGroupText?: (ctx) => void,             // 可選：每則群組／聊天室文字訊息都會呼叫（指令也算），同步、不可回覆
+ *     onUnmatched?: async (ctx) => boolean,    // 可選：群組裡沒命中指令的非 / 訊息；回 true = 已接手，不再交給 LLM fallback
  *   }
  *
  * 前綴模式（prefix + command）：
@@ -56,7 +59,7 @@ function buildPrefixedPattern(prefix, command, argsPattern) {
   return new RegExp(`^\\/${escaped}\\s+${src}$`, flags);
 }
 
-export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, providers, enabledList }) {
+export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, providers, enabledList, isAdmin, hooks }) {
   const loaded = [];
   const moduleHelp = {}; // plugin.name → 完整使用說明（plugin.helpText）
 
@@ -112,6 +115,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
             plugin: plugin.name,
             describe: cmd.describe || '',
             scope: cmd.scope || plugin.scope || 'all',
+            ungated: cmd.ungated ?? plugin.ungated,
           });
         }
 
@@ -126,6 +130,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
               plugin: plugin.name,
               describe: defaultCmd.describe || '',
               scope: defaultCmd.scope || plugin.scope || 'all',
+              ungated: defaultCmd.ungated ?? plugin.ungated,
             });
           }
         }
@@ -153,7 +158,13 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
           lineApi, router, scheduler,
           db,                              // 向後相容：直接拿 db
           providers: providers?.getAll(),  // 完整 providers（llm, cache, ...）
+          isAdmin: isAdmin || (() => false),
         });
+      }
+
+      if (hooks) {
+        if (plugin.onGroupText) hooks.groupText.push({ plugin: plugin.name, fn: plugin.onGroupText });
+        if (plugin.onUnmatched) hooks.unmatched.push({ plugin: plugin.name, fn: plugin.onUnmatched });
       }
 
       loaded.push(plugin.name);
@@ -168,7 +179,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
   const MODULE_NAMES = {
     bike: '🚲 滑步車', swim: '🏊 游泳', todo: '📋 待辦', work: '💼 工作',
     travel: '🧳 旅遊', niujiu: '🍜 妞揪', fitness: '💪 健身', routines: '⏰ 例行',
-    dept: '📑 派工單', remind: '🔔 提醒',
+    dept: '📑 派工單', remind: '🔔 提醒', xiaoshuai: '😎 小帥',
     _system: '⚙️ 系統',
   };
   const moduleLabel = (p) => MODULE_NAMES[p] || p;
@@ -182,7 +193,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
     const visible = router.list().filter(r => {
       if (!r.describe) return false;
       // 群組權限（_system 不受限）
-      if (isGroup && allowed && r.plugin !== '_system' && !allowed.includes(r.plugin)) return false;
+      if (isGroup && allowed && r.plugin !== '_system' && !r.ungated && !allowed.includes(r.plugin)) return false;
       if (r.scope === 'private' && isGroup) return false;
       if (r.scope === 'group' && !isGroup) return false;
       return true;
