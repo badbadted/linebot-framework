@@ -439,6 +439,35 @@ async function main() {
     return lines.join('\n');
   }, { type: 'query', name: 'followers', plugin: '_system', describe: '/好友 — （管理員）好友/封鎖統計', scope: 'all' });
 
+  // /規則 — 審核 Luna 自己從對話學到的新規則（管理員）；Luna 學到新規則時會先 LINE 通知
+  const lunaBase = (config.providers.llm?.type === 'luna' && (config.providers.llm.baseUrl || config.providers.llm.base_url) || '').replace(/\/$/, '');
+  router.add(/^\/規則(?:\s+(採用|不採用)\s*#?(\d+))?$/i, async (match, ctx) => {
+    if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
+    if (!lunaBase) return '未接 Luna，沒有規則可審';
+    try {
+      if (match[1]) {
+        const ok = match[1] === '採用';
+        const res = await fetch(`${lunaBase}/api/ext/evolution/${match[2]}/review`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 404) return `找不到待審的 #${match[2]}（可能已審過）`;
+        if (!body.success) return `⚠️ 審核失敗：${body.error || res.status}`;
+        return ok ? `✅ 已採用 #${body.rule.id}：${body.rule.rule}` : `🗑️ 不採用 #${body.rule.id}`;
+      }
+      const res = await fetch(`${lunaBase}/api/ext/evolution/pending`);
+      const body = await res.json().catch(() => ({}));
+      if (!body.success) return `⚠️ 讀不到待審規則：${body.error || res.status}`;
+      if (!body.rules.length) return '目前沒有待審的規則';
+      const lines = [`🧠 待審規則（${body.rules.length}）`];
+      for (const r of body.rules) lines.push('────────────', `#${r.id} ${r.rule}`, `理由：${r.reason}`);
+      lines.push('', '採用：/規則 採用 編號　不採用：/規則 不採用 編號');
+      return lines.join('\n');
+    } catch (err) {
+      return `⚠️ 連不到 Luna：${err.message}`;
+    }
+  }, { type: 'query', name: 'review-rules', plugin: '_system', describe: '/規則 [採用|不採用 編號] — （管理員）審核 Luna 自己學到的規則', scope: 'all' });
+
   // /群組 — bot 目前在哪些群組（管理員）
   router.add(/^\/群組$/i, async (_match, ctx) => {
     if (!isAdmin(ctx.userId)) return '⛔ 僅管理員可用';
