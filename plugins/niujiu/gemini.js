@@ -420,6 +420,50 @@ export function parseEnrichResponse(text) {
  * 對單筆餐廳做 enrich（resolve 完才能跑）
  * @returns {object|null} enriched fields or null
  */
+// ── Phase 3: 存檔後背景複查店名與地址 ──
+
+const VERIFY_TIMEOUT_MS = 60_000; // 背景跑，不受 LINE 回覆期限限制
+
+/**
+ * 上網複查一家店的正式名稱與地址（至少兩個來源）。
+ * @returns {{ checked: boolean, verified: boolean, address?: string, area?: string, sources: number, note: string }}
+ *   verified=true 代表查到的地址有 ≥2 個來源一致；address 有值且跟原本不同時呼叫端才更正
+ */
+export async function verifyRestaurant(place) {
+  if (!llm) throw new Error('AI search not initialized');
+  const prompt = `你是餐廳資料查核員。請上網查證下面這家店的正式名稱與地址，至少找兩個不同來源（Google Maps、官網、Tabelog、食記、旅遊網站等）交叉比對：
+
+店名：${place.name}
+目前記錄的地址：${place.address || '（沒有）'}
+地區：${place.area || '（沒有）'}
+
+回傳嚴格 JSON（不要用 markdown code fence 包裹）：
+{
+  "address": "查證後的完整地址（照當地格式，日本用日文或中文皆可）",
+  "area": "簡短地區，如 千葉成田、台南東區",
+  "sources": 實際找到、且地址一致的來源數（數字）,
+  "matches_record": true 或 false（目前記錄的地址是否正確）,
+  "note": "一句話說明依據，例如「Google Maps 與官網都寫仲町 386」"
+}
+
+規則：
+- 只依搜尋到的資料，不要憑印象；查不到就 "address": ""、"sources": 0
+- 同名有多家分店時，以目前記錄的地區那家為準`;
+  const text = await askWithSearch(prompt, VERIFY_TIMEOUT_MS);
+  const o = safeParseJson(text) || {};
+  const sources = Number.isFinite(+o.sources) ? +o.sources : 0;
+  const address = typeof o.address === 'string' ? o.address.trim().slice(0, 200) : '';
+  return {
+    checked: true,
+    verified: sources >= 2 && !!address,
+    address,
+    area: typeof o.area === 'string' ? o.area.trim().slice(0, 40) : '',
+    matchesRecord: o.matches_record === true,
+    sources,
+    note: typeof o.note === 'string' ? o.note.trim().slice(0, 120) : '',
+  };
+}
+
 export async function enrichRestaurant(place, timeoutMs = GEMINI_TIMEOUT_MS) {
   if (!llm) throw new Error('AI search not initialized');
 

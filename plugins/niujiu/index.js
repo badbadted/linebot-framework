@@ -6,7 +6,7 @@
  */
 
 import { initFirestore, getActiveEvents, findEventByTitle, getPlatformStats, getUpcomingEventsWithParticipants, getParticipantsForEvents, getTomorrowEvents, addPendingRestaurant, findRestaurantByUrl, getUserByDisplayName, updateRestaurant, getPendingRestaurants, findDuplicateRestaurant } from './firestore.js';
-import { initGemini, isGeminiReady, resolveAndEnrich, searchTextCandidates, enrichCandidate, buildMapsSearchUrl, REPLY_BUDGET_MS } from './gemini.js';
+import { initGemini, isGeminiReady, resolveAndEnrich, searchTextCandidates, enrichCandidate, buildMapsSearchUrl, verifyRestaurant, REPLY_BUDGET_MS } from './gemini.js';
 
 const ADMIN_USER_ID = process.env.NJ_ADMIN_USER_ID || '';
 
@@ -233,6 +233,37 @@ export function choiceLabels(candidates) {
  * /美食 <店名 地區> — 沒有連結時，用文字找 Google Maps 上的店
  * 只找到一家就直接加入；多家時列出地點，讓使用者用快速回覆按鈕選
  */
+// ── 存檔後背景複查（不擋回覆、不推播；結果寫回那筆資料） ──
+
+const sameAddress = (a, b) => {
+  const k = (s) => String(s || '').normalize('NFKC').replace(/県/g, '縣').replace(/[\s,，、。.\-‐ー－〒]/g, '');
+  return !!k(a) && k(a) === k(b);
+};
+
+/**
+ * 背景上網複查店名地址：≥2 個來源一致且跟記錄不同才更正地址；結果記在 addressVerified／verifyNote
+ * @param {object} opt.mapsSearch - 這筆的 Google Maps 連結是用店名＋地址組的搜尋連結，地址更正時一起重組
+ */
+function verifyLater(docId, fields, { mapsSearch = false } = {}) {
+  if (!isGeminiReady() || !fields?.name) return;
+  setImmediate(async () => {
+    try {
+      const v = await verifyRestaurant(fields);
+      const update = { addressVerified: v.verified, verifyNote: v.note || (v.verified ? '' : '查不到兩個以上一致的來源'), verifiedAt: Date.now() };
+      const fix = v.verified && v.address && !sameAddress(v.address, fields.address);
+      if (fix) {
+        update.address = v.address;
+        if (v.area) update.area = v.area;
+        if (mapsSearch) update.googleMapsUrl = buildMapsSearchUrl(fields.name, v.address);
+      }
+      await updateRestaurant(db, docId, update);
+      console.log(`[niujiu-verify] ${fields.name}：${fix ? `地址更正「${fields.address || '（無）'}」→「${v.address}」` : v.verified ? '地址正確' : '無法確認'}（${v.sources} 個來源）${v.note ? '｜' + v.note : ''}`);
+    } catch (err) {
+      console.error(`[niujiu-verify] ${fields.name} 複查失敗：${err.message}`);
+    }
+  });
+}
+
 async function addFoodByText(query, profile, choiceKey) {
   // 找店與補資訊共用同一個回覆期限（見 gemini.js REPLY_BUDGET_MS）
   const deadline = Date.now() + REPLY_BUDGET_MS;
@@ -287,12 +318,14 @@ async function addFoodCandidate(candidate, profile, deadline) {
   const { status, ...fields } = result;
   const docId = await addPendingRestaurant(db, mapsUrl, profile);
   await updateRestaurant(db, docId, { ...fields, status: 'resolved' });
+  verifyLater(docId, fields, { mapsSearch: true });
 
   const parts = [`✅ 已新增：${result.name}`];
   if (result.address || result.area) parts.push(`📍 ${result.address || result.area}`);
   if (result.googleRating) parts.push(`⭐ ${result.googleRating}`);
   if (result.priceDetail) parts.push(`💰 ${result.priceDetail}`);
   parts.push(`🗺️ ${mapsUrl}`);
+  parts.push('🔎 地址稍後會自動上網複查，有錯會自己更正');
   return parts.join('\n');
 }
 
@@ -511,6 +544,7 @@ export default {
             if (result.status === 'resolved' && result.name) {
               const { status, ...fields } = result;
               await updateRestaurant(db, restaurant.id, { ...fields, status: 'resolved' });
+              verifyLater(restaurant.id, fields);
               lines.push(`✓ ${result.name}`);
               ok++;
             } else {
@@ -612,10 +646,12 @@ export default {
               const { status, ...fields } = result;
               const docId = await addPendingRestaurant(db, foodUrl, profile);
               await updateRestaurant(db, docId, { ...fields, status: 'resolved' });
+              verifyLater(docId, fields);
               const parts = [`✅ 已新增：${result.name}`];
               if (result.area) parts.push(`📍 ${result.area}`);
               if (result.googleRating) parts.push(`⭐ ${result.googleRating}`);
               if (result.priceDetail) parts.push(`💰 ${result.priceDetail}`);
+              parts.push('🔎 地址稍後會自動上網複查，有錯會自己更正');
               return parts.join('\n');
             } else {
               return '❌ 無法辨識餐廳，請確認連結是否正確';
