@@ -87,10 +87,10 @@ export async function createLunaProvider(config) {
   /**
    * 純文字生成：不帶 Luna 工具、不用 Luna 記憶與 session（Luna /api/ext/llm，只收本機呼叫）
    * @param {object} opts - { system, messages: [{role, content}], maxTokens, webSearch?: { maxUses }, model?, effort?, timeoutMs? }
-   *   webSearch：開 Anthropic 網路搜尋（按次計費）；model：'haiku'（預設）或 'sonnet'；effort：low／medium／high
+   *   webSearch：開 Anthropic 網路搜尋（按次計費）；webFetch：可打開對話裡出現的網址；model：'haiku'（預設）或 'sonnet'；effort：low／medium／high
    * @returns {string}
    */
-  async function generate({ system, messages, maxTokens, webSearch, model, effort, timeoutMs, withMeta = false } = {}) {
+  async function generate({ system, messages, maxTokens, webSearch, webFetch, model, effort, timeoutMs, withMeta = false } = {}) {
     const limit = timeoutMs || timeout;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), limit);
@@ -98,13 +98,13 @@ export async function createLunaProvider(config) {
       const res = await fetch(`${baseUrl}/api/ext/llm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ system, messages, maxTokens, webSearch, model, effort }),
+        body: JSON.stringify({ system, messages, maxTokens, webSearch, webFetch, model, effort }),
         signal: ctrl.signal,
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.success) throw new Error(`Luna llm error: ${res.status} ${body.error || ''}`);
       // withMeta：連同這次上網搜了幾次一起回（呼叫端可據此不信任搜尋後的輸出）
-      return withMeta ? { text: body.text || '', searches: body.searches || 0 } : (body.text || '');
+      return withMeta ? { text: body.text || '', searches: body.searches || 0, fetches: body.fetches || 0 } : (body.text || '');
     } catch (err) {
       if (err.name === 'AbortError') throw new Error(`Luna llm timeout after ${limit}ms`);
       throw err;
