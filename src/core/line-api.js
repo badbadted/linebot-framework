@@ -28,6 +28,8 @@ export function createLineAPI(channelAccessToken) {
     });
     const body = await res.text(); // 必須消耗 body 避免 socket leak
     if (!res.ok) throw new Error(`LINE reply failed: ${res.status} ${body}`);
+    // 回傳 { sentMessages: [{ id, quoteToken }] }：之後有人「回覆」這則訊息時，webhook 會帶 quotedMessageId 對得上
+    try { return JSON.parse(body); } catch { return {}; }
   }
 
   async function push(to, text) {
