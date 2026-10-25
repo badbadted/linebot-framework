@@ -41,8 +41,8 @@ function harness({ start = NOON, reply = true, cfg = {} } = {}) {
     t = end;
   }
   function say(text, { mention = false } = {}) {
-    brain.observe('G', { userId: 'U1', name: '阿庭', text });
-    return brain.handle('G', { replyToken: `tok-${text}`, isMention: mention });
+    const item = brain.observe('G', { userId: 'U1', name: '阿庭', text });
+    return brain.handle('G', { replyToken: `tok-${text}`, isMention: mention, trigger: item });
   }
   return { brain, fired, advance, say, on, get now() { return t; }, set now(v) { t = v; } };
 }
@@ -164,6 +164,7 @@ await test('等待中又有人講話：改看最新那句，只叫 AI 一次', a
   assert.equal(h.fired.length, 1);
   assert.equal(h.fired[0].mode, 'mention'); // 點名優先權保留
   assert.equal(h.fired[0].replyToken, 'tok-人呢');
+  assert.equal(h.fired[0].trigger.text, '小帥'); // 要回的還是點名那句
 });
 
 await test('一直有人講話：最多延後 8 秒就開口', async () => {
@@ -241,7 +242,9 @@ await test('buildPrompt 帶記憶、對話與情況', () => {
     mode: 'mention', nowTs: NOON,
     memories: [{ content: '12/25 去滑雪' }],
     transcript: [{ name: '阿庭', text: '小帥你會滑雪嗎' }, { self: true, text: '我只會滑手機' }],
+    trigger: { name: '阿庭', text: '小帥你會滑雪嗎' },
   });
+  assert.ok(p.includes('【叫你的那句】\n阿庭：小帥你會滑雪嗎'));
   assert.match(p, /12\/25 去滑雪/);
   assert.match(p, /阿庭：小帥你會滑雪嗎/);
   assert.match(p, /小帥（你）：我只會滑手機/);

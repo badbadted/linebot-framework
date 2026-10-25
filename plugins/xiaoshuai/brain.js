@@ -77,7 +77,11 @@ export function createBrain({
   /**
    * 沒命中指令的群組訊息。回傳 true = 小帥在這群開著（接手，不交給其他 AI）
    */
-  function handle(chatId, { replyToken, isMention }) {
+  /**
+   * trigger：觸發這次的那則訊息（observe 回傳的物件）。等待中被新訊息合併時，
+   * 點名那句會保留下來，AI 才知道真正要回的是哪一句
+   */
+  function handle(chatId, { replyToken, isMention, trigger = null }) {
     if (!isEnabled(chatId)) return false;
     const s = st(chatId);
     const t = now();
@@ -99,7 +103,11 @@ export function createBrain({
     const prev = s.pending;
     if (prev) clearTimer(prev.timer);
     const merged = prev && PRIORITY[prev.mode] > PRIORITY[mode] ? prev.mode : mode;
-    const job = { mode: merged, replyToken, receivedAt: t, firstAt: prev?.firstAt ?? t, timer: null };
+    const keepPrevTrigger = prev && merged === prev.mode && prev.mode === 'mention' && !isMention;
+    const job = {
+      mode: merged, replyToken, receivedAt: t, firstAt: prev?.firstAt ?? t, timer: null,
+      trigger: keepPrevTrigger ? prev.trigger : trigger,
+    };
     s.pending = job;
     schedule(chatId, job);
     return true;
@@ -140,7 +148,7 @@ export function createBrain({
     }
     s.busy = true;
     try {
-      const r = await onFire(chatId, { mode: job.mode, replyToken: job.replyToken, transcript: s.buf.slice() });
+      const r = await onFire(chatId, { mode: job.mode, replyToken: job.replyToken, trigger: job.trigger, transcript: s.buf.slice() });
       if (r?.replied) {
         const t = now();
         s.lastReplyAt = t;

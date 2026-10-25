@@ -24,6 +24,7 @@ const MENTION_RE = /小帥/;
 let db, lineApi, llm, isAdmin, brain;
 const enabled = new Set();
 const nameCache = new Map(); // `${chatId}:${userId}` → displayName
+const lastItem = new Map();  // chatId → 最近 observe 的那則（onUnmatched 拿來當觸發訊息）
 
 export const PERSONA = `你是「小帥」，在一個 LINE 群組裡跟大家聊天的年輕男生。
 個性：愛搞笑、會吐槽接梗、偶爾耍廢，但不刻薄，不拿別人的外表、身分開玩笑。
@@ -31,6 +32,10 @@ export const PERSONA = `你是「小帥」，在一個 LINE 群組裡跟大家�
 你是 AI 角色，不用主動強調；有人認真問你是不是 AI，就老實說。
 界線：
 - 你只能聊天，沒辦法控制設備、訂東西、設提醒；有人要你做事，請他打 /help 看群組指令，不要假裝做了。
+- 先看懂再回：只根據對話裡真的有的內容回話。看不懂對方在說什麼、或不確定要你做什麼，就簡短反問確認（例如「你是說…嗎？」），不要自己猜一個答案。
+- 不要編造群組成員的事（誰怎樣、誰的習慣、誰的身體），也不要拿真人當玩笑的主角；可以吐槽，但只吐槽對話裡真的發生的事。
+- 被稱讚就大方道謝，不要反問「叫我幹嘛」。
+- 有人叫你「記起來」「記一下」：從前後文找出要記的那件事；確定就寫進 remember，reply 說你記了什麼；不確定是哪件就反問。
 - 不知道的事不要編。不談政治、宗教爭議，不給醫療、法律、投資建議。
 - 不講任何人的電話、地址、帳號等個資。
 - 不要重複對話裡已經用過的梗。
@@ -41,7 +46,7 @@ remember：只記「已經定案、之後會用到」的事，就算這次不說
 - 不該記：天氣、心情、玩笑、問句（「阿豪在問幾點到機場」）、還沒決定的事、電話地址等個資`;
 
 const SITUATION = {
-  mention: '有人在叫你（最近的訊息提到小帥），一定要回話，reply 不可以是空字串。',
+  mention: '有人在叫你，一定要回話，reply 不可以是空字串。最重要的是回應【叫你的那句】；前面的對話只是背景，不要跳去回別的話題。',
   idle: '大家聊了一陣子沒找你。如果你有好梗、或能幫上忙，就自然地插一句；沒什麼好說就 reply 空字串。寧可不說，也不要硬聊。',
   window: '你剛剛有參與聊天，但不要一直搶話。預設 reply 空字串；只有最新那則訊息明顯是在跟你說話、或在問你問題，才回。大家在聊別的、在回應別人、或只是在笑，都不要回。',
 };
@@ -96,7 +101,7 @@ function addMemories(chatId, items) {
 
 // ── AI ─────────────────────────────────────────────
 
-export function buildPrompt({ mode, transcript, memories, nowTs = Date.now() }) {
+export function buildPrompt({ mode, transcript, memories, trigger = null, nowTs = Date.now() }) {
   const time = new Date(nowTs).toLocaleString('zh-TW', {
     timeZone: 'Asia/Taipei', month: 'long', day: 'numeric', weekday: 'long',
     hour: '2-digit', minute: '2-digit', hour12: false,
@@ -105,7 +110,9 @@ export function buildPrompt({ mode, transcript, memories, nowTs = Date.now() }) 
   const chat = transcript.length
     ? transcript.map(t => `${t.self ? '小帥（你）' : (t.name || '某人')}：${t.text.slice(0, 300)}`).join('\n')
     : '（沒有）';
-  return `現在時間：${time}\n\n【這個群的記憶】\n${mem}\n\n【最近對話】（越下面越新）\n${chat}\n\n【這次的情況】\n${SITUATION[mode]}`;
+  const label = mode === 'mention' ? '叫你的那句' : '最新那則訊息';
+  const focus = trigger?.text ? `\n\n【${label}】\n${trigger.name || '某人'}：${trigger.text.slice(0, 300)}` : '';
+  return `現在時間：${time}\n\n【這個群的記憶】\n${mem}\n\n【最近對話】（越下面越新）\n${chat}${focus}\n\n【這次的情況】\n${SITUATION[mode]}`;
 }
 
 /** AI 回的文字 → { reply, remember }；壞掉的 JSON 盡量救回來 */
@@ -126,11 +133,13 @@ export function parseReply(raw, mode) {
   return { reply: mode === 'mention' && !s.startsWith('{') ? s.slice(0, 200) : '', remember: [] };
 }
 
-async function think(chatId, { mode, replyToken, transcript }) {
+async function think(chatId, { mode, replyToken, trigger, transcript }) {
   const raw = await llm.generate({
     system: PERSONA,
-    messages: [{ role: 'user', content: buildPrompt({ mode, transcript, memories: listMemories(chatId) }) }],
+    messages: [{ role: 'user', content: buildPrompt({ mode, transcript, trigger, memories: listMemories(chatId) }) }],
     maxTokens: 1500, // AI 會先思考，400 曾在思考階段就用完、回空字串
+    // 被叫時要真的聽懂再回 → Sonnet；自己判斷要不要接話（幾乎都不說）→ Haiku 省錢
+    ...(mode === 'mention' ? { model: 'sonnet', effort: 'medium' } : {}),
   });
   const { reply, remember } = parseReply(raw, mode);
   const saved = remember.length ? addMemories(chatId, remember) : [];
@@ -259,11 +268,14 @@ export default {
   onGroupText({ chatId, userId, text }) {
     if (!brain || !enabled.has(chatId)) return;
     const item = brain.observe(chatId, { userId, text });
+    lastItem.set(chatId, item);
     if (item) resolveName(chatId, userId, item);
   },
 
   async onUnmatched({ chatId, text, replyToken, event }) {
     if (!brain || !chatId || !llm?.generate) return false;
-    return brain.handle(chatId, { replyToken, isMention: isMentioned(text, event) });
+    const item = lastItem.get(chatId);
+    const trigger = item?.text === text ? item : { text };
+    return brain.handle(chatId, { replyToken, isMention: isMentioned(text, event), trigger });
   },
 };
