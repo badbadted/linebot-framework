@@ -1,18 +1,18 @@
 /**
- * Gemini AI 餐廳辨識 + 資訊補充
+ * AI 餐廳辨識 + 資訊補充（Claude ＋ 網路搜尋）
  *
  * 從 resolve-pending.ts 搬過來，改為 firebase-admin + ESM
- * 需要環境變數：GEMINI_API_KEY
+ * 2026-10-25 由 Gemini＋Google Search 改為 Claude Sonnet 5.5：走 Luna /api/ext/llm（webSearch），
+ * 金鑰在 Luna，這裡不需要任何 API key。需求 Provider：llm（luna，需有 generate）
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
-
-let model = null;
+let llm = null;
 
 const FETCH_TIMEOUT_MS = 8000;
-const GEMINI_TIMEOUT_MS = 30000;
+const GEMINI_TIMEOUT_MS = 30000; // 單次 AI 搜尋上限（名稱沿用，Gemini 時代就是這個值）
+const SEARCH_MAX_USES = 3;       // 每次最多搜幾次網路（每千次約 10 美元）
 
-// LINE reply token 收到訊息後 1 分鐘內要用掉。一次 /美食 可能連續呼叫兩次 Gemini（找店＋補資訊），
+// LINE reply token 收到訊息後 1 分鐘內要用掉。一次 /美食 可能連續呼叫兩次 AI（找店＋補資訊），
 // 兩次都用滿 30 秒會超過期限、回覆變成私訊推播，所以整趟限 50 秒（留時間寫入與回覆）：
 // 補資訊只用剩下的時間，剩不到 MIN_ENRICH_MS 就跳過，直接用找到的資料寫入
 export const REPLY_BUDGET_MS = 50000;
@@ -29,37 +29,35 @@ async function fetchWithTimeout(url, opts = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   }
 }
 
-// 為任意 promise 加逾時上限（Gemini SDK 無原生 timeout 參數）
-function withTimeout(promise, timeoutMs, label) {
-  let t;
-  const timeout = new Promise((_, reject) => {
-    t = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
-}
-
 // ── 初始化 ──────────────────────────────────────────
 
-export function initGemini() {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    console.warn('[niujiu-gemini] no GEMINI_API_KEY — resolve/enrich disabled');
+export function initGemini(llmProvider) {
+  if (!llmProvider?.generate) {
+    console.warn('[niujiu-ai] llm provider 沒有 generate()（需要 Luna）— 找店／補資訊停用');
     return false;
   }
-  const genAI = new GoogleGenerativeAI(key);
-  model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    tools: [{ googleSearch: {} }],
-  });
-  console.log('[niujiu-gemini] Gemini 2.5 Flash + Google Search ready');
+  llm = llmProvider;
+  console.log('[niujiu-ai] Claude Sonnet + 網路搜尋 ready（經 Luna）');
   return true;
 }
 
 export function isGeminiReady() {
-  return model !== null;
+  return llm !== null;
 }
 
-/** 從 Gemini 回傳文字中提取 JSON，容錯處理 */
+/** 帶網路搜尋問 AI，回傳文字 */
+async function askWithSearch(prompt, timeoutMs) {
+  return llm.generate({
+    messages: [{ role: 'user', content: prompt }],
+    maxTokens: 3000,
+    webSearch: { maxUses: SEARCH_MAX_USES },
+    model: 'sonnet', // 找店要準：Sonnet 有篩選搜尋結果的新版搜尋工具，實測單次約 9～10 秒
+    effort: 'medium',
+    timeoutMs,
+  });
+}
+
+/** 從 AI 回傳文字中提取 JSON，容錯處理 */
 function safeParseJson(text) {
   if (!text || !text.trim()) return null;
   // 去 code fence
@@ -70,7 +68,7 @@ function safeParseJson(text) {
   try {
     return JSON.parse(cleaned);
   } catch {
-    console.error('[niujiu-gemini] JSON parse failed:', cleaned.slice(0, 100));
+    console.error('[niujiu-ai] JSON parse failed:', cleaned.slice(0, 100));
     return null;
   }
 }
@@ -151,10 +149,10 @@ export async function resolveGoogleMapsUrl(shortUrl) {
   return parsed;
 }
 
-// ── Phase 1B: 外部 URL（IG、部落格）→ Gemini 辨識 ──
+// ── Phase 1B: 外部 URL（IG、部落格）→ AI 搜尋辨識 ──
 
 export async function resolveExternalUrl(url) {
-  if (!model) throw new Error('Gemini not initialized');
+  if (!llm) throw new Error('AI search not initialized');
 
   // 先嘗試 fetch OG meta 取得線索
   let hint = '';
@@ -177,7 +175,7 @@ export async function resolveExternalUrl(url) {
     const title = decodeEntities(rawTitle);
     const desc = decodeEntities(rawDesc);
     hint = [title, desc].filter(Boolean).join(' — ').slice(0, 500);
-  } catch { /* fetch 失敗就靠 Gemini search */ }
+  } catch { /* fetch 失敗就靠 AI 搜尋 */ }
 
   const isIG = /instagram\.com/.test(url);
   const isFB = /facebook\.com/.test(url);
@@ -186,7 +184,7 @@ export async function resolveExternalUrl(url) {
     ? `\n⚠️ 注意：網頁預覽中的帳號名稱（如「吃吃霞」「美食日記」）是發文者帳號，不是餐廳名稱！請搜尋這則貼文實際介紹的餐廳。`
     : '';
 
-  const prompt = `你是餐廳辨識助手。請用 Google Search 搜尋以下連結中介紹的餐廳：
+  const prompt = `你是餐廳辨識助手。請上網搜尋以下連結中介紹的餐廳：
 ${url}${hintBlock}${platformWarn}
 
 請搜尋這則貼文（可能是 Instagram Reel、Facebook 貼文、美食部落格等）實際介紹的餐廳。
@@ -206,9 +204,8 @@ ${url}${hintBlock}${platformWarn}
 - lat/lng 如果知道填數字，不知道填 null
 - 真的找不到就全部填空字串/null，不要猜`;
 
-  const result = await withTimeout(model.generateContent(prompt), GEMINI_TIMEOUT_MS, 'gemini');
-  const text = result.response.text();
-  console.log('[niujiu-gemini] resolve raw:', text.slice(0, 200));
+  const text = await askWithSearch(prompt, GEMINI_TIMEOUT_MS);
+  console.log('[niujiu-ai] resolve raw:', text.slice(0, 200));
   return parseResolveResponse(text);
 }
 
@@ -229,7 +226,7 @@ function pickPlaceFields(obj) {
   return out;
 }
 
-// ── Phase 1C: 純文字（店名／地區）→ Gemini + Google Search 找 Google Maps 上的店 ──
+// ── Phase 1C: 純文字（店名／地區）→ AI 上網搜尋找 Google Maps 上的店 ──
 
 /** 沒有原始連結時，用店名＋地址組 Google Maps 搜尋連結存檔 */
 export function buildMapsSearchUrl(name, address) {
@@ -244,12 +241,12 @@ const MAX_TEXT_CANDIDATES = 3;
  * 文字有地區線索或明確只有一家時只回一家；找不到回 []
  */
 export async function searchTextCandidates(query) {
-  if (!model) throw new Error('Gemini not initialized');
+  if (!llm) throw new Error('AI search not initialized');
 
   const prompt = `你是餐廳辨識助手。使用者輸入一段文字，想找 Google Maps 上對應的餐廳：
 「${query}」
 
-請用 Google Search 找出符合的餐廳（文字可能含店名、地區、菜色等線索）。
+請上網搜尋找出符合的餐廳（文字可能含店名、地區、菜色等線索）。
 回傳嚴格 JSON（不要用 markdown code fence 包裹）：
 
 {
@@ -266,9 +263,8 @@ export async function searchTextCandidates(query) {
 - lat/lng 如果知道填數字，不知道填 null
 - 找不到確定存在的餐廳就回傳 {"candidates": []}`;
 
-  const result = await withTimeout(model.generateContent(prompt), GEMINI_TIMEOUT_MS, 'gemini');
-  const text = result.response.text();
-  console.log('[niujiu-gemini] text candidates raw:', text.slice(0, 300));
+  const text = await askWithSearch(prompt, GEMINI_TIMEOUT_MS);
+  console.log('[niujiu-ai] text candidates raw:', text.slice(0, 300));
   const list = safeParseJson(text)?.candidates;
   if (!Array.isArray(list)) return [];
 
@@ -284,7 +280,7 @@ export async function searchTextCandidates(query) {
     .slice(0, MAX_TEXT_CANDIDATES);
 }
 
-// ── Phase 2: Enrich 餐廳資訊（Gemini + Google Search） ──
+// ── Phase 2: Enrich 餐廳資訊（AI ＋ 網路搜尋） ──
 
 const ENRICHMENT_KEYS = ['address', 'area', 'summary', 'googleRating', 'tabelogRating', 'priceDetail', 'hours', 'access'];
 
@@ -300,7 +296,7 @@ function hasCoords(place) {
 
 /**
  * 座標 → 所在位置文字（如「羽田四丁目, 羽田, 大田區, 東京都, 144-0043, 日本」），查不到回 ''
- * 用 OpenStreetMap Nominatim（免金鑰）。Gemini 光看座標數字會判錯行政區，所以先查好再給它
+ * 用 OpenStreetMap Nominatim（免金鑰）。AI 光看座標數字會判錯行政區，所以先查好再給它
  */
 export async function reverseGeocode(lat, lng) {
   try {
@@ -312,7 +308,7 @@ export async function reverseGeocode(lat, lng) {
     const data = await res.json();
     return typeof data.display_name === 'string' ? data.display_name.trim() : '';
   } catch (err) {
-    console.warn('[niujiu-gemini] reverse geocode failed:', err.message);
+    console.warn('[niujiu-ai] reverse geocode failed:', err.message);
     return '';
   }
 }
@@ -358,7 +354,7 @@ const SUMMARY_TRAILING_RE = /[\s，、；。！？,;!?：:]+$/;
 
 /**
  * summary 超過上限時截短：優先在上限內最後一個標點處斷句，沒有合適的標點才硬切加「…」
- * Gemini 不一定遵守提示裡的字數要求，所以收到後一律過這道
+ * AI 不一定遵守提示裡的字數要求，所以收到後一律過這道
  * 字數以 code point 計（emoji、罕用字算一個字）
  */
 export function clampSummary(text, max = SUMMARY_MAX_CHARS) {
@@ -390,7 +386,7 @@ export function parseEnrichResponse(text) {
   if (fields.summary) {
     const clamped = clampSummary(fields.summary);
     if (clamped !== fields.summary) {
-      console.log(`[niujiu-gemini] summary clamped ${Array.from(fields.summary).length} → ${Array.from(clamped).length} chars`);
+      console.log(`[niujiu-ai] summary clamped ${Array.from(fields.summary).length} → ${Array.from(clamped).length} chars`);
     }
     fields.summary = clamped;
   }
@@ -402,11 +398,10 @@ export function parseEnrichResponse(text) {
  * @returns {object|null} enriched fields or null
  */
 export async function enrichRestaurant(place, timeoutMs = GEMINI_TIMEOUT_MS) {
-  if (!model) throw new Error('Gemini not initialized');
+  if (!llm) throw new Error('AI search not initialized');
 
   const prompt = buildEnrichPrompt(place);
-  const result = await withTimeout(model.generateContent(prompt), timeoutMs, 'gemini');
-  const text = result.response.text();
+  const text = await askWithSearch(prompt, timeoutMs);
   return parseEnrichResponse(text);
 }
 
@@ -424,7 +419,7 @@ export async function resolveAndEnrich(url, deadline = Date.now() + REPLY_BUDGET
 
 /**
  * 對文字搜尋選定的候選店補資訊，回傳格式同 resolveAndEnrich
- * @param {number} [deadline] 同一趟回覆的截止時間（ms）；沒給就用完整的 Gemini 逾時
+ * @param {number} [deadline] 同一趟回覆的截止時間（ms）；沒給就用完整的 AI 逾時
  */
 export async function enrichCandidate(candidate, deadline) {
   return enrichResolved(candidate, deadline);
@@ -440,18 +435,18 @@ async function enrichResolved(resolved, deadline) {
   const remaining = deadline ? deadline - Date.now() : GEMINI_TIMEOUT_MS;
   const timeoutMs = Math.min(GEMINI_TIMEOUT_MS, remaining);
   if (timeoutMs < MIN_ENRICH_MS) {
-    console.warn(`[niujiu-gemini] skip enrich for ${resolved.name}: only ${remaining}ms left before reply deadline`);
+    console.warn(`[niujiu-ai] skip enrich for ${resolved.name}: only ${remaining}ms left before reply deadline`);
   } else {
     try {
       // 只有店名＋座標（Maps 連結）時先查出所在位置，當成找店的地區線索
       const locality = hasCoords(resolved) && !resolved.address && !resolved.area
         ? await reverseGeocode(resolved.lat, resolved.lng)
         : '';
-      // 查位置最多花掉 GEOCODE_TIMEOUT_MS，Gemini 用扣掉之後剩下的時間
+      // 查位置最多花掉 GEOCODE_TIMEOUT_MS，AI 用扣掉之後剩下的時間
       const left = deadline ? Math.min(GEMINI_TIMEOUT_MS, deadline - Date.now()) : timeoutMs;
       enriched = await enrichRestaurant({ ...resolved, locality }, left);
     } catch (err) {
-      console.error(`[niujiu-gemini] enrich error for ${resolved.name}:`, err.message);
+      console.error(`[niujiu-ai] enrich error for ${resolved.name}:`, err.message);
       // resolve 成功但 enrich 失敗，仍回傳 resolved 資料
     }
   }

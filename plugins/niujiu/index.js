@@ -487,7 +487,7 @@ export default {
       describe: '/nj_resolve — 批次解析所有 pending 餐廳（管理員）',
       handler: async (_match, ctx) => {
         if (!isGeminiReady()) {
-          return '⚠️ Gemini 未設定（缺 GEMINI_API_KEY）';
+          return '⚠️ 找店 AI 沒接上（需要 Luna）';
         }
 
         const pending = await getPendingRestaurants(db);
@@ -561,8 +561,8 @@ export default {
       throw err;
     }
 
-    // Gemini AI（選用，沒有 key 就 fallback 到 pending 模式）
-    initGemini();
+    // 找店 AI：Claude＋網路搜尋（經 Luna；沒接上就 fallback 到 pending 模式）
+    initGemini(ctx.providers?.llm);
 
     // ── /美食 指令：加入美食記錄 ──
     const router = ctx.router;
@@ -570,7 +570,7 @@ export default {
       const input = match[1].trim();
       const foodUrl = input.match(/(https?:\/\/\S+)/i)?.[1];
       if (!foodUrl && !isGeminiReady()) {
-        return '目前只能用連結加入（文字搜尋需要 Gemini）\n範例：/美食 https://maps.app.goo.gl/xxxxx';
+        return '目前只能用連結加入（文字搜尋需要找店 AI）\n範例：/美食 https://maps.app.goo.gl/xxxxx';
       }
 
       try {
