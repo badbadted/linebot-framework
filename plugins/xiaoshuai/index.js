@@ -29,7 +29,7 @@ const lastItem = new Map();  // chatId → 最近 observe 的那則（onUnmatche
 export const PERSONA = `你是「小帥」，在一個 LINE 群組裡跟大家聊天的年輕男生。
 個性：愛搞笑、會吐槽接梗、偶爾耍廢，但不刻薄，不拿別人的外表、身分開玩笑。
 說話：台灣口語、全中文（不要夾英文單字），像朋友打字，一次 1～2 句、大約 30 字，最多 60 字；不用條列、不用 Markdown；大多數時候不用 emoji，要用最多一個。
-你是 AI 角色，不用主動強調；有人認真問你是不是 AI，就老實說。
+你是 AI 角色，不用主動強調；有人認真問你是不是 AI、是什麼模型，就老實說：你是用 Anthropic 的 Claude 做的。
 界線：
 - 你只能聊天，沒辦法控制設備、訂東西、設提醒；有人要你做事，請他打 /help 看群組指令，不要假裝做了。
 - 先看懂再回：只根據對話裡真的有的內容回話。看不懂對方在說什麼、或不確定要你做什麼，就簡短反問確認（例如「你是說…嗎？」），不要自己猜一個答案。
@@ -48,7 +48,8 @@ remember：只記「已經定案、之後會用到」的事，就算這次不說
 const SITUATION = {
   mention: '有人在叫你，一定要回話，reply 不可以是空字串。最重要的是回應【叫你的那句】；前面的對話只是背景，不要跳去回別的話題。',
   idle: '大家聊了一陣子沒找你。如果你有好梗、或能幫上忙，就自然地插一句；沒什麼好說就 reply 空字串。寧可不說，也不要硬聊。',
-  window: '你剛剛有參與聊天，但不要一直搶話。預設 reply 空字串；只有最新那則訊息明顯是在跟你說話、或在問你問題，才回。大家在聊別的、在回應別人、或只是在笑，都不要回。',
+  window: '你剛剛有參與聊天。先判斷【最新那則訊息】是不是在跟你說話：回應你剛說的話、問你問題、接著你參與的話題講下去並等你回應，都算；在跟別人說話、聊跟你無關的事、或只是在笑，都不算。這次的 JSON 要多一個欄位 "to_me"（true／false）。to_me 是 true 時 reply 可以留空（會另外請你回）。to_me 是 false 時，預設 reply 空字串，不要搶話。',
+  followup: '這句是在接你的話（延續你們剛剛聊的），一定要回，reply 不可以是空字串。重點是回應【接你話的那句】，前面的對話只是背景。',
 };
 
 // ── 資料 ───────────────────────────────────────────
@@ -67,6 +68,12 @@ function initDb() {
       created_at TEXT DEFAULT (datetime('now','+8 hours'))
     );
     CREATE INDEX IF NOT EXISTS idx_mem_chat ON memories(chat_id);
+    CREATE TABLE IF NOT EXISTS sent (
+      message_id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now','+8 hours'))
+    );
   `);
   for (const r of db.all('SELECT chat_id FROM groups WHERE enabled = 1')) enabled.add(r.chat_id);
 }
@@ -78,6 +85,23 @@ function setEnabled(chatId, on) {
     chatId, on ? 1 : 0,
   );
   if (on) enabled.add(chatId); else { enabled.delete(chatId); brain.reset(chatId); }
+}
+
+const SENT_KEEP_DAYS = 7;
+
+/** 記下小帥送出的訊息 ID：有人用 LINE「回覆」這則時，webhook 的 quotedMessageId 會對得上 */
+function rememberSent(chatId, res, text) {
+  for (const m of res?.sentMessages || []) {
+    if (m?.id) db.run('INSERT OR IGNORE INTO sent (message_id, chat_id, text) VALUES (?, ?, ?)', String(m.id), chatId, text.slice(0, 300));
+  }
+  db.run(`DELETE FROM sent WHERE created_at < datetime('now','+8 hours','-${SENT_KEEP_DAYS} days')`);
+}
+
+/** 被回覆的是不是小帥說的話；是就回傳那句話，不是回傳 null */
+function quotedSelf(event) {
+  const id = event?.message?.quotedMessageId;
+  if (!id || !db) return null;
+  return db.get('SELECT text FROM sent WHERE message_id = ?', String(id))?.text ?? null;
 }
 
 function listMemories(chatId) {
@@ -101,7 +125,7 @@ function addMemories(chatId, items) {
 
 // ── AI ─────────────────────────────────────────────
 
-export function buildPrompt({ mode, transcript, memories, trigger = null, nowTs = Date.now() }) {
+export function buildPrompt({ mode, transcript, memories, trigger = null, allowChimeIn = true, nowTs = Date.now() }) {
   const time = new Date(nowTs).toLocaleString('zh-TW', {
     timeZone: 'Asia/Taipei', month: 'long', day: 'numeric', weekday: 'long',
     hour: '2-digit', minute: '2-digit', hour12: false,
@@ -110,9 +134,11 @@ export function buildPrompt({ mode, transcript, memories, trigger = null, nowTs 
   const chat = transcript.length
     ? transcript.map(t => `${t.self ? '小帥（你）' : (t.name || '某人')}：${t.text.slice(0, 300)}`).join('\n')
     : '（沒有）';
-  const label = mode === 'mention' ? '叫你的那句' : '最新那則訊息';
-  const focus = trigger?.text ? `\n\n【${label}】\n${trigger.name || '某人'}：${trigger.text.slice(0, 300)}` : '';
-  return `現在時間：${time}\n\n【這個群的記憶】\n${mem}\n\n【最近對話】（越下面越新）\n${chat}${focus}\n\n【這次的情況】\n${SITUATION[mode]}`;
+  const label = mode === 'mention' ? '叫你的那句' : mode === 'followup' ? '接你話的那句' : '最新那則訊息';
+  const quoted = trigger?.quoted ? `\n（這句是用「回覆」功能在回你說的：「${trigger.quoted.slice(0, 200)}」，接著那個話題回）` : '';
+  const focus = trigger?.text ? `\n\n【${label}】\n${trigger.name || '某人'}：${trigger.text.slice(0, 300)}${quoted}` : '';
+  const noChime = mode === 'window' && !allowChimeIn ? '\n（你剛講過話：to_me 是 false 時，reply 一定要是空字串）' : '';
+  return `現在時間：${time}\n\n【這個群的記憶】\n${mem}\n\n【最近對話】（越下面越新）\n${chat}${focus}\n\n【這次的情況】\n${SITUATION[mode]}${noChime}`;
 }
 
 /** AI 回的文字 → { reply, remember }；壞掉的 JSON 盡量救回來 */
@@ -126,37 +152,65 @@ export function parseReply(raw, mode) {
       return {
         reply: typeof o.reply === 'string' ? o.reply.trim() : '',
         remember: Array.isArray(o.remember) ? o.remember : [],
+        toMe: o.to_me === true,
       };
     } catch { /* 往下走 */ }
   }
   // 不是 JSON：被點名時直接把文字當回覆，其他情況當作不說話
-  return { reply: mode === 'mention' && !s.startsWith('{') ? s.slice(0, 200) : '', remember: [] };
+  const plain = (mode === 'mention' || mode === 'followup') && !s.startsWith('{') ? s.slice(0, 200) : '';
+  return { reply: plain, remember: [], toMe: false };
 }
 
-async function think(chatId, { mode, replyToken, trigger, transcript }) {
+async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
   const raw = await llm.generate({
     system: PERSONA,
-    messages: [{ role: 'user', content: buildPrompt({ mode, transcript, trigger, memories: listMemories(chatId) }) }],
+    messages: [{ role: 'user', content: buildPrompt({ mode, transcript, trigger, allowChimeIn, memories: listMemories(chatId) }) }],
     maxTokens: 1500, // AI 會先思考，400 曾在思考階段就用完、回空字串
-    // 被叫時要真的聽懂再回 → Sonnet；自己判斷要不要接話（幾乎都不說）→ Haiku 省錢
-    ...(mode === 'mention' ? { model: 'sonnet', effort: 'medium' } : {}),
+    // 要真的回人（被叫、接著聊）→ Sonnet 聽懂再回；判斷要不要接、冷場插話 → Haiku 省錢
+    ...(mode === 'mention' || mode === 'followup' ? { model: 'sonnet', effort: 'medium' } : {}),
   });
-  const { reply, remember } = parseReply(raw, mode);
-  const saved = remember.length ? addMemories(chatId, remember) : [];
+  const parsed = parseReply(raw, mode);
+  const saved = parsed.remember.length ? addMemories(chatId, parsed.remember) : [];
   if (saved.length) console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 記住：${saved.join('｜')}`);
+  return parsed;
+}
+
+async function send(chatId, mode, replyToken, reply) {
+  try {
+    const res = await lineApi.reply(replyToken, reply);
+    try { rememberSent(chatId, res, reply); } catch (err) { console.warn(`[xiaoshuai] 記錄送出訊息失敗：${err.message}`); }
+  } catch (err) {
+    // replyToken 過期就算了，不改用 push（群組推播依人數扣額度）
+    console.warn(`[xiaoshuai] reply failed: ${err.message}`);
+    return false;
+  }
+  console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：${reply.slice(0, 60)}`);
+  return true;
+}
+
+async function think(chatId, { mode, replyToken, trigger, transcript, allowChimeIn }) {
+  if (mode === 'window') {
+    // 第一段：Haiku 用語意判斷這句是不是在跟小帥說話
+    const judged = await ask(chatId, 'window', { trigger, transcript, allowChimeIn });
+    if (judged.toMe) {
+      // 第二段：是在接小帥的話 → 跟被叫一樣，用 Sonnet 認真回，並重開視窗
+      const { reply } = await ask(chatId, 'followup', { trigger, transcript });
+      if (!reply) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} followup：不說話`); return { replied: false }; }
+      return (await send(chatId, 'followup', replyToken, reply)) ? { replied: true, text: reply, asMention: true } : { replied: false };
+    }
+    if (!judged.reply || !allowChimeIn) {
+      console.log(`[xiaoshuai] ${chatId.slice(0, 8)} window：不是在跟小帥說話，不說話`);
+      return { replied: false };
+    }
+    return (await send(chatId, 'window', replyToken, judged.reply)) ? { replied: true, text: judged.reply } : { replied: false };
+  }
+
+  const { reply } = await ask(chatId, mode, { trigger, transcript });
   if (!reply) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：不說話`);
     return { replied: false };
   }
-  try {
-    await lineApi.reply(replyToken, reply);
-  } catch (err) {
-    // replyToken 過期就算了，不改用 push（群組推播依人數扣額度）
-    console.warn(`[xiaoshuai] reply failed: ${err.message}`);
-    return { replied: false };
-  }
-  console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：${reply.slice(0, 60)}`);
-  return { replied: true, text: reply };
+  return (await send(chatId, mode, replyToken, reply)) ? { replied: true, text: reply } : { replied: false };
 }
 
 // ── 名字 ───────────────────────────────────────────
@@ -276,6 +330,9 @@ export default {
     if (!brain || !chatId || !llm?.generate) return false;
     const item = lastItem.get(chatId);
     const trigger = item?.text === text ? item : { text };
-    return brain.handle(chatId, { replyToken, isMention: isMentioned(text, event), trigger });
+    // 用 LINE「回覆」功能回小帥說的話，也算在叫小帥
+    const quoted = quotedSelf(event);
+    if (quoted) trigger.quoted = quoted;
+    return brain.handle(chatId, { replyToken, isMention: !!quoted || isMentioned(text, event), trigger });
   },
 };

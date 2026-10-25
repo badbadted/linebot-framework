@@ -24,9 +24,14 @@ function harness({ start = NOON, reply = true, cfg = {} } = {}) {
     setTimer: (fn, ms) => { const id = ++seq; timers.set(id, { at: t + ms, fn }); return id; },
     clearTimer: (id) => timers.delete(id),
     onFire: async (chatId, job) => {
-      fired.push({ ...job, at: t });
+      const rec = { ...job, at: t, replied: false };
+      fired.push(rec);
       const r = typeof reply === 'function' ? reply(job) : reply;
-      return r ? { replied: true, text: '哈哈' } : { replied: false };
+      if (!r) return { replied: false };
+      // 跟真的 think 一樣：視窗裡單純插話要 allowChimeIn 才會講；回物件可模擬 asMention（判斷是在跟小帥說話）
+      if (r === true && job.mode === 'window' && !job.allowChimeIn) return { replied: false };
+      rec.replied = true;
+      return { replied: true, text: '哈哈', ...(typeof r === 'object' ? r : {}) };
     },
   });
   async function advance(ms) {
@@ -134,23 +139,40 @@ await test('視窗內自己接話最多 2 句、每句至少隔 1 分鐘，而�
   await h.advance(3000);
   const mentionAt = h.fired[0].at;
   for (let i = 0; i < 16; i++) { h.say(`訊息${i}`); await h.advance(20_000); } // 5 分 20 秒，少於 20 則不會觸發冷場插話
-  const win = h.fired.filter(f => f.mode === 'window');
+  const win = h.fired.filter(f => f.mode === 'window' && f.replied);
   assert.equal(win.length, 2);
   assert.ok(win[0].at - mentionAt >= 60_000, `第一句太快：${win[0].at - mentionAt}ms`);
   assert.ok(win[1].at - win[0].at >= 60_000, `兩句太近：${win[1].at - win[0].at}ms`);
   assert.ok(win.every(f => f.at - mentionAt < 5 * 60_000), '自己接的話不該延長視窗');
 });
 
+await test('語意判斷是在跟小帥說話：不受插話上限、15 秒冷卻就回、並重開視窗', async () => {
+  // 視窗裡每句都被判斷成在跟小帥說話
+  const h = harness({ reply: (job) => (job.mode === 'window' ? { asMention: true } : true) });
+  h.say('小帥', { mention: true });
+  await h.advance(3000);
+  const first = h.fired[0].at;
+  for (let i = 0; i < 6; i++) { h.say(`接話${i}`); await h.advance(20_000); }
+  const win = h.fired.filter(f => f.mode === 'window');
+  assert.equal(win.length, 6); // 不受 2 句上限
+  assert.ok(win[0].at - first < 60_000, '接話不該等 1 分鐘');
+  // 每次接話都重開視窗：最後一句之後 4 分鐘再講，仍在視窗內
+  h.now += 4 * 60_000;
+  h.say('還在嗎');
+  await h.advance(20_000);
+  assert.equal(h.fired.filter(f => f.mode === 'window').length, 7);
+});
+
 await test('被點名會重開視窗與句數', async () => {
   const h = harness();
   h.say('小帥', { mention: true });
   await h.advance(3000);
-  for (let i = 0; i < 20; i++) { h.say(`訊息${i}`); await h.advance(10_000); }
+  for (let i = 0; i < 10; i++) { h.say(`訊息${i}`); await h.advance(30_000); }
   h.say('小帥你說呢', { mention: true });
   await h.advance(20_000);
-  for (let i = 0; i < 20; i++) { h.say(`再聊${i}`); await h.advance(10_000); }
+  for (let i = 0; i < 10; i++) { h.say(`再聊${i}`); await h.advance(30_000); }
   assert.equal(h.fired.filter(f => f.mode === 'mention').length, 2);
-  assert.equal(h.fired.filter(f => f.mode === 'window').length, 4);
+  assert.equal(h.fired.filter(f => f.mode === 'window' && f.replied).length, 4);
 });
 
 await test('等待中又有人講話：改看最新那句，只叫 AI 一次', async () => {
@@ -230,11 +252,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'] });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [] });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [] });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [] });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [] });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false });
+  assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false });
 });
 
 await test('buildPrompt 帶記憶、對話與情況', () => {

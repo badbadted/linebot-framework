@@ -4,9 +4,11 @@
  * 三種觸發：
  *   mention — 訊息提到小帥 → 一定回
  *   idle    — 連續 idleThreshold 則沒提到小帥 → 交給 AI 決定要不要插話
- *   window  — 被點名（或冷場插話）開口後 windowMs 內，新訊息交給 AI 判斷要不要接
- *             最多判斷 windowMaxJudges 次、最多回 windowMaxReplies 句，兩句間至少隔 windowCooldownMs；
- *             視窗裡自己接的話不會延長視窗，只有再被點名才重新起算
+ *   window  — 小帥開口後 windowMs 內，每則新訊息交給 AI 用語意判斷「是不是在跟小帥說話」
+ *             是 → 當成被點名（onFire 回 asMention），照被點名的規則回，並重開視窗
+ *             不是、但 AI 想插一句 → 一個視窗最多 windowMaxReplies 句、跟上一句至少隔 windowCooldownMs，
+ *             這種插話不延長視窗；onFire 收到 allowChimeIn 告訴它現在能不能插話
+ *             每個視窗最多判斷 windowMaxJudges 次
  *
  * 共通規則：
  *   - 只在講話時段內（台北時間 hours.start～hours.end）
@@ -20,8 +22,8 @@ export const DEFAULTS = {
   idleThreshold: 20,
   windowMs: 5 * 60_000,
   windowMaxJudges: 10,
-  windowMaxReplies: 2,       // 沒被點名時，一個視窗內最多自己接幾句
-  windowCooldownMs: 60_000,  // 自己接話跟上一句至少隔多久
+  windowMaxReplies: 2,       // 不是在跟小帥說話時，一個視窗內最多自己插幾句
+  windowCooldownMs: 60_000,  // 自己插話跟上一句至少隔多久
   delayMs: [2000, 6000],
   cooldownMs: 15_000,
   maxWaitMs: 20_000,
@@ -114,14 +116,18 @@ export function createBrain({
   }
 
   function windowOpen(s, t) {
-    return t < s.windowUntil && s.windowJudges < c.windowMaxJudges && s.windowReplies < c.windowMaxReplies;
+    return t < s.windowUntil && s.windowJudges < c.windowMaxJudges;
+  }
+
+  function canChimeIn(s, t) {
+    return s.windowReplies < c.windowMaxReplies && t - s.lastReplyAt >= c.windowCooldownMs;
   }
 
   function schedule(chatId, job) {
     const s = st(chatId);
     const t = now();
     const [lo, hi] = c.delayMs;
-    const cooldown = job.mode === 'window' ? c.windowCooldownMs : c.cooldownMs;
+    const cooldown = c.cooldownMs;
     const delay = t - job.firstAt >= c.maxDebounceMs ? 0 : lo + Math.floor(random() * (hi - lo + 1));
     const fireAt = Math.max(t + delay, s.lastReplyAt + cooldown);
     if (fireAt - job.receivedAt > c.maxWaitMs) {
@@ -148,15 +154,16 @@ export function createBrain({
     }
     s.busy = true;
     try {
-      const r = await onFire(chatId, { mode: job.mode, replyToken: job.replyToken, trigger: job.trigger, transcript: s.buf.slice() });
+      const allowChimeIn = job.mode === 'window' ? canChimeIn(s, now()) : true;
+      const r = await onFire(chatId, { mode: job.mode, replyToken: job.replyToken, trigger: job.trigger, transcript: s.buf.slice(), allowChimeIn });
       if (r?.replied) {
         const t = now();
         s.lastReplyAt = t;
         s.unmentioned = 0;
-        if (job.mode === 'window') {
+        if (job.mode === 'window' && !r.asMention) {
           s.windowReplies++;
         } else {
-          // 被點名或冷場插話才重開視窗；視窗裡自己接的話不延長，避免聊個沒完
+          // 被點名、語意判斷在跟小帥說話、冷場插話 → 重開視窗；單純插話不延長，避免聊個沒完
           s.windowUntil = t + c.windowMs;
           s.windowJudges = 0;
           s.windowReplies = 0;
