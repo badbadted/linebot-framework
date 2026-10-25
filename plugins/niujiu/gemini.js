@@ -6,6 +6,8 @@
  * 金鑰在 Luna，這裡不需要任何 API key。需求 Provider：llm（luna，需有 generate）
  */
 
+import { safeFetch } from '../../src/utils/safe-fetch.js';
+
 let llm = null;
 
 const FETCH_TIMEOUT_MS = 8000;
@@ -130,18 +132,17 @@ function parseLongUrl(url) {
 }
 
 export async function resolveGoogleMapsUrl(shortUrl) {
-  const res = await fetchWithTimeout(shortUrl, {
-    redirect: 'follow',
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    },
+  // 使用者給的網址一律走 safeFetch（不讓 bot 去讀家裡內網）
+  const res = await safeFetch(shortUrl, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+    timeoutMs: FETCH_TIMEOUT_MS,
   });
 
-  let parsed = parseLongUrl(res.url);
+  let parsed = parseLongUrl(res.finalUrl);
   if (parsed.name) return parsed;
 
   // Fallback: scan HTML body
-  const body = await res.text();
+  const body = res.text;
   const urlInBody = body.match(PLACE_URL_RE)?.[0];
   if (urlInBody) {
     parsed = parseLongUrl(urlInBody);
@@ -154,6 +155,7 @@ export async function resolveGoogleMapsUrl(shortUrl) {
 // FB／IG 只對自家預覽爬蟲吐 OG meta；完整的 UA 字串才認得
 const PREVIEW_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
 const HINT_MAX = 1200;
+const SOCIAL_HOSTS = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com', 'instagram.com', 'www.instagram.com']);
 
 const decodeEntities = (s) => s.replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCodePoint(parseInt(c, 16)))
   .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
@@ -172,15 +174,17 @@ export function previewHintFromHtml(html) {
 }
 
 async function fetchPreviewHint(url) {
+  // 使用者給的網址一律走 safeFetch（不讓 bot 去讀家裡內網）
   const get = async (u) => {
-    const res = await fetchWithTimeout(u, { redirect: 'follow', headers: { 'User-Agent': PREVIEW_UA } });
-    return { finalUrl: res.url || u, html: await res.text() };
+    const res = await safeFetch(u, { headers: { 'User-Agent': PREVIEW_UA }, timeoutMs: FETCH_TIMEOUT_MS });
+    return { finalUrl: res.finalUrl, html: res.text };
   };
   const first = await get(url);
   let hint = previewHintFromHtml(first.html);
-  // FB 分享短連結轉址後會帶一串參數，帶著參數常只拿到登入牆 → 去掉參數再抓一次
-  if (!hint && /(facebook|instagram)\.com\/.*\?/.test(first.finalUrl)) {
-    hint = previewHintFromHtml((await get(first.finalUrl.split('?')[0])).html);
+  // FB 分享短連結轉址後會帶一串參數，帶著參數常只拿到登入牆 → 去掉參數再抓一次（只限 FB／IG 本站）
+  const f = new URL(first.finalUrl);
+  if (!hint && f.search && SOCIAL_HOSTS.has(f.hostname)) {
+    hint = previewHintFromHtml((await get(`${f.origin}${f.pathname}`)).html);
   }
   return hint;
 }
