@@ -111,12 +111,24 @@ function listMemories(chatId) {
   return db.all('SELECT id, content FROM memories WHERE chat_id = ? ORDER BY id', chatId);
 }
 
+// 記憶會帶進之後每一次對話，擋掉網址、座標、地址與位置（防網頁內容寫進記憶、防記下誰在哪）
+const MEMORY_REJECT = [
+  /https?:\/\/|www\./i,
+  /分享位置|緯度|經度/,
+  /\d+\.\d{3,}/,                 // 座標類的長小數
+  /[路街巷弄段]\s*\d+\s*[號号]/,  // 門牌地址
+];
+
+export function memoryAllowed(text) {
+  return !MEMORY_REJECT.some(re => re.test(text));
+}
+
 function addMemories(chatId, items) {
   const existing = new Set(listMemories(chatId).map(m => m.content));
   const fresh = items
     .filter(x => typeof x === 'string')
     .map(x => x.trim().slice(0, 100))
-    .filter(x => x && !existing.has(x))
+    .filter(x => x && !existing.has(x) && memoryAllowed(x))
     .slice(0, MEMORY_PER_REPLY);
   for (const content of fresh) db.run('INSERT INTO memories (chat_id, content) VALUES (?, ?)', chatId, content);
   const rows = listMemories(chatId);
@@ -165,7 +177,8 @@ export function parseReply(raw, mode) {
 }
 
 async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
-  const raw = await llm.generate({
+  const res = await llm.generate({
+    withMeta: true,
     system: PERSONA,
     messages: [{ role: 'user', content: buildPrompt({ mode, transcript, trigger, allowChimeIn, memories: listMemories(chatId) }) }],
     maxTokens: 1500, // AI 會先思考，400 曾在思考階段就用完、回空字串
@@ -175,7 +188,12 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
       ? { model: 'sonnet', effort: 'medium', webSearch: { maxUses: SEARCH_MAX_USES }, timeoutMs: 45_000 }
       : {}),
   });
-  const parsed = parseReply(raw, mode);
+  const parsed = parseReply(res.text, mode);
+  // 這輪有上網搜尋：輸出可能受網頁內容影響，不寫記憶（防網頁藏指令污染之後每次對話）
+  if (res.searches > 0 && parsed.remember.length) {
+    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 有上網搜尋，略過記憶 ${parsed.remember.length} 條`);
+    parsed.remember = [];
+  }
   const saved = parsed.remember.length ? addMemories(chatId, parsed.remember) : [];
   if (saved.length) console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 記住：${saved.join('｜')}`);
   return parsed;

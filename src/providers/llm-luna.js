@@ -90,7 +90,7 @@ export async function createLunaProvider(config) {
    *   webSearch：開 Anthropic 網路搜尋（按次計費）；model：'haiku'（預設）或 'sonnet'；effort：low／medium／high
    * @returns {string}
    */
-  async function generate({ system, messages, maxTokens, webSearch, model, effort, timeoutMs } = {}) {
+  async function generate({ system, messages, maxTokens, webSearch, model, effort, timeoutMs, withMeta = false } = {}) {
     const limit = timeoutMs || timeout;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), limit);
@@ -103,7 +103,8 @@ export async function createLunaProvider(config) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.success) throw new Error(`Luna llm error: ${res.status} ${body.error || ''}`);
-      return body.text || '';
+      // withMeta：連同這次上網搜了幾次一起回（呼叫端可據此不信任搜尋後的輸出）
+      return withMeta ? { text: body.text || '', searches: body.searches || 0 } : (body.text || '');
     } catch (err) {
       if (err.name === 'AbortError') throw new Error(`Luna llm timeout after ${limit}ms`);
       throw err;

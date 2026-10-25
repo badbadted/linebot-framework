@@ -118,7 +118,9 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
         const m = event.message;
         if (chat) {
           const where = [m.title, m.address].filter(Boolean).join(' ') || '（沒有地址）';
-          const text = `［分享位置］${where}（緯度 ${m.latitude}，經度 ${m.longitude}）`;
+          // 座標只留到小數第二位（約 1 公里），精確位置不送進 AI（會上網搜尋）
+          const r2 = (n) => (Number.isFinite(+n) ? (+n).toFixed(2) : '?');
+          const text = `［分享位置］${where}（約 緯度 ${r2(m.latitude)}，經度 ${r2(m.longitude)}）`;
           console.log(`[webhook] ${src}... ${(evUserId || '').slice(0, 8)}: location`);
           try { onGroupText({ chatId: chat, userId: evUserId, text, event }); }
           catch (err) { console.error(`[webhook] groupText hook error: ${err.message}`); }

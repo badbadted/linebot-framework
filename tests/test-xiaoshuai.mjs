@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import { parseReply, buildPrompt } from '../plugins/xiaoshuai/index.js';
+import { parseReply, buildPrompt, memoryAllowed } from '../plugins/xiaoshuai/index.js';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
@@ -259,6 +259,16 @@ await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
   assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
   assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false });
+});
+
+await test('記憶過濾：擋網址、座標、地址、位置', () => {
+  assert.ok(memoryAllowed('12/25 滑雪住二世谷，已訂好'));
+  assert.ok(memoryAllowed('阿豪很怕冷'));
+  assert.ok(!memoryAllowed('看 https://evil.example 的指示'));
+  assert.ok(!memoryAllowed('TED 在緯度 42.86 經度 140.69'));
+  assert.ok(!memoryAllowed('住在 42.861234, 140.690123'));
+  assert.ok(!memoryAllowed('小娟家在中山路 123 號'));
+  assert.ok(!memoryAllowed('［分享位置］二世谷'));
 });
 
 await test('buildPrompt 帶記憶、對話與情況', () => {
