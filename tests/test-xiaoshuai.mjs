@@ -1,0 +1,224 @@
+/**
+ * 小帥判斷邏輯測試（假時鐘，不打 AI、不連 LINE）
+ * 執行：node tests/test-xiaoshuai.mjs
+ */
+
+import assert from 'node:assert/strict';
+import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
+import { parseReply, buildPrompt } from '../plugins/xiaoshuai/index.js';
+
+// 台北 2026-10-25 12:00 = UTC 04:00
+const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
+
+function harness({ start = NOON, reply = true, cfg = {} } = {}) {
+  let t = start;
+  let seq = 0;
+  const timers = new Map();
+  const fired = [];
+  const on = new Set(['G']);
+  const brain = createBrain({
+    cfg,
+    isEnabled: (id) => on.has(id),
+    now: () => t,
+    random: () => 0, // 延遲固定取最短 2 秒
+    setTimer: (fn, ms) => { const id = ++seq; timers.set(id, { at: t + ms, fn }); return id; },
+    clearTimer: (id) => timers.delete(id),
+    onFire: async (chatId, job) => {
+      fired.push({ ...job, at: t });
+      const r = typeof reply === 'function' ? reply(job) : reply;
+      return r ? { replied: true, text: '哈哈' } : { replied: false };
+    },
+  });
+  async function advance(ms) {
+    const end = t + ms;
+    for (;;) {
+      const due = [...timers.entries()].filter(([, v]) => v.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!due) break;
+      timers.delete(due[0]);
+      t = due[1].at;
+      await due[1].fn();
+    }
+    t = end;
+  }
+  function say(text, { mention = false } = {}) {
+    brain.observe('G', { userId: 'U1', name: '阿庭', text });
+    return brain.handle('G', { replyToken: `tok-${text}`, isMention: mention });
+  }
+  return { brain, fired, advance, say, on, get now() { return t; }, set now(v) { t = v; } };
+}
+
+let pass = 0;
+async function test(name, fn) {
+  await fn();
+  pass++;
+  console.log(`✓ ${name}`);
+}
+
+await test('台北時間換算', () => {
+  assert.equal(taipeiMinutes(NOON), 12 * 60);
+  assert.equal(taipeiMinutes(Date.UTC(2026, 9, 25, 14, 30)), 22 * 60 + 30);
+});
+
+await test('沒開的群不接手', () => {
+  const h = harness();
+  h.on.clear();
+  assert.equal(h.say('小帥', { mention: true }), false);
+});
+
+await test('被點名：2 秒後回，用那則的 replyToken', async () => {
+  const h = harness();
+  assert.equal(h.say('小帥你在嗎', { mention: true }), true);
+  await h.advance(1999);
+  assert.equal(h.fired.length, 0);
+  await h.advance(1);
+  assert.equal(h.fired.length, 1);
+  assert.equal(h.fired[0].mode, 'mention');
+  assert.equal(h.fired[0].replyToken, 'tok-小帥你在嗎');
+  assert.ok(h.fired[0].transcript.some(x => x.text === '小帥你在嗎'));
+});
+
+await test('沒點名、沒視窗、不到 20 則：不叫 AI，但仍接手', async () => {
+  const h = harness();
+  for (let i = 0; i < 19; i++) assert.equal(h.say(`聊天${i}`), true);
+  await h.advance(60_000);
+  assert.equal(h.fired.length, 0);
+});
+
+await test('第 20 則沒提到：冷場插話，計數歸零', async () => {
+  const h = harness({ reply: false });
+  for (let i = 0; i < 20; i++) h.say(`聊天${i}`);
+  await h.advance(5000);
+  assert.equal(h.fired.length, 1);
+  assert.equal(h.fired[0].mode, 'idle');
+  for (let i = 0; i < 19; i++) h.say(`再聊${i}`);
+  await h.advance(60_000);
+  assert.equal(h.fired.length, 1);
+});
+
+await test('點名會把插話計數歸零', async () => {
+  const h = harness({ reply: false });
+  for (let i = 0; i < 15; i++) h.say(`聊天${i}`);
+  h.say('小帥', { mention: true });
+  await h.advance(5000);
+  for (let i = 0; i < 19; i++) h.say(`再聊${i}`);
+  await h.advance(60_000);
+  assert.deepEqual(h.fired.map(f => f.mode), ['mention']);
+});
+
+await test('開口後 5 分鐘內每則都判斷；視窗過了就停', async () => {
+  const h = harness({ reply: (job) => job.mode === 'mention' });
+  h.say('小帥', { mention: true });
+  await h.advance(3000);
+  h.now += 20_000;
+  h.say('今天好冷');
+  await h.advance(3000);
+  assert.deepEqual(h.fired.map(f => f.mode), ['mention', 'window']);
+  h.now += 5 * 60_000;
+  h.say('晚點見');
+  await h.advance(60_000);
+  assert.equal(h.fired.length, 2);
+});
+
+await test('視窗內最多判斷 10 次', async () => {
+  const h = harness({ reply: (job) => job.mode === 'mention' });
+  h.say('小帥', { mention: true });
+  await h.advance(3000);
+  for (let i = 0; i < 15; i++) { h.say(`訊息${i}`); await h.advance(5000); }
+  assert.equal(h.fired.filter(f => f.mode === 'window').length, 10);
+});
+
+await test('等待中又有人講話：改看最新那句，只叫 AI 一次', async () => {
+  const h = harness();
+  h.say('小帥', { mention: true });
+  await h.advance(1000);
+  h.say('欸');
+  await h.advance(1000);
+  h.say('人呢');
+  await h.advance(10_000);
+  assert.equal(h.fired.length, 1);
+  assert.equal(h.fired[0].mode, 'mention'); // 點名優先權保留
+  assert.equal(h.fired[0].replyToken, 'tok-人呢');
+});
+
+await test('一直有人講話：最多延後 8 秒就開口', async () => {
+  const h = harness({ reply: false }); // 不回話 → 不開視窗，只看第一次開口的時間
+  h.say('小帥', { mention: true });
+  for (let i = 0; i < 10; i++) { await h.advance(1500); h.say(`插話${i}`); }
+  await h.advance(10_000);
+  assert.equal(h.fired.length, 1);
+  assert.ok(h.fired[0].at - NOON <= 8000 + 1500 + 2000, `延後太久：${h.fired[0].at - NOON}ms`);
+});
+
+await test('15 秒冷卻：剛回完又被點名，等到冷卻結束才回', async () => {
+  const h = harness();
+  h.say('小帥', { mention: true });
+  await h.advance(2000);
+  const first = h.now;
+  h.say('小帥再一次', { mention: true });
+  await h.advance(30_000);
+  assert.equal(h.fired.length, 2);
+  assert.equal(h.fired[1].at - first, 15_000);
+});
+
+await test('時段外被點名不回', async () => {
+  const h = harness({ start: Date.UTC(2026, 9, 25, 15, 0) }); // 台北 23:00
+  assert.equal(h.say('小帥', { mention: true }), true);
+  await h.advance(60_000);
+  assert.equal(h.fired.length, 0);
+});
+
+await test('時段外的訊息不累積插話計數', async () => {
+  const h = harness({ start: Date.UTC(2026, 9, 25, 0, 50), reply: false }); // 台北 08:50
+  for (let i = 0; i < 25; i++) h.say(`早${i}`);
+  h.now = Date.UTC(2026, 9, 25, 1, 0); // 09:00
+  h.say('早安');
+  await h.advance(10_000);
+  assert.equal(h.fired.length, 0);
+});
+
+await test('關掉後等待中的回覆取消', async () => {
+  const h = harness();
+  h.say('小帥', { mention: true });
+  h.on.clear();
+  h.brain.reset('G');
+  await h.advance(10_000);
+  assert.equal(h.fired.length, 0);
+});
+
+await test('小帥的回話會進對話紀錄', async () => {
+  const h = harness();
+  h.say('小帥', { mention: true });
+  await h.advance(3000);
+  h.say('笑死');
+  await h.advance(20_000); // 15 秒冷卻後才會判斷
+  const t = h.fired[1].transcript;
+  assert.ok(t.some(x => x.self && x.text === '哈哈'));
+});
+
+await test('指令不進對話紀錄', () => {
+  const h = harness();
+  assert.equal(h.brain.observe('G', { text: '/help' }), null);
+  assert.equal(h.brain.status('G').buffered, 0);
+});
+
+await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'] });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [] });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [] });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [] });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [] });
+});
+
+await test('buildPrompt 帶記憶、對話與情況', () => {
+  const p = buildPrompt({
+    mode: 'mention', nowTs: NOON,
+    memories: [{ content: '12/25 去滑雪' }],
+    transcript: [{ name: '阿庭', text: '小帥你會滑雪嗎' }, { self: true, text: '我只會滑手機' }],
+  });
+  assert.match(p, /12\/25 去滑雪/);
+  assert.match(p, /阿庭：小帥你會滑雪嗎/);
+  assert.match(p, /小帥（你）：我只會滑手機/);
+  assert.match(p, /一定要回話/);
+});
+
+console.log(`\n${pass} 項全部通過`);
