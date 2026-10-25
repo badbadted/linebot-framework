@@ -541,6 +541,12 @@ async function main() {
   app.get('/api/routes', (_req, res) => res.json(router.list()));
   app.get('/api/schedules', (_req, res) => res.json(scheduler.list()));
   app.get('/api/group-permissions', (_req, res) => res.json(router.getGroupPermissions()));
+  // bot 目前所在群組（給 /api/push 用名稱找 groupId，如公告 skill）
+  app.get('/api/groups', (_req, res) => {
+    if (!followersDb) return res.json([]);
+    const rows = followersDb.all(`SELECT group_id, group_name, joined_at FROM bot_groups WHERE status='active' ORDER BY joined_at DESC`);
+    res.json(rows.map(g => ({ id: g.group_id, name: g.group_name || '', plugins: groupPerms[g.group_id] || [] })));
+  });
   app.post('/api/schedules/:name/toggle', (req, res) => {
     try {
       const { name } = req.params;
