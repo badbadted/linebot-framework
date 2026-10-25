@@ -252,13 +252,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -282,6 +282,26 @@ await test('記憶過濾：擋網址、座標、地址、位置', () => {
   assert.ok(!memoryAllowed('一'.repeat(61)));                  // 超過 60 字
   assert.ok(memoryAllowed('露營決定帶兩頂帳篷'));
   assert.ok(memoryAllowed('阿傑週五負責買飲料'));
+});
+
+await test('parseReply：行程修改與確認', () => {
+  const r = parseReply('{"reply":"要把 D4 晚餐改燒肉嗎？","trip_edit":{"ops":[{"op":"remove_item","day":"D4","index":3}]}}', 'mention');
+  assert.equal(r.tripEdit.length, 1);
+  assert.equal(r.tripConfirm, null);
+  assert.equal(parseReply('{"reply":"好","trip_confirm":true}', 'followup').tripConfirm, true);
+  assert.equal(parseReply('{"reply":"好","trip_confirm":false}', 'followup').tripConfirm, false);
+  assert.equal(parseReply('{"reply":"x","trip_edit":{"ops":[]}}', 'mention').tripEdit, null);
+});
+
+await test('buildPrompt：綁了行程才帶行程表與待確認修改', () => {
+  const base = { mode: 'mention', nowTs: NOON, memories: [], transcript: [{ name: '阿庭', text: '小帥 D4 晚上改吃燒肉' }] };
+  assert.ok(!buildPrompt(base).includes('行程表'));
+  const p = buildPrompt({ ...base, tripCtx: { url: 'https://x/trip.html', outline: 'D4 12/27｜木更津', pending: ['D4 新增「18:30 燒肉」'] } });
+  assert.ok(p.includes('【這個群的行程表】（網頁：https://x/trip.html）'));
+  assert.ok(p.includes('D4 12/27｜木更津'));
+  assert.ok(p.includes('"trip_edit"'));
+  assert.ok(p.includes('・D4 新增「18:30 燒肉」'));
+  assert.ok(p.includes('"trip_confirm": true'));
 });
 
 await test('buildPrompt 帶記憶、對話與情況', () => {
