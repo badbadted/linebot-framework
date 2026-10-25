@@ -108,13 +108,26 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
         continue;
       }
 
-      // 之後只處理 text message
-      if (event.type !== 'message' || event.message?.type !== 'text') continue;
+      // 之後只處理 text message；略過的訊息也記一行，事後才分得出「沒收到」還是「收到但略過」
+      const src = event.source?.groupId ? `group:${event.source.groupId.slice(0, 8)}`
+        : event.source?.roomId ? `room:${event.source.roomId.slice(0, 8)}`
+        : (evUserId || '').slice(0, 8);
+      if (event.type !== 'message' || event.message?.type !== 'text') {
+        if (event.type === 'message') {
+          console.log(`[webhook] skipped non-text ${src}... ${(evUserId || '').slice(0, 8)}: ${event.message?.type || 'unknown'}`);
+        } else {
+          console.log(`[webhook] skipped event ${src}...: ${event.type}`);
+        }
+        continue;
+      }
 
       const userId = evUserId;
       const text = event.message.text;
       const replyToken = event.replyToken;
-      if (!userId || !text || !replyToken) continue;
+      if (!userId || !text || !replyToken) {
+        console.log(`[webhook] skipped text ${src}...: 缺 ${[!userId && 'userId', !text && 'text', !replyToken && 'replyToken'].filter(Boolean).join('、')}`);
+        continue;
+      }
 
       // 來源類型：user / group / room
       const sourceType = event.source?.type || 'user';
