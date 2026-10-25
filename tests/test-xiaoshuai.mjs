@@ -105,11 +105,11 @@ await test('點名會把插話計數歸零', async () => {
   assert.deepEqual(h.fired.map(f => f.mode), ['mention']);
 });
 
-await test('開口後 5 分鐘內每則都判斷；視窗過了就停', async () => {
+await test('開口後 5 分鐘內會判斷要不要接；視窗過了就停', async () => {
   const h = harness({ reply: (job) => job.mode === 'mention' });
   h.say('小帥', { mention: true });
   await h.advance(3000);
-  h.now += 20_000;
+  h.now += 60_000;
   h.say('今天好冷');
   await h.advance(3000);
   assert.deepEqual(h.fired.map(f => f.mode), ['mention', 'window']);
@@ -123,8 +123,34 @@ await test('視窗內最多判斷 10 次', async () => {
   const h = harness({ reply: (job) => job.mode === 'mention' });
   h.say('小帥', { mention: true });
   await h.advance(3000);
+  h.now += 60_000;
   for (let i = 0; i < 15; i++) { h.say(`訊息${i}`); await h.advance(5000); }
   assert.equal(h.fired.filter(f => f.mode === 'window').length, 10);
+});
+
+await test('視窗內自己接話最多 2 句、每句至少隔 1 分鐘，而且不延長視窗', async () => {
+  const h = harness(); // 每次都回
+  h.say('小帥', { mention: true });
+  await h.advance(3000);
+  const mentionAt = h.fired[0].at;
+  for (let i = 0; i < 16; i++) { h.say(`訊息${i}`); await h.advance(20_000); } // 5 分 20 秒，少於 20 則不會觸發冷場插話
+  const win = h.fired.filter(f => f.mode === 'window');
+  assert.equal(win.length, 2);
+  assert.ok(win[0].at - mentionAt >= 60_000, `第一句太快：${win[0].at - mentionAt}ms`);
+  assert.ok(win[1].at - win[0].at >= 60_000, `兩句太近：${win[1].at - win[0].at}ms`);
+  assert.ok(win.every(f => f.at - mentionAt < 5 * 60_000), '自己接的話不該延長視窗');
+});
+
+await test('被點名會重開視窗與句數', async () => {
+  const h = harness();
+  h.say('小帥', { mention: true });
+  await h.advance(3000);
+  for (let i = 0; i < 20; i++) { h.say(`訊息${i}`); await h.advance(10_000); }
+  h.say('小帥你說呢', { mention: true });
+  await h.advance(20_000);
+  for (let i = 0; i < 20; i++) { h.say(`再聊${i}`); await h.advance(10_000); }
+  assert.equal(h.fired.filter(f => f.mode === 'mention').length, 2);
+  assert.equal(h.fired.filter(f => f.mode === 'window').length, 4);
 });
 
 await test('等待中又有人講話：改看最新那句，只叫 AI 一次', async () => {
@@ -189,8 +215,9 @@ await test('小帥的回話會進對話紀錄', async () => {
   const h = harness();
   h.say('小帥', { mention: true });
   await h.advance(3000);
+  h.now += 60_000; // 自己接話至少隔 1 分鐘
   h.say('笑死');
-  await h.advance(20_000); // 15 秒冷卻後才會判斷
+  await h.advance(5000);
   const t = h.fired[1].transcript;
   assert.ok(t.some(x => x.self && x.text === '哈哈'));
 });
