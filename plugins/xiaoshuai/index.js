@@ -278,16 +278,25 @@ async function send(chatId, mode, replyToken, reply) {
  * 行程修改：有人提要改 → 程式檢查並列出要改的內容（不用 AI 寫的摘要，避免說一套改一套）→ 等人說好；
  * 有人說好 → 寫進網頁並推上 GitHub。回傳要接在 reply 後面的文字
  */
+// 「同意」要由程式從觸發訊息本身認定，不能只靠 AI（AI 那輪若讀了網頁，可能被網頁內容誤導成「有人同意」）
+const AFFIRM_RE = /^(小帥\s*[,，、]?\s*)?(好|好啊|好喔|好的|好呀|ok|okay|可以|可以啊|可以喔|改吧|就這樣|沒問題|對|嗯|讚|go)\s*[!！。.~～]*$/i;
+export const isAffirm = (text) => AFFIRM_RE.test(String(text || '').normalize('NFKC').trim());
+
 async function handleTrip(chatId, parsed, trigger) {
   const ctx = parsed.tripCtx;
   if (!ctx) return '';
   const pending = pendingOf(chatId);
-  if (pending && parsed.tripConfirm === true) {
+  if (pending && parsed.tripConfirm === true && !parsed.webUsed && isAffirm(trigger?.text)) {
     pendingEdits.delete(chatId);
     const r = await trip.apply(pending.name, pending.ops, trigger?.name);
     if (!r.ok) return `\n\n⚠️ 行程沒改成：${r.error}`;
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 行程已更新：${r.changes.join('；')}`);
     return `\n\n✅ 行程改好了，大約一分鐘後網頁更新：\n${ctx.url}`;
+  }
+  if (pending && parsed.tripConfirm === true) {
+    // AI 認為是同意，但不是單純的同意句（或那輪有上網）→ 不改，請對方明確回「好」
+    parsed.reply = '';
+    return '要改的話請直接回一個「好」，我就改 👍';
   }
   if (pending && parsed.tripConfirm === false) {
     pendingEdits.delete(chatId);
@@ -308,7 +317,8 @@ async function think(chatId, { mode, replyToken, trigger, transcript, allowChime
     if (judged.toMe) {
       // 第二段：是在接小帥的話 → 跟被叫一樣，用 Sonnet 認真回，並重開視窗
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
-      const reply = (parsed.reply + await handleTrip(chatId, parsed, trigger)).trim();
+      const extra = await handleTrip(chatId, parsed, trigger); // 先跑：可能會清掉 parsed.reply
+      const reply = (parsed.reply + extra).trim();
       if (!reply) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} followup：不說話`); return { replied: false }; }
       return (await send(chatId, 'followup', replyToken, reply)) ? { replied: true, text: reply, asMention: true } : { replied: false };
     }
@@ -320,7 +330,8 @@ async function think(chatId, { mode, replyToken, trigger, transcript, allowChime
   }
 
   const parsed = await ask(chatId, mode, { trigger, transcript });
-  const reply = mode === 'mention' ? (parsed.reply + await handleTrip(chatId, parsed, trigger)).trim() : parsed.reply;
+  const extra = mode === 'mention' ? await handleTrip(chatId, parsed, trigger) : ''; // 先跑：可能會清掉 parsed.reply
+  const reply = (parsed.reply + extra).trim();
   if (!reply) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：不說話`);
     return { replied: false };

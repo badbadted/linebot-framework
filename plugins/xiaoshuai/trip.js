@@ -68,9 +68,35 @@ export async function outline(name) {
   }
 }
 
+// 第一道格式檢查（trip.mjs 會再完整驗一次並跳脫輸出）：只收已知的修改種類、D1～D9、整數編號、
+// 文字欄位不含 < >，避免 AI 產出的東西帶 HTML 進公開網頁
+const OPS = { update_item: ['fields'], add_item: ['item'], remove_item: [], set_day: [], set_glance: [] };
+const TEXT_KEYS = new Set(['when', 'title', 'text', 'sub', 'date', 'place', 'emoji', 'note']);
+
+export function checkOps(ops) {
+  if (!Array.isArray(ops) || !ops.length || ops.length > 8) return '修改內容格式不對';
+  for (const op of ops) {
+    if (!op || typeof op !== 'object' || !(op.op in OPS)) return '不認得的修改';
+    if (!/^D[1-9]$/i.test(String(op.day || ''))) return '日期編號不對';
+    for (const k of ['index', 'after']) {
+      if (op[k] !== undefined && op[k] !== null && !Number.isInteger(op[k])) return '項目編號不對';
+    }
+    const texts = [op, op.fields, op.item].filter(x => x && typeof x === 'object');
+    for (const obj of texts) {
+      for (const [k, v] of Object.entries(obj)) {
+        if (!TEXT_KEYS.has(k)) continue;
+        if (typeof v !== 'string' || v.length > 120 || /[<>]/.test(v)) return '文字內容不合法';
+      }
+    }
+  }
+  return null;
+}
+
 /** 檢查修改內容，回 { ok, changes, error }（不寫檔） */
 export async function describe(name, ops) {
   if (!validName(name)) return { ok: false, error: '行程名稱不合法' };
+  const bad = checkOps(ops);
+  if (bad) return { ok: false, error: bad };
   try { return JSON.parse(await tool(['describe', name], ops)); }
   catch (err) { return { ok: false, error: err.message.split('\n')[0] }; }
 }
@@ -78,6 +104,8 @@ export async function describe(name, ops) {
 /** 套用修改 → commit → push。回 { ok, changes, error } */
 export function apply(name, ops, who) {
   if (!validName(name)) return Promise.resolve({ ok: false, error: '行程名稱不合法' });
+  const bad = checkOps(ops);
+  if (bad) return Promise.resolve({ ok: false, error: bad });
   return serial(async () => {
     const files = [`trips/${name}.json`, `${name}.html`];
     let committed = false;

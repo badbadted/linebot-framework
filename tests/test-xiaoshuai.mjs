@@ -5,7 +5,8 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import { parseReply, buildPrompt, memoryAllowed } from '../plugins/xiaoshuai/index.js';
+import { parseReply, buildPrompt, memoryAllowed, isAffirm } from '../plugins/xiaoshuai/index.js';
+import { checkOps } from '../plugins/xiaoshuai/trip.js';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
@@ -291,6 +292,23 @@ await test('parseReply：行程修改與確認', () => {
   assert.equal(parseReply('{"reply":"好","trip_confirm":true}', 'followup').tripConfirm, true);
   assert.equal(parseReply('{"reply":"好","trip_confirm":false}', 'followup').tripConfirm, false);
   assert.equal(parseReply('{"reply":"x","trip_edit":{"ops":[]}}', 'mention').tripEdit, null);
+});
+
+await test('改行程的「同意」由程式認定', () => {
+  for (const t of ['好', '好！', 'OK', 'ok', 'ＯＫ', '可以', '改吧', '小帥 好', '小帥，好啊', '沒問題～']) assert.ok(isAffirm(t), t);
+  for (const t of ['好啊就這樣改謝謝', '不好', '好像不對', '把 D1 刪掉', '', '好 <script>']) assert.ok(!isAffirm(t), t);
+});
+
+await test('行程修改的格式第一道檢查', () => {
+  assert.equal(checkOps([{ op: 'remove_item', day: 'D4', index: 3 }]), null);
+  assert.equal(checkOps([{ op: 'add_item', day: 'D5', after: 2, item: { when: '15:00', title: '回飯店休息' } }]), null);
+  assert.ok(checkOps([{ op: 'add_item', day: 'D5', item: { title: '<img src=x onerror=alert(1)>' } }]));
+  assert.ok(checkOps([{ op: 'exec', day: 'D1' }]));
+  assert.ok(checkOps([{ op: 'remove_item', day: 'D1; rm', index: 1 }]));
+  assert.ok(checkOps([{ op: 'remove_item', day: 'D1', index: '1' }]));
+  assert.ok(checkOps([{ op: 'set_glance', day: 'D1', note: 'x'.repeat(121) }]));
+  assert.ok(checkOps(Array(9).fill({ op: 'remove_item', day: 'D1', index: 1 })));
+  assert.ok(checkOps([]));
 });
 
 await test('buildPrompt：綁了行程才帶行程表與待確認修改', () => {
