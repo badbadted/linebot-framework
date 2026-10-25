@@ -110,10 +110,25 @@ export function apply(name, ops, who) {
     const files = [`trips/${name}.json`, `${name}.html`];
     let committed = false;
     try {
+      // 開始前 repo 要是乾淨的：有人在 Mac 上這份 clone 改了程式或模板，就不讓小帥接著改、也不會一起推上去
+      const before = (await git('status', '--porcelain')).stdout.trim();
+      if (before) {
+        console.error(`[xiaoshuai-trip] repo 有未提交的變動，拒絕更新：\n${before}`);
+        return { ok: false, error: 'Mac 上的行程網頁資料夾有其他未提交的改動，先暫停更新，請 TED 看一下' };
+      }
       await git('pull', '-q', '--rebase');
       lastPull = Date.now();
       const r = JSON.parse(await tool(['apply', name], ops));
       if (!r.ok) return r;
+      // 小帥只能動行程資料：除了這兩個檔，repo 裡任何檔案（程式、模板、其他網頁）有變動就整次取消
+      const { stdout } = await git('status', '--porcelain');
+      const touched = stdout.split('\n').filter(Boolean).map(l => l.slice(3).trim());
+      const outside = touched.filter(f => !files.includes(f));
+      if (outside.length) {
+        console.error(`[xiaoshuai-trip] 有資料檔以外的變動，取消：${outside.join(', ')}`);
+        await git('checkout', '--', ...files);
+        return { ok: false, error: '偵測到資料以外的檔案有變動，已取消，請 TED 看一下' };
+      }
       await git('add', ...files);
       const msg = `行程：${r.changes.join('；').slice(0, 200)}\n\n${who || '群組成員'} 在 LINE 群組確認，由小帥更新`;
       await git('commit', '-q', '-m', msg);
