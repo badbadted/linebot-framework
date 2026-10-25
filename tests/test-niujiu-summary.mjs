@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { clampSummary, parseEnrichResponse, SUMMARY_MAX_CHARS } from '../plugins/niujiu/gemini.js';
+import { clampSummary, parseEnrichResponse, SUMMARY_MAX_CHARS, previewHintFromHtml } from '../plugins/niujiu/gemini.js';
 
 const len = (s) => Array.from(s).length;
 let passed = 0;
@@ -112,6 +112,23 @@ check('parseEnrichResponse：空 summary 不寫入欄位', () => {
 check('parseEnrichResponse：包在 code fence 裡也能處理', () => {
   const fields = parseEnrichResponse('```json\n{"summary": "' + '一'.repeat(50) + '"}\n```');
   assert.equal(len(fields.summary), 30);
+});
+
+check('FB 預覽：og:title 放完整貼文、description 被包含就不重複', () => {
+  const html = '<meta property="og:title" content="52&#xa0;萬次觀看 | &#x1f4cd;東京最後一天，別急著去機場。&#10;📍Narita Omotesando | Lex Goh" />'
+    + '<meta property="og:description" content="&#x1f4cd;東京最後一天，別急著去機場。..." />';
+  const h = previewHintFromHtml(html);
+  assert.ok(h.includes('📍Narita Omotesando'));
+  assert.ok(!h.includes(' — '));
+});
+
+check('FB 登入牆：沒有預覽就回空字串', () => {
+  assert.equal(previewHintFromHtml('<html><title>Facebook</title></html>'), '');
+});
+
+check('一般網頁：標題＋說明都保留', () => {
+  const h = previewHintFromHtml('<title>阿裕牛肉湯｜台南美食</title><meta name="description" content="仁德區溫體牛肉湯">');
+  assert.equal(h, '阿裕牛肉湯｜台南美食 — 仁德區溫體牛肉湯');
 });
 
 console.log(`\n${passed} 項全過`);

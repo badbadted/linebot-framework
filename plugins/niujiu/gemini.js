@@ -151,30 +151,47 @@ export async function resolveGoogleMapsUrl(shortUrl) {
 
 // ── Phase 1B: 外部 URL（IG、部落格）→ AI 搜尋辨識 ──
 
+// FB／IG 只對自家預覽爬蟲吐 OG meta；完整的 UA 字串才認得
+const PREVIEW_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
+const HINT_MAX = 1200;
+
+const decodeEntities = (s) => s.replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCodePoint(parseInt(c, 16)))
+  .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
+  .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+
+/** 從網頁 HTML 取出預覽文字：og:title（FB 會放完整貼文說明）＋ og:description，重複的去掉 */
+export function previewHintFromHtml(html) {
+  const meta = (key) => html.match(new RegExp(`(?:property|name)="${key}"[^>]*content="([^"]*)"`))?.[1]
+    || html.match(new RegExp(`content="([^"]*)"[^>]*(?:property|name)="${key}"`))?.[1] || '';
+  const title = decodeEntities(meta('og:title') || html.match(/<title[^>]*>([^<]*)</)?.[1] || '').trim();
+  const desc = decodeEntities(meta('og:description') || meta('description')).trim();
+  if (/^(facebook|instagram|log in|登入)$/i.test(title) && !desc) return '';
+  // FB 的 og:description 是 og:title 後半段截斷版，被包含就不重複放
+  const parts = desc && title.includes(desc.replace(/\.{3}$/, '').slice(0, 40)) ? [title] : [title, desc];
+  return parts.filter(Boolean).join(' — ').slice(0, HINT_MAX);
+}
+
+async function fetchPreviewHint(url) {
+  const get = async (u) => {
+    const res = await fetchWithTimeout(u, { redirect: 'follow', headers: { 'User-Agent': PREVIEW_UA } });
+    return { finalUrl: res.url || u, html: await res.text() };
+  };
+  const first = await get(url);
+  let hint = previewHintFromHtml(first.html);
+  // FB 分享短連結轉址後會帶一串參數，帶著參數常只拿到登入牆 → 去掉參數再抓一次
+  if (!hint && /(facebook|instagram)\.com\/.*\?/.test(first.finalUrl)) {
+    hint = previewHintFromHtml((await get(first.finalUrl.split('?')[0])).html);
+  }
+  return hint;
+}
+
 export async function resolveExternalUrl(url) {
   if (!llm) throw new Error('AI search not initialized');
 
-  // 先嘗試 fetch OG meta 取得線索
+  // 先嘗試 fetch OG meta 取得線索（貼文說明常寫店名、📍地點）
   let hint = '';
   try {
-    const res = await fetchWithTimeout(url, {
-      redirect: 'follow',
-      headers: { 'User-Agent': 'facebookexternalhit/1.1' },
-    });
-    const html = await res.text();
-    // 抓 OG meta 並 decode HTML entities
-    const decodeEntities = (s) => s.replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCodePoint(parseInt(c, 16)))
-      .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
-      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
-    const rawTitle = html.match(/og:title[^>]*content="([^"]*)"/)?.[1]
-      || html.match(/<title[^>]*>([^<]*)</)?.[1]
-      || '';
-    const rawDesc = html.match(/og:description[^>]*content="([^"]*)"/)?.[1]
-      || html.match(/description[^>]*content="([^"]*)"/)?.[1]
-      || '';
-    const title = decodeEntities(rawTitle);
-    const desc = decodeEntities(rawDesc);
-    hint = [title, desc].filter(Boolean).join(' — ').slice(0, 500);
+    hint = await fetchPreviewHint(url);
   } catch { /* fetch 失敗就靠 AI 搜尋 */ }
 
   const isIG = /instagram\.com/.test(url);
@@ -201,8 +218,10 @@ ${url}${hintBlock}${platformWarn}
 規則：
 - 回傳的是「貼文中介紹的餐廳」，不是「發文者帳號名稱」
 - 只辨識一家餐廳（若提到多家，取最主要的那家）
+- 貼文介紹的是一個地區或景點、裡面提到吃的（例如「老街裡的百年鰻魚飯」），就用地區＋料理去搜尋，找出最符合的那家店
+- 一定要先上網搜尋過才能判斷；沒搜尋不可以直接回空
 - lat/lng 如果知道填數字，不知道填 null
-- 真的找不到就全部填空字串/null，不要猜`;
+- 搜尋後真的找不到就全部填空字串/null，不要猜`;
 
   const text = await askWithSearch(prompt, GEMINI_TIMEOUT_MS);
   console.log('[niujiu-ai] resolve raw:', text.slice(0, 200));
