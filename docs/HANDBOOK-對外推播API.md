@@ -49,7 +49,7 @@ curl -X POST http://192.168.0.222:3100/api/push \
 
 `to` 可用值：
 - `"me"` → 管理員本人（免記 userId；對應 `config/admin.json` 的第一個 adminUserId）
-- 直接給 `userId`（`U…`）或 `groupId`（`C…`）
+- 直接給 `userId`（`U…`）或 `groupId`（`C…`）；群組 ID 查 `GET /api/groups`（回 `[{id, name, plugins}]`，只列 bot 目前所在的群組）。發群組公告用 `/announce` skill
 
 回應碼：`200 ok` / `400 缺 to 或 text` / `403 外網未帶金鑰` / `502 LINE 推播失敗`。
 
