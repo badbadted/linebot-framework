@@ -274,6 +274,14 @@ await test('記憶過濾：擋網址、座標、地址、位置', () => {
   assert.ok(!memoryAllowed('小娟家在中山路１２３號'));                    // 全形門牌
   assert.ok(!memoryAllowed('在 42.86, 140.69 那邊'));                  // 座標對
   assert.ok(memoryAllowed('1/18 尾牙訂在信義區火鍋店'));
+  assert.ok(!memoryAllowed('看 evil。com'));                  // 中文句點偽裝網域
+  assert.ok(!memoryAllowed('看 evil[.]com'));
+  assert.ok(!memoryAllowed('看 evil｡com'));
+  assert.ok(!memoryAllowed('家在八德路四段一百號'));            // 中文數字門牌
+  assert.ok(!memoryAllowed('住二樓'));
+  assert.ok(!memoryAllowed('一'.repeat(61)));                  // 超過 60 字
+  assert.ok(memoryAllowed('露營決定帶兩頂帳篷'));
+  assert.ok(memoryAllowed('阿傑週五負責買飲料'));
 });
 
 await test('buildPrompt 帶記憶、對話與情況', () => {

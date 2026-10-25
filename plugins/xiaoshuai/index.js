@@ -112,18 +112,20 @@ function listMemories(chatId) {
 }
 
 // 記憶會帶進之後每一次對話，擋掉網址、座標、地址與位置（防網頁內容寫進記憶、防記下誰在哪）
+// 黑名單補不完，所以收緊成「結構」：英數之間夾任何一種點就擋（網址、網域、小數、座標都在內），
+// 數字（含中文數字）接門牌單位就擋。真正擋網頁內容寫進記憶的是「有上網搜尋的那輪不寫記憶」，這裡是第二道
+const MEMORY_MAX_CHARS = 60;
 const MEMORY_REJECT = [
-  /https?:\/\/|www\./i,
-  /\b[a-z0-9-]+\.[a-z]{2,}\b/i,      // 沒寫 http 的網域（evil.com）
-  /\d+\.\d+\s*[,，、]\s*\d+\.\d+/,   // 座標對
-  /分享位置|緯度|經度/,
-  /\d+\.\d{3,}/,                 // 座標類的長小數
-  /[路街巷弄段]\s*\d+\s*[號号]/,  // 門牌地址
+  /https?:|www|\[\s*\.\s*\]|\(\s*dot\s*\)/i,
+  /[a-z0-9][.。｡．・]\s*[a-z0-9]/i,
+  /分享位置|緯度|經度|座標|地址/,
+  /[\d一二三四五六七八九十百千〇零兩]+\s*[段巷弄號号樓楼室丁目番地]/,
 ];
 
 export function memoryAllowed(text) {
   // 先統一成半形（全形數字、全形英文、全形句點），避免用全形字繞過
   const t = String(text).normalize('NFKC');
+  if (Array.from(t).length > MEMORY_MAX_CHARS) return false;
   return !MEMORY_REJECT.some(re => re.test(t));
 }
 

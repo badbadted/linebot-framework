@@ -118,11 +118,13 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
         const m = event.message;
         if (chat) {
           // 地址只留到鄉鎮區、路名為止：去掉開頭郵遞區號，從第一個數字（巷弄門牌）起整段不送
-          const coarse = String(m.address || '').normalize('NFKC')
+          // 地點名稱也套同一規則：從第一個「數字（含中文數字）＋段巷弄號…」或第一個阿拉伯數字起整段不送
+          const coarse = (s) => String(s || '').normalize('NFKC')
             .replace(/^〒?\s*[\d-]{3,}\s*/, '')
+            .replace(/[\d一二三四五六七八九十百千〇零兩]+\s*[段巷弄號号樓楼室丁目番地].*$/, '')
             .replace(/\d.*$/, '')
             .trim();
-          const where = [m.title, coarse].filter(Boolean).join(' ') || '（沒有地址）';
+          const where = [coarse(m.title), coarse(m.address)].filter(Boolean).join(' ') || '（沒有地址）';
           // 座標只留到小數第二位（約 1 公里），精確位置不送進 AI（會上網搜尋）
           const r2 = (n) => (Number.isFinite(+n) ? (+n).toFixed(2) : '?');
           const text = `［分享位置］${where}（約 緯度 ${r2(m.latitude)}，經度 ${r2(m.longitude)}）`;
