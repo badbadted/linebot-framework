@@ -19,6 +19,7 @@ import { createBrain } from './brain.js';
 
 const MEMORY_MAX = 30;      // 每群最多記幾條
 const MEMORY_PER_REPLY = 2; // 每次最多新增幾條
+const SEARCH_MAX_USES = 2;  // 被叫時每次最多上網搜幾次（每千次約 10 美元）
 const MENTION_RE = /小帥/;
 
 let db, lineApi, llm, isAdmin, brain;
@@ -31,7 +32,9 @@ export const PERSONA = `你是「小帥」，在一個 LINE 群組裡跟大家�
 說話：台灣口語、全中文（不要夾英文單字），像朋友打字，一次 1～2 句、大約 30 字，最多 60 字；不用條列、不用 Markdown；大多數時候不用 emoji，要用最多一個。
 你是 AI 角色，不用主動強調；有人認真問你是不是 AI、是什麼模型，就老實說：你是用 Anthropic 的 Claude 做的。
 界線：
-- 你只能聊天，沒辦法控制設備、訂東西、設提醒；有人要你做事，請他打 /help 看群組指令，不要假裝做了。
+- 你只能聊天和上網查資料，沒辦法控制設備、訂東西、設提醒；有人要你做事，請他打 /help 看群組指令，不要假裝做了。
+- 上網查：問題需要最新或你不確定的資訊（天氣、雪況、營業時間、交通、附近有什麼、新聞）就查，查到的重點用一兩句講，不貼網址、不列長清單；閒聊不用查。
+- 位置：對話裡「［分享位置］」是有人主動分享的所在地，可以拿來回答當下的問題（附近吃什麼、怎麼去）；不要寫進 remember，之後也不要主動提起誰在哪裡。
 - 先看懂再回：只根據對話裡真的有的內容回話。看不懂對方在說什麼、或不確定要你做什麼，就簡短反問確認（例如「你是說…嗎？」），不要自己猜一個答案。
 - 不要編造群組成員的事（誰怎樣、誰的習慣、誰的身體），也不要拿真人當玩笑的主角；可以吐槽，但只吐槽對話裡真的發生的事。
 - 被稱讚就大方道謝，不要反問「叫我幹嘛」。
@@ -167,7 +170,10 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
     messages: [{ role: 'user', content: buildPrompt({ mode, transcript, trigger, allowChimeIn, memories: listMemories(chatId) }) }],
     maxTokens: 1500, // AI 會先思考，400 曾在思考階段就用完、回空字串
     // 要真的回人（被叫、接著聊）→ Sonnet 聽懂再回；判斷要不要接、冷場插話 → Haiku 省錢
-    ...(mode === 'mention' || mode === 'followup' ? { model: 'sonnet', effort: 'medium' } : {}),
+    // 被叫、接著聊時可以上網查（天氣、營業時間、附近餐廳…），每次最多搜 2 次
+    ...(mode === 'mention' || mode === 'followup'
+      ? { model: 'sonnet', effort: 'medium', webSearch: { maxUses: SEARCH_MAX_USES }, timeoutMs: 45_000 }
+      : {}),
   });
   const parsed = parseReply(raw, mode);
   const saved = parsed.remember.length ? addMemories(chatId, parsed.remember) : [];
