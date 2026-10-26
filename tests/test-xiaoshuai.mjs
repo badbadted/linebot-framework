@@ -356,6 +356,29 @@ await test('收藏內容只在相關話題給 AI，且有總量上限', async ()
   assert.equal((await links.saveLink('G', { url: 'https://e.example/' + 'x'.repeat(600), category: '運動', sourceText: 'https://e.example/' + 'x'.repeat(600) })).ok, false);
 });
 
+await test('存連結：沒指定分類交給 AI 分類＋寫說明；有指定照成員的', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  let lastPrompt = '';
+  const fakeLlm = { generate: async ({ messages }) => { lastPrompt = messages[0].content; return '{"category":"運動","summary":"深蹲新手教學，適合想練腿的人"}'; } };
+  links.initLinks({ run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) }, fakeLlm);
+  const a = await links.saveLink('G', { url: 'https://e.example/a', category: '', sourceText: 'https://e.example/a', byId: 'U1' });
+  assert.deepEqual([a.category, a.summary], ['運動', '深蹲新手教學，適合想練腿的人']);
+  const b = await links.saveLink('G', { url: 'https://e.example/b', category: '育兒', sourceText: 'https://e.example/b', byId: 'U1' });
+  assert.equal(b.category, '育兒');
+  assert.ok(lastPrompt.includes('成員指定的分類：育兒'));
+  // AI 掛了：照樣存，分類用其他
+  links.initLinks({ run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) }, { generate: async () => { throw new Error('down'); } });
+  const c = await links.saveLink('G', { url: 'https://e.example/c', category: '', sourceText: 'https://e.example/c', byId: 'U1' });
+  assert.deepEqual([c.ok, c.category], [true, '其他']);
+});
+
+await test('/小帥 存 指令：分類可省略', () => {
+  const re = /^\/小帥\s*存\s+(?:(?!https?:)(\S+)\s+)?(https?:\/\/\S+)$/i;
+  assert.deepEqual([...'/小帥 存 https://e.example/x'.match(re)].slice(1), [undefined, 'https://e.example/x']);
+  assert.deepEqual([...'/小帥 存 運動 https://e.example/x'.match(re)].slice(1), ['運動', 'https://e.example/x']);
+});
+
 await test('parseReply：收藏連結欄位', () => {
   const r = parseReply('{"reply":"存好了","save_link":{"url":"https://x.example","category":"運動"}}', 'mention');
   assert.equal(r.saveLink.category, '運動');

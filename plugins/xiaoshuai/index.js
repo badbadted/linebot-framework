@@ -183,7 +183,7 @@ ops（day 用 D1～D6，index 是上面行程的編號數字）：
 - {"op":"set_glance","day":"D4","emoji":"🍖","place":"…","note":"…"}（最上面「這幾天要去哪」那一行）
 改到某天主要去哪，set_day 的 place 和 set_glance 也要一起改。`;
 
-const LINK_GUIDE = `收藏連結：有人要你記錄／收藏／存某個網址時，JSON 加 "save_link": {"url": "訊息裡的網址原文", "category": "簡短分類，例如 運動、美食、旅遊、育兒、3C、學習", "note": "一句話說明，可空"}，reply 簡短說存到哪一類；分類盡量沿用已有的。
+const LINK_GUIDE = `收藏連結：有人要你記錄／收藏／存某個網址時，JSON 加 "save_link": {"url": "訊息裡的網址原文", "category": "對方有講分類才填（例如「記錄運動用」→ 運動），沒講就空字串，會依網頁內容自動分類"}，reply 只要一句「收到」之類的短話（存到哪一類、基本說明會由系統另外附上）。
 有人只是要看某一類（或全部）的完整清單，JSON 加 "list_links": {"category": "分類，問全部就空字串"}，reply 一句帶過就好（清單會另外附上，你不用列）。
 其他跟收藏有關的（找某一筆、這筆在講什麼、從收藏裡推薦、整理成計畫）你自己處理：先依分類找出相關的幾筆；要知道內容先看那筆的「說明」，說明不夠才打開網址（臉書、IG 通常打不開）；回覆時附上編號（#數字）和網址，讓大家點得到。`;
 
@@ -341,6 +341,12 @@ async function handleTrip(chatId, parsed, trigger) {
   return `\n\n📝 要改的內容：\n${d.changes.map(c => `・${c}`).join('\n')}\n說「好」我就改（15 分鐘內有效）`;
 }
 
+const savedText = (r) => [
+  `🔖 已存到「${r.category}」：#${r.id} ${r.title}`,
+  ...(r.summary ? [`📝 ${r.summary}`] : []),
+  `看全部：/小帥 收藏 ${r.category}`,
+].join('\n');
+
 /** 收藏連結：存（網址要在觸發訊息原文裡）或列清單；清單由程式產生，不靠 AI 列 */
 async function handleLinks(chatId, parsed, trigger) {
   if (parsed.saveLink) {
@@ -351,7 +357,7 @@ async function handleLinks(chatId, parsed, trigger) {
     if (!r.ok) return `\n\n（沒存成：${r.error}）`;
     return r.dup
       ? `\n\n🔖 這個之前存過了：#${r.id} ${r.title}（${r.category}）`
-      : `\n\n🔖 已存到「${r.category}」：#${r.id} ${r.title}\n看全部：/小帥 收藏 ${r.category}`;
+      : `\n\n${savedText(r)}`;
   }
   if (parsed.listLinks) {
     const cat = typeof parsed.listLinks.category === 'string' ? parsed.listLinks.category : '';
@@ -507,17 +513,17 @@ export default {
   commands: [
     {
       name: 'xiaoshuai-save-link',
-      pattern: /^\/小帥\s*存\s+(\S+)\s+(https?:\/\/\S+)$/i,
-      describe: '/小帥 存 <分類> <網址> — 收藏連結',
+      pattern: /^\/小帥\s*存\s+(?:(?!https?:)(\S+)\s+)?(https?:\/\/\S+)$/i,
+      describe: '/小帥 存 [分類] <網址> — 收藏連結（沒寫分類會自動分類）',
       type: 'query',
       handler: async (m, ctx) => {
         const chatId = ctx.groupId || ctx.roomId;
         if (!chatId) return '收藏連結要在群組裡用';
         let by = '';
         try { by = (await lineApi.getGroupMemberProfile(chatId, ctx.userId))?.displayName || ''; } catch { /* 查不到名字就留空 */ }
-        const r = await links.saveLink(chatId, { url: m[2], category: m[1], sourceText: m[2], by, byId: ctx.userId });
+        const r = await links.saveLink(chatId, { url: m[2], category: m[1] || '', sourceText: m[2], by, byId: ctx.userId });
         if (!r.ok) return `沒存成：${r.error}`;
-        return r.dup ? `這個之前存過了：#${r.id} ${r.title}（${r.category}）` : `🔖 已存到「${r.category}」：#${r.id} ${r.title}`;
+        return r.dup ? `這個之前存過了：#${r.id} ${r.title}（${r.category}）` : savedText(r);
       },
     },
     {
@@ -556,7 +562,7 @@ export default {
     brain = createBrain({ isEnabled: (id) => enabled.has(id), onFire: think });
     if (!db) { console.warn('[xiaoshuai] 沒有 db provider，小帥停用'); return; }
     initDb();
-    links.initLinks(db);
+    links.initLinks(db, llm);
     if (!llm?.generate) console.warn('[xiaoshuai] llm provider 沒有 generate()，小帥無法講話');
     console.log(`[xiaoshuai] 開著的群組：${enabled.size}`);
   },
