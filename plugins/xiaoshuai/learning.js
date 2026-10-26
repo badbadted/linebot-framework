@@ -33,6 +33,9 @@ export async function fetchLearning() {
 }
 
 const GRADE = ['', '一', '二', '三', '四', '五', '六'];
+// 存檔欄位是孩子端網頁寫的，當作不可信文字：去換行、去標記符號、限長
+const txt = (v, max = 30) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(/[【】<>〔〕]/g, '').trim().slice(0, max);
+const num = (v) => (v !== undefined && v !== null && Number.isFinite(+v) ? +v : '—');
 const ago = (ts, now) => {
   if (!ts) return '沒有紀錄';
   const m = Math.round((now - ts) / 60_000);
@@ -48,22 +51,23 @@ export function learningText(data, now = Date.now()) {
   const lb = data.leaderboard || {};
   const board = (list, fmt) => (list?.length ? list.map((r, i) => `${i + 1}. ${fmt(r)}`) : ['（沒有人）']);
   lines.push('〔學習排行〕分數＝課程完成度基本分＋星星分');
-  lines.push(...board(lb.kids, r => `${r.name} ${r.score ?? '—'} 分（完成度 ${r.pct}%${r.starPts !== undefined ? `，星星分 ${r.starPts}` : ''}）`));
-  if (lb.adults?.length) lines.push('大人榜：', ...board(lb.adults, r => `${r.name} ${r.score ?? '—'} 分（完成度 ${r.pct}%）`));
+  lines.push(...board(lb.kids, r => `${txt(r.name)} ${num(r.score)} 分（完成度 ${num(r.pct)}%${r.starPts !== undefined ? `，星星分 ${num(r.starPts)}` : ''}）`));
+  if (lb.adults?.length) lines.push('大人榜：', ...board(lb.adults, r => `${txt(r.name)} ${num(r.score)} 分（完成度 ${num(r.pct)}%）`));
   const ch = data.challenge || {};
   lines.push('〔奧數挑戰榜〕入門／進階／挑戰三級分數加總');
-  lines.push(...board(ch.kids, r => `${r.name} ${r.score} 分（入門 ${r.lv[0]}、進階 ${r.lv[1]}、挑戰 ${r.lv[2]}）`));
+  lines.push(...board(ch.kids, r => `${txt(r.name)} ${num(r.score)} 分（入門 ${num(r.lv?.[0])}、進階 ${num(r.lv?.[1])}、挑戰 ${num(r.lv?.[2])}）`));
   const ov = data.overview || {};
-  lines.push(`〔每個人的進度〕今天是 ${ov.today || ''}`);
-  for (const k of [...(ov.kids || []), ...(ov.adults || [])]) {
-    const days = (k.week || []).filter(Boolean).length;
-    const subj = (k.subjects || []).map(s => `${s.name} ${s.learned}/${s.total}`).join('、');
-    const daily = (k.daily || []).map(t => `${t.s}${t.label}${t.ok ? '✓' : '✗'}`).join('、');
-    const rev = (k.reviews || []).slice(0, 3).map(r => `${r.s}「${r.title}」`).join('、');
-    lines.push(`・${k.name}${k.grade ? `（${GRADE[k.grade] || k.grade}年級${k.term || ''}）` : ''}：最近練習 ${ago(k.lastAt, now)}；近 7 天練了 ${days} 天${k.score !== undefined ? `；${k.score} 分` : ''}`);
+  lines.push(`〔每個人的進度〕今天是 ${txt(ov.today, 12)}`);
+  for (const k of [...(ov.kids || []), ...(ov.adults || [])].slice(0, 20)) {
+    const days = (Array.isArray(k.week) ? k.week : []).filter(Boolean).length;
+    const subj = (k.subjects || []).slice(0, 8).map(s => `${txt(s.name, 6)} ${num(s.learned)}/${num(s.total)}`).join('、');
+    const daily = (k.daily || []).slice(0, 6).map(d => `${txt(d.s, 6)}${txt(d.label)}${d.ok ? '✓' : '✗'}`).join('、');
+    const rev = (k.reviews || []).slice(0, 3).map(r => `${txt(r.s, 6)}「${txt(r.title)}」`).join('、');
+    const grade = Number.isInteger(k.grade) ? `（${GRADE[k.grade] || k.grade}年級${txt(k.term, 6)}）` : '';
+    lines.push(`・${txt(k.name)}${grade}：最近練習 ${ago(k.lastAt, now)}；近 7 天練了 ${days} 天${k.score !== undefined ? `；${num(k.score)} 分` : ''}`);
     if (subj) lines.push(`  學會單元：${subj}`);
     if (daily) lines.push(`  今日任務：${daily}`);
-    if (rev) lines.push(`  待複習：${rev}${(k.reviews || []).length > 3 ? ` 等 ${k.reviews.length} 個` : ''}`);
+    if (rev) lines.push(`  待複習：${rev}${(k.reviews || []).length > 3 ? ` 等 ${(k.reviews || []).length} 個` : ''}`);
   }
   return lines.join('\n').slice(0, 4000);
 }
