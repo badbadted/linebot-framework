@@ -30,6 +30,9 @@ export function initLinks(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_links_chat ON links(chat_id, category);
   `);
+  // 舊表補欄位：網頁說明
+  const cols = db.all('PRAGMA table_info(links)').map(c => c.name);
+  if (!cols.includes('description')) db.exec("ALTER TABLE links ADD COLUMN description TEXT NOT NULL DEFAULT ''");
 }
 
 export const urlsIn = (text) => [...String(text || '').matchAll(URL_RE)].map(m => m[0]);
@@ -45,18 +48,30 @@ const decode = (s) => s.replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCodePo
   .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
   .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'");
 
-async function fetchTitle(url) {
+const DESC_MAX = 400;
+const meta = (html, key) => html.match(new RegExp(`(?:property|name)="${key}"[^>]*content="([^"]*)"`))?.[1]
+  || html.match(new RegExp(`content="([^"]*)"[^>]*(?:property|name)="${key}"`))?.[1] || '';
+
+/** 抓網頁預覽：標題（第一行）＋說明（FB／IG 的貼文說明在 og:title 裡，整段留下來給小帥之後回答內容） */
+async function fetchPreview(url) {
+  let title = '';
+  let desc = '';
   try {
     const { text } = await safeFetch(url, { headers: { 'User-Agent': PREVIEW_UA }, timeoutMs: 5000, maxBytes: 600_000 });
-    const raw = text.match(/(?:property|name)="og:title"[^>]*content="([^"]*)"/)?.[1]
-      || text.match(/content="([^"]*)"[^>]*(?:property|name)="og:title"/)?.[1]
-      || text.match(/<title[^>]*>([^<]*)</)?.[1] || '';
-    // FB 的 og:title 前面是「13 萬次觀看 · 1 萬個心情 |」，去掉；只留第一行
-    const t = decode(raw).replace(/^[\d.,\s萬千]+次觀看[^|]*\|\s*/, '').split('\n')[0];
-    const title = clean(t, 60);
-    if (title && !/^(facebook|instagram|log in|登入)$/i.test(title)) return title;
+    // FB 的 og:title 前面是「13 萬次觀看 · 1 萬個心情 |」，去掉
+    const full = decode(meta(text, 'og:title') || text.match(/<title[^>]*>([^<]*)</)?.[1] || '')
+      .replace(/^[\d.,\s萬千]+次觀看[^|]*\|\s*/, '').trim();
+    const ogDesc = decode(meta(text, 'og:description') || meta(text, 'description')).trim();
+    title = clean(full.split('\n')[0], 60);
+    if (/^(facebook|instagram|log in|登入)$/i.test(title)) title = '';
+    // 說明取比較長的那段（FB：og:title 是完整貼文、og:description 是截斷版）
+    const body = full.length > ogDesc.replace(/\.{3}$/, '').length ? full : ogDesc;
+    desc = title ? clean(body, DESC_MAX) : '';
   } catch { /* 抓不到就用網域 */ }
-  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return '連結'; }
+  if (!title) {
+    try { title = new URL(url).hostname.replace(/^www\./, ''); } catch { title = '連結'; }
+  }
+  return { title, desc };
 }
 
 /**
@@ -73,10 +88,20 @@ export async function saveLink(chatId, { url, category, note, sourceText, by, by
   if (dup) return { ok: true, dup: true, id: dup.id, category: dup.category, title: dup.title };
   const count = db.get('SELECT COUNT(*) AS c FROM links WHERE chat_id = ?', chatId).c;
   if (count >= MAX_PER_CHAT) return { ok: false, error: `這個群已經存了 ${MAX_PER_CHAT} 筆，先刪掉一些` };
-  const title = await fetchTitle(picked);
-  const r = db.run('INSERT INTO links (chat_id, url, category, title, note, added_by, added_by_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    chatId, picked, cat, title, clean(note, 60), clean(by, 30), clean(byId, 64));
+  const { title, desc } = await fetchPreview(picked);
+  const r = db.run('INSERT INTO links (chat_id, url, category, title, description, note, added_by, added_by_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    chatId, picked, cat, title, desc, clean(note, 60), clean(by, 30), clean(byId, 64));
   return { ok: true, id: Number(r.lastInsertRowid), category: cat, title };
+}
+
+/** 給 AI 看的收藏清單（依分類分組，每類取最新幾筆） */
+export function promptList(chatId, perCategory = 15) {
+  const out = [];
+  for (const c of categories(chatId)) {
+    const rows = db.all('SELECT id, url, title, description, note FROM links WHERE chat_id = ? AND category = ? ORDER BY id DESC LIMIT ?', chatId, c.category, perCategory);
+    out.push({ category: c.category, n: c.n, items: rows });
+  }
+  return out;
 }
 
 export function categories(chatId) {
