@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
 import { parseReply, buildPrompt, memoryAllowed, isAffirm } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
+import * as links from '../plugins/xiaoshuai/links.js';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
@@ -253,13 +254,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -309,6 +310,34 @@ await test('行程修改的格式第一道檢查', () => {
   assert.ok(checkOps([{ op: 'set_glance', day: 'D1', note: 'x'.repeat(121) }]));
   assert.ok(checkOps(Array(9).fill({ op: 'remove_item', day: 'D1', index: 1 })));
   assert.ok(checkOps([]));
+});
+
+await test('收藏連結：存、重複、分類、清單、刪除（網址要在原文裡）', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  links.initLinks(db);
+  const src = '小帥 記錄運動用 https://example.com/run?a=1';
+  const r1 = await links.saveLink('G', { url: 'https://example.com/run?a=1', category: '運動用', sourceText: src, by: 'TED', byId: 'U1' });
+  assert.equal(r1.ok, true);
+  assert.equal(r1.category, '運動');
+  assert.equal((await links.saveLink('G', { url: 'https://example.com/run?a=1', category: '運動', sourceText: src })).dup, true);
+  // AI 給的網址不在原文：原文只有一個網址就用原文那個；原文沒網址就不存
+  assert.equal((await links.saveLink('G', { url: 'https://evil.example/x', category: '運動', sourceText: '小帥 存這個 https://example.com/b' })).ok, true);
+  assert.equal((await links.saveLink('G', { url: 'https://evil.example/x', category: '運動', sourceText: '小帥 幫我存' })).ok, false);
+  assert.equal((await links.saveLink('G', { url: 'https://evil.example/x', category: '運動', sourceText: 'https://a.example/1 https://b.example/2' })).ok, false);
+  assert.match(links.listText('G', ''), /・運動（2）/);
+  assert.match(links.listText('G', '運動'), /https:\/\/example\.com\/run\?a=1/);
+  assert.match(links.removeLink('G', r1.id, 'U2', false), /只有存的人或管理員/);
+  assert.match(links.removeLink('G', r1.id, 'U1', false), /已刪除/);
+  assert.match(links.listText('G', '運動'), /共 1/);
+});
+
+await test('parseReply：收藏連結欄位', () => {
+  const r = parseReply('{"reply":"存好了","save_link":{"url":"https://x.example","category":"運動"}}', 'mention');
+  assert.equal(r.saveLink.category, '運動');
+  assert.equal(parseReply('{"reply":"給你","list_links":{"category":""}}', 'mention').listLinks.category, '');
+  assert.equal(parseReply('{"reply":"x","save_link":{"category":"運動"}}', 'mention').saveLink, null);
 });
 
 await test('buildPrompt：綁了行程才帶行程表與待確認修改', () => {
