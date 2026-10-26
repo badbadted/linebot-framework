@@ -336,6 +336,26 @@ await test('收藏連結：存、重複、分類、清單、刪除（網址要�
   assert.match(links.listText('G', '運動'), /共 1/);
 });
 
+await test('收藏內容只在相關話題給 AI，且有總量上限', async () => {
+  for (const t of ['小帥 運動的連結有哪些', '小帥 #3 在講什麼', '小帥 想練腿收藏裡有適合的嗎', '小帥 把運動的整理成課表', '小帥 之前那個影片在哪'])
+    assert.ok(links.aboutLinks(t), t);
+  for (const t of ['小帥 你好', '小帥 明天會下雨嗎', '小帥 記起來 12/25 去滑雪']) assert.ok(!links.aboutLinks(t), t);
+
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  links.initLinks({ run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) });
+  const ins = raw.prepare("INSERT INTO links (chat_id, url, category, title, description) VALUES ('G', ?, ?, ?, ?)");
+  for (let c = 0; c < 12; c++) for (let i = 0; i < 20; i++) ins.run(`https://e.example/${c}/${i}`, `類${c}`, `標題${i}`, '說'.repeat(300));
+  const full = links.promptList('G');
+  assert.equal(full.length, 8);
+  const n = full.reduce((a, c) => a + c.items.length, 0);
+  assert.ok(n <= 40, `項目 ${n}`);
+  assert.ok(full.every(c => c.items.every(it => it.description.length <= 200)));
+  const brief = links.promptList('G', { withItems: false });
+  assert.ok(brief.every(c => c.items.length === 0));
+  assert.equal((await links.saveLink('G', { url: 'https://e.example/' + 'x'.repeat(600), category: '運動', sourceText: 'https://e.example/' + 'x'.repeat(600) })).ok, false);
+});
+
 await test('parseReply：收藏連結欄位', () => {
   const r = parseReply('{"reply":"存好了","save_link":{"url":"https://x.example","category":"運動"}}', 'mention');
   assert.equal(r.saveLink.category, '運動');

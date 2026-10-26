@@ -82,6 +82,7 @@ export async function saveLink(chatId, { url, category, note, sourceText, by, by
   const inText = urlsIn(sourceText);
   if (!inText.length) return { ok: false, error: '訊息裡沒有網址' };
   const picked = inText.includes(url) ? url : (inText.length === 1 ? inText[0] : null);
+  if (picked && picked.length > 500) return { ok: false, error: '網址太長，存不了' };
   if (!picked) return { ok: false, error: '不確定要存哪一個網址' };
   const cat = normCategory(category);
   const dup = db.get('SELECT id, category, title FROM links WHERE chat_id = ? AND url = ?', chatId, picked);
@@ -95,14 +96,40 @@ export async function saveLink(chatId, { url, category, note, sourceText, by, by
 }
 
 /** 給 AI 看的收藏清單（依分類分組，每類取最新幾筆） */
-export function promptList(chatId, perCategory = 15) {
+// 給 AI 的收藏總量上限（防收藏一多就把每次對話的提示與費用撐大）
+const PROMPT_MAX_CATEGORIES = 8;
+const PROMPT_MAX_ITEMS = 40;
+const PROMPT_MAX_CHARS = 6000;
+
+/**
+ * 給 AI 看的收藏清單（依分類分組，每類取最新幾筆）。
+ * withItems=false 只給分類與筆數（不含任何網頁來的文字）
+ */
+export function promptList(chatId, { withItems = true, perCategory = 15 } = {}) {
   const out = [];
-  for (const c of categories(chatId)) {
+  let items = 0;
+  let chars = 0;
+  let full = !withItems;
+  for (const c of categories(chatId).slice(0, PROMPT_MAX_CATEGORIES)) {
+    const entry = { category: c.category, n: c.n, items: [] };
+    out.push(entry);
+    if (full) continue; // 額度用完：後面的分類只列名稱與筆數
     const rows = db.all('SELECT id, url, title, description, note FROM links WHERE chat_id = ? AND category = ? ORDER BY id DESC LIMIT ?', chatId, c.category, perCategory);
-    out.push({ category: c.category, n: c.n, items: rows });
+    for (const r of rows) {
+      const it = { ...r, url: r.url.slice(0, 200), description: (r.description || '').replace(/\s+/g, ' ').slice(0, 200) };
+      const size = it.url.length + it.title.length + it.description.length + it.note.length + 20;
+      if (items >= PROMPT_MAX_ITEMS || chars + size > PROMPT_MAX_CHARS) { full = true; break; }
+      entry.items.push(it);
+      items++;
+      chars += size;
+    }
   }
   return out;
 }
+
+// 這句話跟收藏有關才把收藏內容（網頁來的標題、說明）給 AI 看
+const LINK_TOPIC_RE = /收藏|存的|存過|連結|網址|影片|文章|#\s*\d+|推薦|有適合|有什麼|有哪些|整理|課表|計畫|在講什麼|重點|之前那|那個.*(影片|連結)/;
+export const aboutLinks = (text) => LINK_TOPIC_RE.test(String(text || ''));
 
 export function categories(chatId) {
   return db.all('SELECT category, COUNT(*) AS n FROM links WHERE chat_id = ? GROUP BY category ORDER BY MAX(id) DESC', chatId);
