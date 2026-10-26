@@ -104,7 +104,8 @@ export function listText(chatId, category) {
 export function removeLink(chatId, id, userId, isAdmin) {
   const r = db.get('SELECT id, title, added_by_id FROM links WHERE chat_id = ? AND id = ?', chatId, Number(id));
   if (!r) return `找不到 #${id}`;
-  if (r.added_by_id && r.added_by_id !== userId && !isAdmin) return '只有存的人或管理員能刪';
+  // 不知道是誰存的（舊資料或查不到 userId）→ 只有管理員能刪
+  if (!isAdmin && (!r.added_by_id || r.added_by_id !== userId)) return '只有存的人或管理員能刪';
   db.run('DELETE FROM links WHERE id = ?', r.id);
   return `🗑️ 已刪除 #${r.id} ${r.title}`;
 }

@@ -330,6 +330,9 @@ await test('收藏連結：存、重複、分類、清單、刪除（網址要�
   assert.match(links.listText('G', '運動'), /https:\/\/example\.com\/run\?a=1/);
   assert.match(links.removeLink('G', r1.id, 'U2', false), /只有存的人或管理員/);
   assert.match(links.removeLink('G', r1.id, 'U1', false), /已刪除/);
+  const anon = await links.saveLink('G', { url: 'https://example.com/c', category: '運動', sourceText: 'https://example.com/c' });
+  assert.match(links.removeLink('G', anon.id, 'U9', false), /只有存的人或管理員/); // 不知道誰存的：一般人不能刪
+  assert.match(links.removeLink('G', anon.id, 'U9', true), /已刪除/);
   assert.match(links.listText('G', '運動'), /共 1/);
 });
 
