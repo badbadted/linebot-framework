@@ -8,6 +8,7 @@ import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
 import { parseReply, buildPrompt, memoryAllowed, isAffirm } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
+import * as learning from '../plugins/xiaoshuai/learning.js';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
@@ -377,6 +378,24 @@ await test('/小帥 存 指令：分類可省略', () => {
   const re = /^\/小帥\s*存\s+(?:(?!https?:)(\S+)\s+)?(https?:\/\/\S+)$/i;
   assert.deepEqual([...'/小帥 存 https://e.example/x'.match(re)].slice(1), [undefined, 'https://e.example/x']);
   assert.deepEqual([...'/小帥 存 運動 https://e.example/x'.match(re)].slice(1), ['運動', 'https://e.example/x']);
+});
+
+await test('學習資料：只在學習話題讀，整理成精簡文字', () => {
+  for (const t of ['小帥 目前學習排名', '小帥 誰今天還沒練', '小帥 奧數誰最高', '小帥 Allen 數學進度']) assert.ok(learning.aboutLearning(t), t);
+  for (const t of ['小帥 你好', '小帥 明天會下雨嗎', '小帥 運動的連結有哪些']) assert.ok(!learning.aboutLearning(t), t);
+  const now = Date.UTC(2026, 9, 26, 4, 0);
+  const txt = learning.learningText({
+    leaderboard: { kids: [{ name: 'Karen（多多）', score: 1324, pct: 22.5, starPts: 476 }, { name: 'Allen（啓綸）', score: 427, pct: 7.6 }], adults: [] },
+    challenge: { kids: [{ name: 'Allen（啓綸）', score: 100, lv: [0, 100, 0] }], adults: [] },
+    overview: { today: '2026-10-26', kids: [{ name: 'Allen（啓綸）', lastAt: now - 2 * 3600_000, week: [false, true, true], score: 427, grade: 4, term: '上學期',
+      subjects: [{ name: '國語', learned: 14, total: 357 }], daily: [{ s: '數學', label: '第 5 單元 滿分 1 次', ok: false }], reviews: [{ s: '自然', title: '水中世界' }] }], adults: [] },
+  }, now);
+  assert.match(txt, /1\. Karen（多多） 1324 分（完成度 22.5%，星星分 476）/);
+  assert.match(txt, /Allen（啓綸） 100 分（入門 0、進階 100、挑戰 0）/);
+  assert.match(txt, /Allen（啓綸）（四年級上學期）：最近練習 2 小時前；近 7 天練了 2 天；427 分/);
+  assert.match(txt, /今日任務：數學第 5 單元 滿分 1 次✗/);
+  assert.match(txt, /待複習：自然「水中世界」/);
+  assert.equal(learning.learningText(null), '');
 });
 
 await test('parseReply：收藏連結欄位', () => {
