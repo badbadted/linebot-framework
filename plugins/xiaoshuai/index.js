@@ -104,6 +104,16 @@ function initDb() {
       created_at TEXT DEFAULT (datetime('now','+8 hours'))
     );
   `);
+  // 一個群可以綁多份行程（2026-10-27）：舊的 trips（一群一份）搬進 trip_binds，舊表留著不再寫
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS trip_binds (
+      chat_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now','+8 hours')),
+      PRIMARY KEY (chat_id, name)
+    );
+    INSERT OR IGNORE INTO trip_binds (chat_id, name, updated_at) SELECT chat_id, name, updated_at FROM trips;
+  `);
   for (const r of db.all('SELECT chat_id FROM groups WHERE enabled = 1')) enabled.add(r.chat_id);
 }
 
@@ -133,8 +143,46 @@ function quotedSelf(event) {
   return db.get('SELECT text FROM sent WHERE message_id = ?', String(id))?.text ?? null;
 }
 
-function tripOf(chatId) {
-  return db?.get('SELECT name FROM trips WHERE chat_id = ?', chatId)?.name || null;
+const tripsOf = (chatId) => (db?.all('SELECT name FROM trip_binds WHERE chat_id = ? ORDER BY updated_at', chatId) || []).map(r => r.name);
+const bindTrip = (chatId, name) => db.run(
+  `INSERT INTO trip_binds (chat_id, name) VALUES (?, ?)
+   ON CONFLICT(chat_id, name) DO UPDATE SET updated_at = datetime('now','+8 hours')`, chatId, name);
+
+const lastTrip = new Map(); // chatId → { name, at }：剛剛在講哪一份（沒線索時接著用）
+const LAST_TRIP_MS = 15 * 60_000;
+
+/**
+ * 一個群綁了好幾份行程時，判斷這句在講哪一份。
+ * 線索：講到年份、那份行程有的日期、標題裡的字；都沒有就沿用正在等確認的那份、剛剛講的那份，最後才用最快出發的那份。
+ * @param cands [{ name, title, outline, start: {year, month, day} }]
+ */
+export function pickTrip(text, cands, { pendingName = null, lastName = null, now = Date.now() } = {}) {
+  if (!cands.length) return null;
+  if (cands.length === 1) return cands[0].name;
+  const s = String(text || '').normalize('NFKC');
+  const years = s.match(/20\d\d/g) || [];
+  const dates = [...s.matchAll(/(\d{1,2})\s*[/月]\s*(\d{1,2})/g)].map(m => `${+m[1]}/${+m[2]}`);
+  const COMMON = new Set(['小帥', '行程', '改成', '換成', '新增', '刪掉', '拿掉', '一下', '那天', '晚上', '早上', '下午', '幾點', '時間', '可以', '我們', '大家']);
+  const grams = new Set();
+  for (const run of s.match(/[一-鿿぀-ヿ]{2,}/g) || []) {
+    for (let i = 0; i + 2 <= run.length; i++) { const g = run.slice(i, i + 2); if (!COMMON.has(g)) grams.add(g); }
+  }
+  const scored = cands.map(c => {
+    let score = 0;
+    if (years.some(y => c.title.includes(y))) score += 5;
+    for (const d of dates) if (new RegExp(`(^|\\D)${d.replace('/', '\\/')}(\\D|$)`).test(c.outline || '')) score += 5;
+    for (const g of grams) score += c.title.includes(g) ? 3 : (c.outline || '').includes(g) ? 1 : 0;
+    return { name: c.name, score };
+  }).sort((a, b) => b.score - a.score);
+  // 夠明確（領先 3 分以上）就用它
+  if (scored[0].score >= 3 && scored[0].score - (scored[1]?.score || 0) >= 3) return scored[0].name;
+  if (pendingName && cands.some(c => c.name === pendingName)) return pendingName;
+  if (lastName && cands.some(c => c.name === lastName)) return lastName;
+  // 最快出發（還沒過的）那份；年份不明的當作今年
+  const today = new Date(now);
+  const startOf = (c) => c.start ? new Date(c.start.year || today.getFullYear(), c.start.month - 1, c.start.day).getTime() : Infinity;
+  const upcoming = cands.filter(c => startOf(c) >= now - 7 * 86400_000).sort((a, b) => startOf(a) - startOf(b));
+  return (upcoming[0] || cands[cands.length - 1]).name;
 }
 
 function pendingOf(chatId) {
@@ -225,8 +273,14 @@ function linkSection(linkCats) {
 
 function tripSection(tripCtx) {
   if (!tripCtx) return '';
-  if (tripCtx.brief) return `\n\n【這個群有綁行程網頁】${tripCtx.url}（這次沒附內容；有人問到行程細節，請他直接問哪一天或哪件事，你就看得到）`;
-  const lines = [`\n\n【這個群的行程表】（網頁：${tripCtx.url}）`, tripCtx.outline, '', TRIP_OPS_GUIDE];
+  if (tripCtx.brief) {
+    const list = tripCtx.all.map(t => `${t.title} ${t.url}`).join('；');
+    return `\n\n【這個群有綁行程網頁】${list}（這次沒附內容；有人問到行程細節，請他直接問哪一天或哪件事，你就看得到）`;
+  }
+  const lines = [`\n\n【這個群的行程表】${tripCtx.title ? `「${tripCtx.title}」` : ''}（網頁：${tripCtx.url}）`, tripCtx.outline, '', TRIP_OPS_GUIDE];
+  if (tripCtx.others?.length) {
+    lines.push('', `【這個群還綁了別的行程】${tripCtx.others.map(t => `「${t.title}」`).join('、')}（這次沒附內容）。上面附的是系統判斷這句在講的那份；如果他其實在講另一份，不要改，請他講清楚是哪一份（例如帶年份或地點）。`);
+  }
   if (tripCtx.pending) {
     lines.push('', '【等大家確認的行程修改】', ...tripCtx.pending.map(c => `・${c}`),
       '最新那句如果是同意這些修改（好、OK、可以、改吧），JSON 加 "trip_confirm": true，reply 簡短回一句就好；如果是不要、取消，加 "trip_confirm": false；跟這件事無關就不要加。');
@@ -285,12 +339,19 @@ const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\
 export const aboutTrip = (text) => TRIP_TOPIC_RE.test(String(text || '').normalize('NFKC'));
 
 async function tripContext(chatId, text) {
-  const name = tripOf(chatId);
-  if (!name) return null;
-  if (!pendingOf(chatId) && !aboutTrip(text)) return { name, url: trip.tripUrl(name), brief: true };
-  const outline = await trip.outline(name);
+  const names = tripsOf(chatId);
+  if (!names.length) return null;
+  const pending = pendingOf(chatId);
+  const infos = names.map(n => trip.info(n) || { name: n, title: n, start: null });
+  if (!pending && !aboutTrip(text)) return { brief: true, all: infos.map(i => ({ title: i.title, url: trip.tripUrl(i.name) })) };
+  const cands = await Promise.all(infos.map(async i => ({ ...i, outline: names.length > 1 ? await trip.outline(i.name) : '' })));
+  const last = lastTrip.get(chatId);
+  const name = pickTrip(text, cands, { pendingName: pending?.name, lastName: last && Date.now() - last.at < LAST_TRIP_MS ? last.name : null });
+  const outline = cands.find(c => c.name === name)?.outline || await trip.outline(name);
   if (!outline) return null;
-  return { name, url: trip.tripUrl(name), outline, pending: pendingOf(chatId)?.changes || null };
+  lastTrip.set(chatId, { name, at: Date.now() });
+  const others = infos.filter(i => i.name !== name).map(i => ({ title: i.title, url: trip.tripUrl(i.name) }));
+  return { name, url: trip.tripUrl(name), title: infos.find(i => i.name === name)?.title, outline, others, pending: pending?.name === name ? pending.changes : null };
 }
 
 async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
@@ -602,12 +663,7 @@ async function newTripCommand(match, ctx) {
   try { who = (await lineApi.getGroupMemberProfile(chatId, ctx.userId))?.displayName || ''; } catch { /* 查不到就算了 */ }
   const r = await trip.create(name, title, who);
   if (!r.ok) return `沒開成：${r.error}`;
-  db.run(
-    `INSERT INTO trips (chat_id, name, updated_at) VALUES (?, ?, datetime('now','+8 hours'))
-     ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
-    chatId, name,
-  );
-  pendingEdits.delete(chatId);
+  bindTrip(chatId, name);
   return [
     `✅ 新行程開好了，也綁到這個群：${r.url}`,
     '（網頁大約一分鐘後上線）',
@@ -625,27 +681,31 @@ async function tripCommand(match, ctx) {
   const chatId = ctx.groupId || ctx.roomId;
   if (!chatId) return '行程要在群組裡綁，請在群組裡打 /小帥 行程 <名稱>';
   const arg = (match[1] || '').trim();
-  const current = tripOf(chatId);
+  const names = tripsOf(chatId);
+  const list = () => names.map(n => `・${trip.info(n)?.title || n}（${n}）\n  ${trip.tripUrl(n)}`).join('\n');
   if (!arg) {
-    if (!current) return '這個群還沒綁行程網頁\n（管理員）/小帥 行程 <名稱> 綁定，例如 /小帥 行程 christmas-ski-trip';
-    return `🗺️ 這個群的行程：${trip.tripUrl(current)}\n叫小帥就能問行程、請它改（會先列出要改的內容，有人說好才改）`;
+    if (!names.length) return '這個群還沒綁行程網頁\n（管理員）/小帥 行程 <名稱> 綁定，或 /小帥 新行程 <名稱> <標題> 開一份新的';
+    return `🗺️ 這個群的行程（${names.length} 份）：\n${list()}\n叫小帥就能問行程、請它改（會先列出要改的內容，有人說好才改）${names.length > 1 ? '\n綁了好幾份時，講到年份、日期或地點，小帥就知道是哪一份' : ''}`;
   }
   if (!isAdmin(ctx.userId)) return '⛔ 只有管理員能綁定行程';
   if (arg === '取消') {
-    db.run('DELETE FROM trips WHERE chat_id = ?', chatId);
-    pendingEdits.delete(chatId);
-    return current ? '已取消綁定，小帥不會再改這個群的行程網頁' : '本來就沒綁';
+    const target = (match[2] || '').trim() || (names.length === 1 ? names[0] : '');
+    if (!names.length) return '本來就沒綁';
+    if (!target) return `這個群綁了 ${names.length} 份，要取消哪一份？\n${list()}\n例如：/小帥 行程 取消 ${names[0]}`;
+    if (!names.includes(target)) return `這個群沒有綁「${target}」`;
+    db.run('DELETE FROM trip_binds WHERE chat_id = ? AND name = ?', chatId, target);
+    if (pendingOf(chatId)?.name === target) pendingEdits.delete(chatId);
+    if (lastTrip.get(chatId)?.name === target) lastTrip.delete(chatId);
+    return `已取消綁定「${target}」，小帥不會再改這份行程網頁（網頁還在）`;
   }
   if (!trip.validName(arg)) return '名稱只能用小寫英文、數字和 -，例如 christmas-ski-trip';
+  if (names.includes(arg)) return `這個群已經綁了「${arg}」`;
+  if (names.length >= 5) return '一個群最多綁 5 份行程，先取消不用的';
   const outline = await trip.outline(arg);
-  if (!outline) return `找不到行程「${arg}」（要先在 temp-reports 建好 trips/${arg}.json）`;
-  db.run(
-    `INSERT INTO trips (chat_id, name, updated_at) VALUES (?, ?, datetime('now','+8 hours'))
-     ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
-    chatId, arg,
-  );
-  pendingEdits.delete(chatId);
-  return `✅ 已綁定行程：${trip.tripUrl(arg)}\n之後叫小帥就能問行程、請它改（有人說好才會真的改）`;
+  if (!outline) return `找不到行程「${arg}」（要先開好：/小帥 新行程 <名稱> <標題>）`;
+  bindTrip(chatId, arg);
+  const n = names.length + 1;
+  return `✅ 已綁定行程：${trip.tripUrl(arg)}\n${n > 1 ? `這個群現在綁了 ${n} 份，講到年份、日期或地點，小帥就知道是哪一份。\n` : ''}之後叫小帥就能問行程、請它改（有人說好才會真的改）`;
 }
 
 // ── Plugin ─────────────────────────────────────────
@@ -667,7 +727,7 @@ export default {
 /小帥 存 <分類> <網址> — 收藏連結（也可以叫小帥「幫我記錄運動用 <網址>」）
 /小帥 收藏 [分類] — 看收藏；/小帥 收藏 刪 #編號 — 刪掉一筆
 /小帥 開｜關 — （管理員）讓小帥進來／離開
-/小帥 行程 <名稱>｜取消 — （管理員）綁定／取消行程網頁
+/小帥 行程 <名稱>｜取消 [名稱] — （管理員）綁定／取消行程網頁，一個群可以綁好幾份
 /小帥 新行程 <名稱> <標題> — （管理員）開一份新行程網頁並綁到這群，例如 /小帥 新行程 hokkaido-2028 2028 北海道滑雪`,
 
   commands: [
@@ -707,8 +767,8 @@ export default {
     },
     {
       name: 'xiaoshuai-trip',
-      pattern: /^\/小帥\s*行程(?:\s+(\S+))?$/,
-      describe: '/小帥 行程 [名稱｜取消] — 群組綁定的行程網頁',
+      pattern: /^\/小帥\s*行程(?:\s+(\S+)(?:\s+(\S+))?)?$/,
+      describe: '/小帥 行程 [名稱｜取消 [名稱]] — 群組綁定的行程網頁（可綁多份）',
       type: 'query',
       handler: tripCommand,
     },

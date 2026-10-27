@@ -7,7 +7,7 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
@@ -17,6 +17,18 @@ export const TRIP_BASE_URL = 'https://badbadted.github.io/temp-reports/';
 const PULL_EVERY_MS = 5 * 60_000; // 看行程前最多 5 分鐘拉一次（有人從電腦改過網頁也看得到）
 
 export const tripUrl = (name) => `${TRIP_BASE_URL}${name}.html`;
+
+/** 行程標題與第一天日期（一個群綁多份時用來分辨講的是哪一份）；讀不到回 null */
+export function info(name) {
+  if (!validName(name)) return null;
+  try {
+    const t = JSON.parse(readFileSync(join(TRIP_REPO, 'trips', `${name}.json`), 'utf8'));
+    const title = String(t.meta?.title || t.title || name);
+    const first = /^(\d{1,2})\/(\d{1,2})/.exec(t.days?.[0]?.glance?.d || t.days?.[0]?.date || '');
+    const year = Number(/20\d\d/.exec(title)?.[0]) || null;
+    return { name, title, start: first ? { year, month: +first[1], day: +first[2] } : null };
+  } catch { return null; }
+}
 export const validName = (name) => /^[a-z0-9-]{1,60}$/.test(name || '');
 
 let queue = Promise.resolve();

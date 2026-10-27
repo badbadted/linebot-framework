@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip } from '../plugins/xiaoshuai/index.js';
+import { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -541,8 +541,8 @@ await test('改完行程附圖：找出動到哪幾段', () => {
 await test('講到行程才帶整份行程（省 token）', () => {
   for (const t of ['小帥 D4 晚上吃什麼', '小帥 第三天幾點出發', '小帥 12/26 要去哪', '小帥 給我看住宿', '小帥 把燒肉換成拉麵', '小帥 ｄ２呢']) assert.ok(aboutTrip(t), t);
   for (const t of ['小帥 今天好冷', '小帥 你好帥', '小帥 推薦一部電影']) assert.ok(!aboutTrip(t), t);
-  const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { url: 'https://x/t.html', brief: true } });
-  assert.ok(p.includes('【這個群有綁行程網頁】https://x/t.html'));
+  const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { brief: true, all: [{ title: '聖誕滑雪', url: 'https://x/t.html' }] } });
+  assert.ok(p.includes('【這個群有綁行程網頁】聖誕滑雪 https://x/t.html'));
   assert.ok(!p.includes('"trip_edit"'));
 });
 
@@ -560,6 +560,28 @@ await test('通用版面的修改：第一道檢查與改完附圖', () => {
   assert.ok(checkOps([{ op: 'remove_day' }]));
   assert.ok(checkOps([{ op: 'set_meta', subtitle: '<b>x</b>' }]));
   assert.deepEqual(shotKeysOf([{ op: 'add_day' }, { op: 'set_info' }, { op: 'add_link' }, { op: 'set_meta' }]), ['glance', 'info', 'links']);
+});
+
+await test('一個群綁多份行程：判斷在講哪一份', () => {
+  const xmas = { name: 'christmas-ski-trip', title: '2026 聖誕滑雪旅行', start: { year: 2026, month: 12, day: 24 },
+    outline: 'D1 12/24（四）｜✈️ 飛東京・Sanrio 旗艦店\nD3 12/26（六）｜⛷️ 神樂滑雪場\nD5 12/28（一）｜🏂 石打丸山' };
+  const snow = { name: 'snow-trip-2027', title: '❄️ 2027 東京・青森雪國之旅 ⛷️', start: { year: 2027, month: 1, day: 30 },
+    outline: 'D1 1/30（六）｜✈️ 飛東京\nD2 1/31（日）｜⛷️ 岩原滑雪場\nD6 2/4（四）｜🚄 移動日・入住青森屋' };
+  const now = Date.UTC(2026, 9, 27);
+  const c = [xmas, snow];
+  assert.equal(pickTrip('小帥 2027 那趟 D2 改一下', c, { now }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 2/4 晚上吃什麼', c, { now }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 青森屋幾點入住', c, { now }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 神樂那天幾點出發', c, { now }), 'christmas-ski-trip');
+  assert.equal(pickTrip('小帥 聖誕那趟住哪', c, { now }), 'christmas-ski-trip');
+  // 沒線索：等確認的那份 → 剛剛講的那份 → 最快出發的那份
+  assert.equal(pickTrip('好', c, { pendingName: 'snow-trip-2027', now }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 D3 晚上呢', c, { lastName: 'snow-trip-2027', now }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 D3 晚上呢', c, { now }), 'christmas-ski-trip');
+  // 聖誕過完之後，預設換成 2027
+  assert.equal(pickTrip('小帥 D3 晚上呢', c, { now: Date.UTC(2027, 0, 10) }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 隨便', [snow], { now }), 'snow-trip-2027');
+  assert.equal(pickTrip('x', [], { now }), null);
 });
 
 console.log(`\n${pass} 項全部通過`);
