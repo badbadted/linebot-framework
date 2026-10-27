@@ -27,11 +27,11 @@ export function sectionOf(key) {
   const d = /^d([1-9])$/.exec(k);
   if (d) return { sel: `#d${d[1]}`, label: `D${d[1]}` };
   if (k === 'glance') return { sel: '.glance', label: '這幾天要去哪' };
-  if (k === 'info') return { sel: 'xpath=//h2[contains(., "住宿")]/..', label: '住宿・交通・成員' };
+  if (k === 'info') return { sel: '.info-section', label: '住宿・交通・資訊' };
   if (k === 'stay') return { sel: 'xpath=//details[summary[contains(., "住宿")]]', label: '住宿資訊' };
   if (k === 'transport') return { sel: 'xpath=//details[summary[contains(., "交通")]]', label: '交通' };
   if (k === 'members') return { sel: 'xpath=//details[summary[contains(., "成員")]]', label: '成員' };
-  if (k === 'links') return { sel: 'xpath=//h2[contains(., "實用連結")]/..', label: '實用連結' };
+  if (k === 'links') return { sel: '.links-section', label: '實用連結' };
   return null;
 }
 export const SECTION_KEYS = 'glance（最上面「這幾天要去哪」）、D1～D9（每天的行程）、info（住宿・交通・成員整段）、stay（住宿資訊）、transport（機場交通）、members（成員）、links（實用連結・勸敗清單）';

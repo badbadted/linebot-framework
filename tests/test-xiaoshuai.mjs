@@ -520,7 +520,7 @@ await test('妞揪開團：parseReply 與 prompt', () => {
 await test('行程截圖：只收固定段落', () => {
   assert.equal(shot.sectionOf('D4').sel, '#d4');
   assert.equal(shot.sectionOf('glance').label, '這幾天要去哪');
-  assert.ok(shot.sectionOf('info').sel.includes('住宿'));
+  assert.equal(shot.sectionOf('info').sel, '.info-section');
   assert.equal(shot.sectionOf('members').label, '成員');
   for (const bad of ['D0', 'd10', '#d4', 'body', 'https://evil.example', '']) assert.equal(shot.sectionOf(bad), null);
   assert.equal(parseReply('{"reply":"給你","trip_shot":"D2"}', 'mention').tripShot, 'D2');
@@ -544,6 +544,22 @@ await test('講到行程才帶整份行程（省 token）', () => {
   const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { url: 'https://x/t.html', brief: true } });
   assert.ok(p.includes('【這個群有綁行程網頁】https://x/t.html'));
   assert.ok(!p.includes('"trip_edit"'));
+});
+
+await test('通用版面的修改：第一道檢查與改完附圖', () => {
+  assert.equal(checkOps([
+    { op: 'add_day', date: '1/30', weekday: '六', place: '飛東京', color: 'fly' },
+    { op: 'set_meta', title: '2028 北海道', dates: '1/20—1/24' },
+    { op: 'set_info', title: '🏨 住宿', lines: ['札幌 2 晚'] },
+    { op: 'add_link', title: '雪況', url: 'https://www.niseko.ne.jp/' },
+    { op: 'remove_link', index: 1 }, { op: 'remove_info', title: '🏨 住宿' }, { op: 'remove_day', day: 'D2' },
+  ]), null);
+  assert.ok(checkOps([{ op: 'add_link', title: 'x', url: 'javascript:alert(1)' }]));
+  assert.ok(checkOps([{ op: 'add_link', title: 'x', url: 'https://a.com/"><script>' }]));
+  assert.ok(checkOps([{ op: 'add_day', date: '1/30', place: 'x', color: 'red' }]));
+  assert.ok(checkOps([{ op: 'remove_day' }]));
+  assert.ok(checkOps([{ op: 'set_meta', subtitle: '<b>x</b>' }]));
+  assert.deepEqual(shotKeysOf([{ op: 'add_day' }, { op: 'set_info' }, { op: 'add_link' }, { op: 'set_meta' }]), ['glance', 'info', 'links']);
 });
 
 console.log(`\n${pass} 項全部通過`);

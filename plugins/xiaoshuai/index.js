@@ -191,6 +191,13 @@ ops（day 用 D1～D6，index 是上面行程的編號數字）：
 - {"op":"set_glance","day":"D4","emoji":"🍖","place":"…","note":"…"}（最上面「這幾天要去哪」那一行）
 - {"op":"set_more","day":"D2","title":"晴空塔聖誕市集資訊","lines":["📍 …","🕔 …"]}（整個換掉那天的「補充資訊」收合框，最多 8 行、每行 80 字；資訊要上網查確實再寫）
 - {"op":"remove_more","day":"D2"}（拿掉那天的補充資訊）
+行程表第一行寫「通用版面」的，另外還能用（手刻版面不能用，會被擋）：
+- {"op":"add_day","after":2,"date":"1/30","weekday":"六","emoji":"⛷️","place":"岩原滑雪場","note":"晚上：東京巨蛋點燈","color":"ski"}（新增一天；after＝插在第幾天後面，不給就加在最後；color：fly 交通日／city 城市／ski 雪場戶外；加完後面的天數會重新編號，同一批 ops 裡要加那天的行程，請下次再加）
+- {"op":"remove_day","day":"D3"}（刪掉一整天，後面往前遞補）
+- {"op":"set_meta","title":"頁面標題","dates":"1/30（六）— 2/6（六）・8 天","subtitle":"高雄 ⇄ 東京｜幾家幾人"}（只放要改的）
+- {"op":"set_info","title":"🏨 住宿","hint":"錦糸町 5 晚","lines":["…","…"]}（資訊區一塊，同標題就整塊換掉，最多 12 行）／{"op":"remove_info","title":"🏨 住宿"}
+- {"op":"add_link","title":"🚌 巴士時刻表","url":"https://…"}（只收 https）／{"op":"remove_link","index":2}
+有人要你照一份貼上來的行程文字把整份排出來：先列出你看懂的每一天給大家確認，說「好」之後先建好每一天（add_day），下一輪再填每天的細項。
 行程改了地點或活動，那天的補充資訊如果還在講舊的東西，要提醒大家，問要不要一起更新或拿掉。
 改到某天主要去哪，set_day 的 place 和 set_glance 也要一起改。
 有人要看行程某一段的圖（截圖、傳圖、「給我看 D4」「住宿長怎樣」），JSON 加 "trip_shot": "段落"，段落只能是：${shot.SECTION_KEYS}；reply 一句帶過就好（圖會另外附上）。只是問問題、用文字回答就夠的不用截。`;
@@ -274,7 +281,7 @@ export function parseReply(raw, mode) {
 }
 
 // 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
-const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\d{1,2}\s*[/／月]\s*\d{1,2}|日期|幾點|時間|住宿|住哪|飯店|民宿|交通|機場|巴士|接駁|新幹線|電車|集合|出發|回程|班機|航班|去哪|滑雪|雪場|市集|景點|行李|成員|網頁|截圖|傳圖|給我看|補充資訊|改成|換成|加一|加個|刪掉|拿掉|那天|當天|隔天/;
+const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\d{1,2}\s*[/／月]\s*\d{1,2}|日期|幾點|時間|住宿|住哪|飯店|民宿|交通|機場|巴士|接駁|新幹線|電車|集合|出發|回程|班機|航班|去哪|滑雪|雪場|市集|景點|行李|成員|網頁|截圖|傳圖|給我看|補充資訊|改成|換成|加一|加個|新增|刪掉|拿掉|那天|當天|隔天|頁面|連結/;
 export const aboutTrip = (text) => TRIP_TOPIC_RE.test(String(text || '').normalize('NFKC'));
 
 async function tripContext(chatId, text) {
@@ -365,7 +372,11 @@ async function handleTrip(chatId, parsed, trigger) {
 export function shotKeysOf(ops) {
   const keys = [];
   for (const o of ops || []) {
-    const k = o?.op === 'set_glance' ? 'glance' : (typeof o?.day === 'string' ? o.day.toUpperCase() : null);
+    const k = ['set_glance', 'add_day', 'remove_day'].includes(o?.op) ? 'glance'
+      : ['set_info', 'remove_info'].includes(o?.op) ? 'info'
+        : ['add_link', 'remove_link'].includes(o?.op) ? 'links'
+          : o?.op === 'set_meta' ? null
+            : (typeof o?.day === 'string' ? o.day.toUpperCase() : null);
     if (k && shot.sectionOf(k) && !keys.includes(k)) keys.push(k);
   }
   return keys.slice(0, 3);
@@ -578,6 +589,38 @@ async function command(match, ctx) {
   return lines.join('\n');
 }
 
+/** /小帥 新行程 <名稱> <標題>：用通用版面開一份新的，推上網站後綁到這群 */
+async function newTripCommand(match, ctx) {
+  const chatId = ctx.groupId || ctx.roomId;
+  if (!chatId) return '新行程要在群組裡開（開好會直接綁到那個群）';
+  if (!isAdmin(ctx.userId)) return '⛔ 只有管理員能開新行程';
+  if (!match[1]) return '用法：/小帥 新行程 <名稱> <標題>\n名稱用小寫英文、數字和 -，例如：\n/小帥 新行程 hokkaido-2028 2028 北海道滑雪';
+  const name = match[1].trim().toLowerCase();
+  const title = match[2].trim();
+  if (!trip.validName(name)) return '名稱只能用小寫英文、數字和 -，例如 hokkaido-2028';
+  let who = '';
+  try { who = (await lineApi.getGroupMemberProfile(chatId, ctx.userId))?.displayName || ''; } catch { /* 查不到就算了 */ }
+  const r = await trip.create(name, title, who);
+  if (!r.ok) return `沒開成：${r.error}`;
+  db.run(
+    `INSERT INTO trips (chat_id, name, updated_at) VALUES (?, ?, datetime('now','+8 hours'))
+     ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
+    chatId, name,
+  );
+  pendingEdits.delete(chatId);
+  return [
+    `✅ 新行程開好了，也綁到這個群：${r.url}`,
+    '（網頁大約一分鐘後上線）',
+    '',
+    '接下來直接叫小帥排，例如：',
+    '・小帥 新增 1/30（六）飛東京、1/31（日）岩原滑雪場',
+    '・小帥 D1 加 13:05 華航高雄出發，17:25 到成田',
+    '・小帥 住宿寫錦糸町 5 晚、青森屋 2 晚',
+    '・小帥 頁面日期寫 1/30—2/6・8 天',
+    '也可以把整份行程打成文字貼上，請小帥照著排（小帥目前看不懂圖片）；每次改都會先列出來，有人說「好」才改。',
+  ].join('\n');
+}
+
 async function tripCommand(match, ctx) {
   const chatId = ctx.groupId || ctx.roomId;
   if (!chatId) return '行程要在群組裡綁，請在群組裡打 /小帥 行程 <名稱>';
@@ -624,7 +667,8 @@ export default {
 /小帥 存 <分類> <網址> — 收藏連結（也可以叫小帥「幫我記錄運動用 <網址>」）
 /小帥 收藏 [分類] — 看收藏；/小帥 收藏 刪 #編號 — 刪掉一筆
 /小帥 開｜關 — （管理員）讓小帥進來／離開
-/小帥 行程 <名稱>｜取消 — （管理員）綁定／取消行程網頁`,
+/小帥 行程 <名稱>｜取消 — （管理員）綁定／取消行程網頁
+/小帥 新行程 <名稱> <標題> — （管理員）開一份新行程網頁並綁到這群，例如 /小帥 新行程 hokkaido-2028 2028 北海道滑雪`,
 
   commands: [
     {
@@ -653,6 +697,13 @@ export default {
         if (m[1]) return links.removeLink(chatId, m[1], ctx.userId, isAdmin(ctx.userId));
         return links.listText(chatId, m[2] || '');
       },
+    },
+    {
+      name: 'xiaoshuai-new-trip',
+      pattern: /^\/小帥\s*新行程(?:\s+(\S+)\s+(.+))?$/,
+      describe: '/小帥 新行程 <名稱> <標題> — （管理員）開新行程網頁並綁到這群',
+      type: 'query',
+      handler: newTripCommand,
     },
     {
       name: 'xiaoshuai-trip',

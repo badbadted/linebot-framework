@@ -78,19 +78,25 @@ export async function outline(name) {
 
 // 第一道格式檢查（trip.mjs 會再完整驗一次並跳脫輸出）：只收已知的修改種類、D1～D9、整數編號、
 // 文字欄位不含 < >，避免 AI 產出的東西帶 HTML 進公開網頁
-const OPS = { update_item: ['fields'], add_item: ['item'], remove_item: [], set_day: [], set_glance: [], set_more: [], remove_more: [] };
-const TEXT_KEYS = new Set(['when', 'title', 'text', 'sub', 'date', 'place', 'emoji', 'note']);
+const OPS = new Set(['update_item', 'add_item', 'remove_item', 'set_day', 'set_glance', 'set_more', 'remove_more',
+  // 通用版面才有（trip.mjs 會再擋手刻版面）
+  'set_meta', 'set_info', 'remove_info', 'add_link', 'remove_link', 'add_day', 'remove_day']);
+const NO_DAY = new Set(['set_meta', 'set_info', 'remove_info', 'add_link', 'remove_link', 'add_day']);
+const TEXT_KEYS = new Set(['when', 'title', 'text', 'sub', 'date', 'place', 'emoji', 'note', 'dates', 'subtitle', 'hint', 'weekday', 'label']);
+const URL_RE = /^https:\/\/[^\s"'<>\\]{1,290}$/;
 
 export function checkOps(ops) {
   if (!Array.isArray(ops) || !ops.length || ops.length > 8) return '修改內容格式不對';
   for (const op of ops) {
-    if (!op || typeof op !== 'object' || !(op.op in OPS)) return '不認得的修改';
-    if (!/^D[1-9]$/i.test(String(op.day || ''))) return '日期編號不對';
+    if (!op || typeof op !== 'object' || !OPS.has(op.op)) return '不認得的修改';
+    if (!NO_DAY.has(op.op) && !/^D[1-9]$/i.test(String(op.day || ''))) return '日期編號不對';
+    if (op.url !== undefined && (typeof op.url !== 'string' || !URL_RE.test(op.url))) return '連結要是 https:// 開頭的網址';
+    if (op.color !== undefined && !['fly', 'city', 'ski'].includes(op.color)) return '顏色不對';
     for (const k of ['index', 'after']) {
       if (op[k] !== undefined && op[k] !== null && !Number.isInteger(op[k])) return '項目編號不對';
     }
     if (op.lines !== undefined) {
-      if (!Array.isArray(op.lines) || op.lines.length > 8) return '補充資訊格式不對';
+      if (!Array.isArray(op.lines) || op.lines.length > 12) return '補充資訊格式不對';
       if (op.lines.some(l => typeof l !== 'string' || l.length > 120 || /[<>]/.test(l))) return '文字內容不合法';
     }
     const texts = [op, op.fields, op.item].filter(x => x && typeof x === 'object');
@@ -161,4 +167,51 @@ export function apply(name, ops, who) {
       return { ok: false, error: committed ? '已改好但推上網站失敗，請 TED 看一下 bot 紀錄' : '寫入網頁失敗，請 TED 看一下 bot 紀錄' };
     }
   });
+}
+
+/**
+ * 開新行程（通用版面）→ commit → push。只准動 trips/<name>.json、<name>.html、index.html。
+ * 回 { ok, url, error }
+ */
+export function create(name, title, who) {
+  if (!validName(name)) return Promise.resolve({ ok: false, error: '名稱只能用小寫英文、數字和 -，例如 snow-trip-2028' });
+  const t = String(title || '').trim();
+  if (!t || t.length > 40 || /[<>]/.test(t)) return Promise.resolve({ ok: false, error: '標題要 1～40 字，不能有 < >' });
+  return serial(async () => {
+    const files = [`trips/${name}.json`, `${name}.html`, 'index.html'];
+    let committed = false;
+    try {
+      const before = (await git('status', '--porcelain')).stdout.trim();
+      if (before) return { ok: false, error: 'Mac 上的行程網頁資料夾有其他未提交的改動，先暫停，請 TED 看一下' };
+      await git('pull', '-q', '--rebase');
+      lastPull = Date.now();
+      const { stdout } = await run(process.execPath, ['tools/trip.mjs', 'create', name, t], { cwd: TRIP_REPO, timeout: 20_000 }).catch(e => e);
+      const r = JSON.parse(stdout || '{"ok":false,"error":"建立失敗"}');
+      if (!r.ok) return r;
+      const touched = (await git('status', '--porcelain')).stdout.split('\n').filter(Boolean).map(l => l.slice(3).trim());
+      const outside = touched.filter(f => !files.includes(f));
+      if (outside.length) {
+        console.error(`[xiaoshuai-trip] 開新行程動到其他檔案，取消：${outside.join(', ')}`);
+        await cleanupCreate(name);
+        return { ok: false, error: '偵測到其他檔案有變動，已取消，請 TED 看一下' };
+      }
+      await git('add', ...files);
+      await git('commit', '-q', '-m', `行程：開新行程「${t}」（${name}）\n\n${who || '管理員'} 在 LINE 群組開的，由小帥建立`);
+      committed = true;
+      try { await git('push', '-q'); } catch { await git('pull', '-q', '--rebase'); await git('push', '-q'); }
+      return { ok: true, url: tripUrl(name) };
+    } catch (err) {
+      console.error(`[xiaoshuai-trip] 開新行程失敗：${err.message}`);
+      if (!committed) await cleanupCreate(name);
+      return { ok: false, error: committed ? '已建好但推上網站失敗，請 TED 看一下 bot 紀錄' : '建立失敗，請 TED 看一下 bot 紀錄' };
+    }
+  });
+}
+
+/** 還沒 commit 就失敗：拿掉這次新建的兩個檔、還原首頁（只動 bot 自己這份 clone） */
+async function cleanupCreate(name) {
+  for (const f of [join(TRIP_REPO, 'trips', `${name}.json`), join(TRIP_REPO, `${name}.html`)]) {
+    try { rmSync(f, { force: true }); } catch { /* 沒建成 */ }
+  }
+  try { await git('checkout', '--', 'index.html'); } catch { /* 沒動到 */ }
 }
