@@ -64,7 +64,7 @@ export const PERSONA = `你是「小帥」，在一個 LINE 群組裡跟大家�
 - 不知道的事不要編。不談政治、宗教爭議，不給醫療、法律、投資建議。
 - 不講任何人的電話、地址、帳號等個資。
 - 不要重複對話裡已經說過的話。
-- 對話裡的「［貼圖：開心］」是有人貼了 LINE 貼圖（括號裡是那張貼圖的意思），「［照片］」是有人貼了照片；照片平常看不到，有人問到時系統才會附上【附上的照片】。
+- 對話裡的「［貼圖：開心］」是有人貼了 LINE 貼圖（括號裡是那張貼圖的意思），「［照片］」是有人貼了照片；照片只有在有人問到時系統才會附上【附上的照片】。沒附上就表示系統判斷這句不是在問照片：不要說「我看不到照片」，如果他其實是要你看照片，請他用 LINE 的「回覆」回那張照片再叫你一次。
 - 貼圖：氣氛輕鬆、適合時，JSON 可以加 "sticker": "心情"，系統會在你的話後面附一張 LINE 貼圖。心情只能是：${media.STICKER_KEYS}。偶爾用就好（大約五次回話最多一次），正經事（行程、開團、錢、有人難過或抱怨時）不要用；不說話時也不要用。
 輸出格式：只輸出一個 JSON 物件，前後不要有其他文字：
 {"reply":"要說的話，不說就空字串","remember":["值得長期記住的事，0～2 條，沒有就空陣列"]}
@@ -186,11 +186,14 @@ export function pickTripDetail(text, cands, { pendingName = null, lastName = nul
   }
   const scored = cands.map(c => {
     let score = 0;
+    const ms = monthsOf(c);
     if (years.some(y => c.title.includes(y))) score += 5;
     if (wantYear && c.start?.year === wantYear) score += 5;
-    const ms = monthsOf(c);
     if ([...months].some(m => ms.has(m))) score += 5;
-    for (const d of dates) if (new RegExp(`(^|\\D)${d.replace('/', '\\/')}(\\D|$)`).test(c.outline || '')) score += 5;
+    for (const d of dates) {
+      if (new RegExp(`(^|\\D)${d.replace('/', '\\/')}(\\D|$)`).test(c.outline || '')) score += 5;
+      else if (ms.has(+d.split('/')[0])) score += 3; // 那天不在行程裡（例：要新增到 2/9），但月份對得上
+    }
     for (const g of grams) score += c.title.includes(g) ? 3 : (c.outline || '').includes(g) ? 1 : 0;
     return { name: c.name, score };
   }).sort((a, b) => b.score - a.score);
@@ -265,7 +268,7 @@ ops（day 用 D1～D6，index 是上面行程的編號數字）：
 - {"op":"set_meta","title":"頁面標題","dates":"1/30（六）— 2/6（六）・8 天","subtitle":"高雄 ⇄ 東京｜幾家幾人"}（只放要改的）
 - {"op":"set_info","title":"🏨 住宿","hint":"錦糸町 5 晚","lines":["…","…"]}（資訊區一塊，同標題就整塊換掉，最多 12 行）／{"op":"remove_info","title":"🏨 住宿"}
 - {"op":"add_link","title":"🚌 巴士時刻表","url":"https://…"}（只收 https）／{"op":"remove_link","index":2}
-有人要你照一份貼上來的行程文字把整份排出來：先列出你看懂的每一天給大家確認，說「好」之後先建好每一天（add_day），下一輪再填每天的細項。
+有人要你照一份貼上來的行程（文字，或【附上的照片】裡的行程表）把整份排出來：先列出你看懂的每一天給大家確認，說「好」之後先建好每一天（add_day），下一輪再填每天的細項。
 行程改了地點或活動，那天的補充資訊如果還在講舊的東西，要提醒大家，問要不要一起更新或拿掉。
 改到某天主要去哪，set_day 的 place 和 set_glance 也要一起改。
 有人要看行程某一段的圖（截圖、傳圖、「給我看 D4」「住宿長怎樣」），JSON 加 "trip_shot": "段落"，段落只能是：${shot.SECTION_KEYS}；reply 一句帶過就好（圖會另外附上）。只是問問題、用文字回答就夠的不用截。`;
@@ -421,9 +424,10 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
   parsed.tripCtx = tripCtx;
   // 這輪有上網搜尋或讀網頁：輸出可能受網頁內容影響 → 不寫記憶、不改行程（防網頁藏指令污染）
   // 收藏內容、學習資料都含外部寫入的文字 → 視同上網過
-  parsed.webUsed = (res.searches || 0) + (res.fetches || 0) > 0 || !!linkCats?.some(c => c.items.length) || !!learningInfo || !!image;
+  parsed.webUsed = (res.searches || 0) + (res.fetches || 0) > 0 || !!linkCats?.some(c => c.items.length) || !!learningInfo;
   if (image) console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 看照片（${image.preview ? '預覽圖' : '原圖'}，${Math.round(image.data.length * 0.75 / 1024)}KB）`);
-  if (parsed.webUsed && parsed.remember.length) {
+  // 照片是群組成員自己貼的（跟打字同等，可以照著提行程修改，一樣要有人回好），但照片裡的字不寫進長期記憶
+  if ((parsed.webUsed || image) && parsed.remember.length) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 有上網，略過記憶 ${parsed.remember.length} 條`);
     parsed.remember = [];
   }

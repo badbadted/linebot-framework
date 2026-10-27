@@ -2,8 +2,8 @@
  * 小帥看照片、回貼圖（2026-10-27）
  *
  * 照片：群組貼照片時只記「［照片］」與訊息 ID，不花 AI；
- *   只有被點名或接話、而且「用回覆功能回那張照片」或「講到圖片／這張…且 5 分鐘內有人貼過照片」才下載那一張給 AI 看。
- *   照片內容視同外部資料（那輪不寫記憶、不改行程）。
+ *   只有被點名或接話、而且「用回覆功能回那張照片」、「貼照片的人 5 分鐘內自己叫小帥」或「5 分鐘內有人講到圖片／這張…」才下載那一張給 AI 看。
+ *   照片是群組成員自己貼的，跟他打字同等看待：可以照著提行程修改（一樣要有人回好），但那輪不寫記憶。
  * 貼圖：只能用 LINE 開放給機器人的官方貼圖（packageId 11537 熊大兔兔），依心情挑；同一群 10 分鐘內最多一張。
  */
 
@@ -24,10 +24,16 @@ export function pickImage(transcript, trigger, now = Date.now()) {
     const q = imgs.find(t => t.imageId === String(trigger.quotedId));
     if (q) return q;
   }
-  if (!ABOUT_IMAGE_RE.test(String(trigger?.text || ''))) return null;
   const at = trigger?.ts || now;
   const recent = imgs.filter(t => at - t.ts <= IMAGE_WINDOW_MS && t.ts <= at);
-  return recent.length ? recent[recent.length - 1] : null;
+  if (!recent.length) return null;
+  const img = recent[recent.length - 1];
+  // 貼照片的人自己接著叫小帥（例：貼行程表照片後說「小帥 幫我補行程」）→ 一定是在講那張
+  if (trigger?.userId && img.userId === trigger.userId) return img;
+  // 或照片之後（含這句）有人講到圖片、這張…
+  const after = (transcript || []).filter(t => !t.self && t.ts >= img.ts && t !== img).map(t => t.text);
+  if (trigger?.text) after.push(trigger.text);
+  return after.some(x => ABOUT_IMAGE_RE.test(String(x || ''))) ? img : null;
 }
 
 /** 下載照片轉成給 AI 的格式；太大就改抓 LINE 的預覽圖；失敗回 null */

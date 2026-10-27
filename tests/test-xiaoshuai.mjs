@@ -654,4 +654,19 @@ await test('貼圖：只收清單裡的心情、同一群 10 分鐘最多一張'
   assert.equal(media.stickerMessage('GU', 'x', NOON), null);
 });
 
+await test('實際狀況：貼行程表照片後說「小帥 幫我補行程 新增到2/9」', () => {
+  const t0 = NOON;
+  const tr = [{ name: '葶', userId: 'U9', text: '［照片］', ts: t0, imageId: '999' }];
+  // 貼照片的人自己接著叫小帥 → 看那張（就算沒提到「照片」）
+  assert.equal(media.pickImage(tr, { userId: 'U9', text: '小帥 幫我補行程 新增到2/9', ts: t0 + 20_000 }).imageId, '999');
+  // 別人隔一陣子叫小帥講別的 → 不看
+  assert.equal(media.pickImage(tr, { userId: 'U1', text: '小帥 晚餐吃什麼', ts: t0 + 60_000 }), null);
+  // 別人說「照片你看不到喔」→ 看
+  assert.equal(media.pickImage(tr, { userId: 'U1', text: '照片你看不到喔', ts: t0 + 60_000 }).imageId, '999');
+  // 2/9 不在任何一份行程裡，但 2 月只有 2027 那份有 → 選 2027，不用反問
+  const xmas = { name: 'christmas-ski-trip', title: '2026 聖誕滑雪旅行', start: { year: 2026, month: 12, day: 24 }, outline: 'D1 12/24（四）｜飛東京\nD6 12/29（二）回程' };
+  const snow = { name: 'snow-trip-2027', title: '❄️ 2027 東京・青森雪國之旅 ⛷️', start: { year: 2027, month: 1, day: 30 }, outline: 'D1 1/30（六）｜飛東京\nD8 2/6（六）回程' };
+  assert.deepEqual(pickTripDetail('小帥 幫我補行程 新增到2/9', [xmas, snow], { now: Date.UTC(2026, 9, 27) }), { name: 'snow-trip-2027', how: 'match' });
+});
+
 console.log(`\n${pass} 項全部通過`);
