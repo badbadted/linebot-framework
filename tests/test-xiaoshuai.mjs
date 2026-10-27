@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import { parseReply, buildPrompt, memoryAllowed, isAffirm } from '../plugins/xiaoshuai/index.js';
+import { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -525,6 +525,14 @@ await test('行程截圖：只收固定段落', () => {
   const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { url: 'https://x/t.html', outline: 'D1', pending: null } });
   assert.ok(p.includes('"trip_shot"'));
   assert.deepEqual(shot.imageMessage({ url: 'https://a/x.jpg' }), { type: 'image', originalContentUrl: 'https://a/x.jpg', previewImageUrl: 'https://a/x.jpg' });
+});
+
+await test('改完行程附圖：找出動到哪幾段', () => {
+  assert.deepEqual(shotKeysOf([
+    { op: 'add_item', day: 'D4' }, { op: 'update_item', day: 'd4' }, { op: 'set_day', day: 'D2' }, { op: 'set_glance', day: 'D2' },
+  ]), ['D4', 'D2', 'glance']);
+  assert.deepEqual(shotKeysOf([{ op: 'add_item', day: 'D1' }, { op: 'add_item', day: 'D2' }, { op: 'add_item', day: 'D3' }, { op: 'add_item', day: 'D5' }]), ['D1', 'D2', 'D3']);
+  assert.deepEqual(shotKeysOf([{ op: 'remove_item', day: 'body' }, null]), []);
 });
 
 console.log(`\n${pass} 項全部通過`);

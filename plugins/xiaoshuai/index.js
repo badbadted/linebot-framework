@@ -350,6 +350,16 @@ async function handleTrip(chatId, parsed, trigger) {
   return shotNote + await tripEdits(chatId, parsed, trigger, ctx);
 }
 
+/** 這批修改動到哪幾段（給改完附圖用）：set_glance → 最上面那段，其他看 day；最多 3 段 */
+export function shotKeysOf(ops) {
+  const keys = [];
+  for (const o of ops || []) {
+    const k = o?.op === 'set_glance' ? 'glance' : (typeof o?.day === 'string' ? o.day.toUpperCase() : null);
+    if (k && shot.sectionOf(k) && !keys.includes(k)) keys.push(k);
+  }
+  return keys.slice(0, 3);
+}
+
 async function tripEdits(chatId, parsed, trigger, ctx) {
   const pending = pendingOf(chatId);
   if (pending && parsed.tripConfirm === true && !parsed.webUsed && isAffirm(trigger?.text)) {
@@ -357,7 +367,14 @@ async function tripEdits(chatId, parsed, trigger, ctx) {
     const r = await trip.apply(pending.name, pending.ops, trigger?.name);
     if (!r.ok) return `\n\n⚠️ 行程沒改成：${r.error}`;
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 行程已更新：${r.changes.join('；')}`);
-    return `\n\n✅ 行程改好了，大約一分鐘後網頁更新：\n${ctx.url}`;
+    // 附上改過那幾段的截圖讓大家確認（本機檔已是改好的版本，不用等網頁更新）
+    const shots = [];
+    for (const key of shotKeysOf(pending.ops)) {
+      const s = await shot.capture(await trip.pagePath(pending.name), key);
+      if (s.ok) shots.push(shot.imageMessage(s));
+    }
+    if (shots.length) parsed.images = [...(parsed.images || []), ...shots].slice(0, 4);
+    return `\n\n✅ 行程改好了${shots.length ? '，改過的地方附圖給大家看' : ''}，網頁大約一分鐘後更新：\n${ctx.url}`;
   }
   if (pending && parsed.tripConfirm === true) {
     // AI 認為是同意，但不是單純的同意句（或那輪有上網）→ 不改，請對方明確回「好」
