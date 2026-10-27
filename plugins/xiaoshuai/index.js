@@ -391,11 +391,15 @@ async function tripEdits(chatId, parsed, trigger, ctx) {
     return '';
   }
   if (!parsed.tripEdit) return '';
-  if (parsed.webUsed) return '\n\n（剛剛有上網查資料，為了安全這次先不改行程，要改的話請再說一次）';
+  // 那輪有上網：只准提「補充資訊框」的修改（本來就要查資料才寫得出來），其他照舊擋；
+  // 一樣只是提案，程式列出完整內容，要有人在沒上網的下一輪單純回「好」才會改
+  const webOk = parsed.tripEdit.every(o => o?.op === 'set_more' || o?.op === 'remove_more');
+  if (parsed.webUsed && !webOk) return '\n\n（剛剛有上網查資料，為了安全這次先不改行程，要改的話請再說一次）';
   const d = await trip.describe(ctx.name, parsed.tripEdit);
   if (!d.ok) return `\n\n（這樣改不了：${d.error}）`;
   pendingEdits.set(chatId, { name: ctx.name, ops: parsed.tripEdit, changes: d.changes, at: Date.now() });
-  return `\n\n📝 要改的內容：\n${d.changes.map(c => `・${c}`).join('\n')}\n說「好」我就改（15 分鐘內有效）`;
+  const fromWeb = parsed.webUsed ? '\n（內容是網路上查到的，請先看過對不對）' : '';
+  return `\n\n📝 要改的內容：\n${d.changes.map(c => `・${c}`).join('\n')}${fromWeb}\n說「好」我就改（15 分鐘內有效）`;
 }
 
 const savedText = (r) => [
