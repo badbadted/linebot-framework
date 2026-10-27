@@ -78,7 +78,7 @@ export async function outline(name) {
 
 // 第一道格式檢查（trip.mjs 會再完整驗一次並跳脫輸出）：只收已知的修改種類、D1～D9、整數編號、
 // 文字欄位不含 < >，避免 AI 產出的東西帶 HTML 進公開網頁
-const OPS = { update_item: ['fields'], add_item: ['item'], remove_item: [], set_day: [], set_glance: [] };
+const OPS = { update_item: ['fields'], add_item: ['item'], remove_item: [], set_day: [], set_glance: [], set_more: [], remove_more: [] };
 const TEXT_KEYS = new Set(['when', 'title', 'text', 'sub', 'date', 'place', 'emoji', 'note']);
 
 export function checkOps(ops) {
@@ -88,6 +88,10 @@ export function checkOps(ops) {
     if (!/^D[1-9]$/i.test(String(op.day || ''))) return '日期編號不對';
     for (const k of ['index', 'after']) {
       if (op[k] !== undefined && op[k] !== null && !Number.isInteger(op[k])) return '項目編號不對';
+    }
+    if (op.lines !== undefined) {
+      if (!Array.isArray(op.lines) || op.lines.length > 8) return '補充資訊格式不對';
+      if (op.lines.some(l => typeof l !== 'string' || l.length > 120 || /[<>]/.test(l))) return '文字內容不合法';
     }
     const texts = [op, op.fields, op.item].filter(x => x && typeof x === 'object');
     for (const obj of texts) {

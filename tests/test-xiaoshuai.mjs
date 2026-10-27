@@ -307,6 +307,9 @@ await test('行程修改的格式第一道檢查', () => {
   assert.equal(checkOps([{ op: 'remove_item', day: 'D4', index: 3 }]), null);
   assert.equal(checkOps([{ op: 'add_item', day: 'D5', after: 2, item: { when: '15:00', title: '回飯店休息' } }]), null);
   assert.ok(checkOps([{ op: 'add_item', day: 'D5', item: { title: '<img src=x onerror=alert(1)>' } }]));
+  assert.equal(checkOps([{ op: 'set_more', day: 'D2', title: '晴空塔聖誕市集資訊', lines: ['📍 晴空塔城'] }, { op: 'remove_more', day: 'D3' }]), null);
+  assert.ok(checkOps([{ op: 'set_more', day: 'D2', title: 'x', lines: ['<script>'] }]));
+  assert.ok(checkOps([{ op: 'set_more', day: 'D2', title: 'x', lines: 'abc' }]));
   assert.ok(checkOps([{ op: 'exec', day: 'D1' }]));
   assert.ok(checkOps([{ op: 'remove_item', day: 'D1; rm', index: 1 }]));
   assert.ok(checkOps([{ op: 'remove_item', day: 'D1', index: '1' }]));
