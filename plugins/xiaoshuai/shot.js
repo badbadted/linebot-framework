@@ -28,10 +28,13 @@ export function sectionOf(key) {
   if (d) return { sel: `#d${d[1]}`, label: `D${d[1]}` };
   if (k === 'glance') return { sel: '.glance', label: '這幾天要去哪' };
   if (k === 'info') return { sel: 'xpath=//h2[contains(., "住宿")]/..', label: '住宿・交通・成員' };
+  if (k === 'stay') return { sel: 'xpath=//details[summary[contains(., "住宿")]]', label: '住宿資訊' };
+  if (k === 'transport') return { sel: 'xpath=//details[summary[contains(., "交通")]]', label: '交通' };
+  if (k === 'members') return { sel: 'xpath=//details[summary[contains(., "成員")]]', label: '成員' };
   if (k === 'links') return { sel: 'xpath=//h2[contains(., "實用連結")]/..', label: '實用連結' };
   return null;
 }
-export const SECTION_KEYS = 'glance（最上面「這幾天要去哪」）、D1～D9（每天的行程）、info（住宿・交通・成員）、links（實用連結・勸敗清單）';
+export const SECTION_KEYS = 'glance（最上面「這幾天要去哪」）、D1～D9（每天的行程）、info（住宿・交通・成員整段）、stay（住宿資訊）、transport（機場交通）、members（成員）、links（實用連結・勸敗清單）';
 
 let browser = null;
 let idleTimer = null;
@@ -84,6 +87,8 @@ async function doCapture(htmlPath, sec) {
     await page.evaluate(() => document.fonts?.ready).catch(() => {});
     const el = page.locator(sec.sel).first();
     if (!(await el.count())) return { ok: false, error: `網頁上找不到「${sec.label}」` };
+    // 收合的區塊（<details>）全部打開再截，不然只會截到標題
+    await el.evaluate((n) => { if (n.tagName === 'DETAILS') n.open = true; n.querySelectorAll('details').forEach(d => { d.open = true; }); });
     await el.scrollIntoViewIfNeeded();
     const box = await el.boundingBox();
     if (!box) return { ok: false, error: `「${sec.label}」沒有顯示出來` };

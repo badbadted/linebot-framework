@@ -518,6 +518,7 @@ await test('行程截圖：只收固定段落', () => {
   assert.equal(shot.sectionOf('D4').sel, '#d4');
   assert.equal(shot.sectionOf('glance').label, '這幾天要去哪');
   assert.ok(shot.sectionOf('info').sel.includes('住宿'));
+  assert.equal(shot.sectionOf('members').label, '成員');
   for (const bad of ['D0', 'd10', '#d4', 'body', 'https://evil.example', '']) assert.equal(shot.sectionOf(bad), null);
   assert.equal(parseReply('{"reply":"給你","trip_shot":"D2"}', 'mention').tripShot, 'D2');
   assert.equal(parseReply('{"reply":"給你","trip_shot":"script"}', 'mention').tripShot, null);
