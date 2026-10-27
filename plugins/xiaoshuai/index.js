@@ -70,7 +70,8 @@ export const PERSONA = `你是「小帥」，在一個 LINE 群組裡跟大家�
 {"reply":"要說的話，不說就空字串","remember":["值得長期記住的事，0～2 條，沒有就空陣列"]}
 remember：只記「已經定案、之後會用到」的事，就算這次不說話也要記；一條一件事，寫清楚是誰、什麼事。已經在記憶裡的不要重複記。
 - 該記（格式範例，不是真的記憶）：「1/18 尾牙訂在信義區火鍋店」「小美不吃牛」「露營決定帶兩頂帳篷」「阿傑週五負責買飲料」
-- 不該記：天氣、心情、玩笑、問句（「阿豪在問幾點到機場」）、還沒決定的事、電話地址等個資`;
+- 不該記：天氣、心情、玩笑、問句（「阿豪在問幾點到機場」）、還沒決定的事、電話地址等個資
+- 例外：大家在統計、收名單（誰要去、幾大幾小、誰帶什麼）時，每次有人加入、改人數或退出，就記一條「【項目】目前完整名單和總數」，項目名稱每次都要一模一樣（例：「【teamLab 12/29 人數】品岑家 2大1小、葶 1大1小，共 3大2小」），系統會用新的蓋掉舊的；回覆時也照這條的最新名單講，不要漏掉之前的人。統計結束（訂好了、取消了）就記一條定案的結果。`;
 
 const SITUATION = {
   mention: '有人在叫你，一定要回話，reply 不可以是空字串。最重要的是回應【叫你的那句】；前面的對話只是背景，不要跳去回別的話題。',
@@ -95,6 +96,17 @@ function initDb() {
       created_at TEXT DEFAULT (datetime('now','+8 hours'))
     );
     CREATE INDEX IF NOT EXISTS idx_mem_chat ON memories(chat_id);
+    CREATE TABLE IF NOT EXISTS chat_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      user_id TEXT NOT NULL DEFAULT '',
+      text TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      self INTEGER NOT NULL DEFAULT 0,
+      image_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_log ON chat_log(chat_id, id);
     CREATE TABLE IF NOT EXISTS sent (
       message_id TEXT PRIMARY KEY,
       chat_id TEXT NOT NULL,
@@ -142,6 +154,30 @@ function rememberSent(chatId, res, text) {
 }
 
 /** 被回覆的是不是小帥說的話；是就回傳那句話，不是回傳 null */
+// ── 最近對話存 DB：bot 重開（部署）後還記得剛剛在聊什麼（2026-10-27 統計 teamLab 人數到一半重開就忘了） ──
+const LOG_KEEP = 40;                    // 每群留最近幾則（brain 只用 30）
+const LOG_RESTORE_MS = 24 * 3600_000;   // 重開時只還原一天內的
+
+function saveLog(chatId, item) {
+  if (!db) return;
+  const r = db.run('INSERT INTO chat_log (chat_id, name, user_id, text, ts, self, image_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    chatId, item.name || '', item.userId || '', String(item.text).slice(0, 1000), item.ts, item.self ? 1 : 0, item.imageId || null);
+  item.logId = r?.lastInsertRowid;
+  db.run('DELETE FROM chat_log WHERE chat_id = ? AND id NOT IN (SELECT id FROM chat_log WHERE chat_id = ? ORDER BY id DESC LIMIT ?)', chatId, chatId, LOG_KEEP);
+}
+
+function restoreLogs() {
+  let n = 0;
+  for (const chatId of enabled) {
+    const rows = db.all('SELECT * FROM (SELECT * FROM chat_log WHERE chat_id = ? AND ts > ? ORDER BY id DESC LIMIT 30) ORDER BY id', chatId, Date.now() - LOG_RESTORE_MS);
+    for (const r of rows) {
+      brain.observe(chatId, { name: r.name, userId: r.user_id, text: r.text, ts: r.ts, self: !!r.self, imageId: r.image_id }, { restoring: true });
+      n++;
+    }
+  }
+  if (n) console.log(`[xiaoshuai] 還原最近對話 ${n} 則`);
+}
+
 function quotedSelf(event) {
   const id = event?.message?.quotedMessageId;
   if (!id || !db) return null;
@@ -229,21 +265,31 @@ const MEMORY_REJECT = [
   /[\d一二三四五六七八九十百千〇零兩]+\s*[段巷弄號号樓楼室丁目番地]/,
 ];
 
+// 「【項目】內容」：還在進行中的統計、名單（例：【teamLab 12/29 人數】…），同一項目每次整條覆蓋
+const MEMORY_KEY_RE = /^【([^【】]{1,16})】/;
+const MEMORY_KEYED_MAX_CHARS = 150;
+
 export function memoryAllowed(text) {
   // 先統一成半形（全形數字、全形英文、全形句點），避免用全形字繞過
   const t = String(text).normalize('NFKC');
-  if (Array.from(t).length > MEMORY_MAX_CHARS) return false;
+  const max = MEMORY_KEY_RE.test(String(text)) ? MEMORY_KEYED_MAX_CHARS : MEMORY_MAX_CHARS;
+  if (Array.from(t).length > max) return false;
   return !MEMORY_REJECT.some(re => re.test(t));
 }
 
-function addMemories(chatId, items) {
+export function addMemories(chatId, items) {
   const existing = new Set(listMemories(chatId).map(m => m.content));
   const fresh = items
     .filter(x => typeof x === 'string')
-    .map(x => x.trim().slice(0, 100))
+    .map(x => x.trim().slice(0, 200))
     .filter(x => x && !existing.has(x) && memoryAllowed(x))
     .slice(0, MEMORY_PER_REPLY);
-  for (const content of fresh) db.run('INSERT INTO memories (chat_id, content) VALUES (?, ?)', chatId, content);
+  for (const content of fresh) {
+    const key = MEMORY_KEY_RE.exec(content)?.[0];
+    // 同一個【項目】只留最新一條（統計人數會一直更新）
+    if (key) for (const m of listMemories(chatId)) if (m.content.startsWith(key)) db.run('DELETE FROM memories WHERE id = ?', m.id);
+    db.run('INSERT INTO memories (chat_id, content) VALUES (?, ?)', chatId, content);
+  }
   const rows = listMemories(chatId);
   for (const r of rows.slice(0, Math.max(0, rows.length - MEMORY_MAX))) {
     db.run('DELETE FROM memories WHERE id = ?', r.id);
@@ -642,13 +688,18 @@ async function think(chatId, { mode, replyToken, trigger, transcript, allowChime
 async function resolveName(chatId, userId, item) {
   if (!userId) return;
   const key = `${chatId}:${userId}`;
-  if (nameCache.has(key)) { item.name = nameCache.get(key); return; }
+  if (nameCache.has(key)) {
+    item.name = nameCache.get(key);
+    if (item.logId) db.run('UPDATE chat_log SET name = ? WHERE id = ?', item.name, item.logId);
+    return;
+  }
   try {
     // 群組成員不一定加 bot 好友，getProfile 會 404，要用群組成員端點
     const p = await lineApi.getGroupMemberProfile(chatId, userId);
     const name = p?.displayName || '';
     if (name) { nameCache.set(key, name); item.name = name; }
   } catch { /* 聊天室或查不到：維持「某人」 */ }
+  if (item.name && item.logId) db.run('UPDATE chat_log SET name = ? WHERE id = ?', item.name, item.logId);
 }
 
 function isMentioned(text, event) {
@@ -840,11 +891,12 @@ export default {
     lineApi = ctx.lineApi;
     llm = ctx.providers?.llm;
     isAdmin = ctx.isAdmin;
-    brain = createBrain({ isEnabled: (id) => enabled.has(id), onFire: think });
+    brain = createBrain({ isEnabled: (id) => enabled.has(id), onFire: think, onObserve: saveLog });
     if (!db) { console.warn('[xiaoshuai] 沒有 db provider，小帥停用'); return; }
     initDb();
     links.initLinks(db, llm);
     nj.initNjEvent(db);
+    restoreLogs();
     if (!llm?.generate) console.warn('[xiaoshuai] llm provider 沒有 generate()，小帥無法講話');
     console.log(`[xiaoshuai] 開著的群組：${enabled.size}`);
   },

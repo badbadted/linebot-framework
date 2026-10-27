@@ -43,6 +43,7 @@ export function createBrain({
   cfg = {},
   isEnabled,
   onFire,                     // async (chatId, { mode, replyToken, transcript }) => { replied: boolean, text?: string }
+  onObserve = null,           // (chatId, item) => void：每記一則就通知（小帥存進 DB，bot 重開後還記得最近對話）
   now = () => Date.now(),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
@@ -67,13 +68,14 @@ export function createBrain({
   }
 
   /** 記下一則訊息（所有群組文字都進來；/ 開頭的指令不進對話紀錄） */
-  function observe(chatId, entry) {
+  function observe(chatId, entry, { restoring = false } = {}) {
     if (!entry?.text || entry.text.trim().startsWith('/')) return null;
     const s = st(chatId);
     const item = { name: entry.name || '', userId: entry.userId || '', text: entry.text, ts: entry.ts ?? now(), self: !!entry.self };
     if (entry.imageId) item.imageId = String(entry.imageId); // 照片：之後有人問才下載來看
     s.buf.push(item);
     if (s.buf.length > c.bufferSize) s.buf.splice(0, s.buf.length - c.bufferSize);
+    if (!restoring && onObserve) { try { onObserve(chatId, item); } catch (err) { console.warn(`[xiaoshuai] onObserve：${err.message}`); } }
     return item; // 回傳參考，呼叫端可事後補上名字
   }
 

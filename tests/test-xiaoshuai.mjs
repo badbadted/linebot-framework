@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { addMemories, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -667,6 +667,31 @@ await test('實際狀況：貼行程表照片後說「小帥 幫我補行程 新
   const xmas = { name: 'christmas-ski-trip', title: '2026 聖誕滑雪旅行', start: { year: 2026, month: 12, day: 24 }, outline: 'D1 12/24（四）｜飛東京\nD6 12/29（二）回程' };
   const snow = { name: 'snow-trip-2027', title: '❄️ 2027 東京・青森雪國之旅 ⛷️', start: { year: 2027, month: 1, day: 30 }, outline: 'D1 1/30（六）｜飛東京\nD8 2/6（六）回程' };
   assert.deepEqual(pickTripDetail('小帥 幫我補行程 新增到2/9', [xmas, snow], { now: Date.UTC(2026, 9, 27) }), { name: 'snow-trip-2027', how: 'match' });
+});
+
+await test('統計名單記憶：同一【項目】覆蓋；最近對話存 DB、重開還原不重複', async () => {
+  assert.ok(memoryAllowed('【teamLab 12/29 人數】品岑家 2大1小、陳二銘 1大2小、葶 1大1小、多家 2大2小，共 6大6小'));
+  assert.ok(!memoryAllowed('品岑家 2大1小、陳二銘 1大2小、葶 1大1小、多家 2大2小，共 6大6小，恩家趕飛機不去，其他人還沒回，大家記得明天前回覆喔，訂票要先付訂金'));
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const ctx = { db, lineApi: { getGroupMemberProfile: async () => ({ displayName: '葶' }) }, providers: { llm: { generate: async () => '' } }, isAdmin: () => true };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GL', 1)");
+  await xiaoshuai.init(ctx); // 重讀開著的群
+  xiaoshuai.onGroupText({ chatId: 'GL', userId: 'U1', text: '小帥我1大1小' });
+  xiaoshuai.onGroupText({ chatId: 'GL', userId: 'U1', text: '［照片］', event: { message: { type: 'image', id: '777' } } });
+  await new Promise(r => setTimeout(r, 10)); // 等名字查回來
+  const rows = db.all('SELECT name, text, image_id FROM chat_log WHERE chat_id = ?', 'GL');
+  assert.deepEqual(rows, [{ name: '葶', text: '小帥我1大1小', image_id: null }, { name: '葶', text: '［照片］', image_id: '777' }]);
+  await xiaoshuai.init(ctx); // 模擬 bot 重開：還原，不重複寫
+  assert.equal(db.get('SELECT COUNT(*) n FROM chat_log').n, 2);
+  // 記憶：同一項目覆蓋
+  db.run("INSERT INTO memories (chat_id, content) VALUES ('GL', '【teamLab 人數】品岑家 2大1小')");
+  db.run("INSERT INTO memories (chat_id, content) VALUES ('GL', '小美不吃牛')");
+  addMemories('GL', ['【teamLab 人數】品岑家 2大1小、多家 2大2小，共 4大3小']);
+  assert.deepEqual(db.all("SELECT content FROM memories WHERE chat_id = 'GL' ORDER BY id").map(r => r.content),
+    ['小美不吃牛', '【teamLab 人數】品岑家 2大1小、多家 2大2小，共 4大3小']);
 });
 
 console.log(`\n${pass} 項全部通過`);
