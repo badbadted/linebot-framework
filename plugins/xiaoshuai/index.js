@@ -335,7 +335,7 @@ export function addMemories(chatId, items) {
 
 const TRIP_OPS_GUIDE = `有人明確要求改、加、刪行程時，JSON 加 "trip_edit": {"ops": [...]}，reply 用一句話說你打算怎麼改，最後問「這樣改可以嗎？」。沒人要求就不要改；看不懂要改哪裡就先反問。
 ops（day 用 D1～D6，index 是上面行程的編號數字）：
-- {"op":"update_item","day":"D2","index":3,"fields":{"when":"16:00","title":"粗體標題","text":"一般文字","sub":"小字說明"}}（只放要改的欄位，空字串＝拿掉）
+- {"op":"update_item","day":"D2","index":3,"fields":{"when":"16:00","title":"粗體標題","text":"一般文字","sub":"小字說明"}}（只放要改的欄位，空字串＝拿掉；原本小字說明（括號裡那段）的內容不要再抄進 title，不然網頁會重複出現）
 - {"op":"add_item","day":"D4","after":2,"item":{"when":"18:30","title":"燒肉晚餐","sub":"木更津站附近"}}（after＝插在第幾項後面，0＝最前面）
 - {"op":"remove_item","day":"D4","index":3}
 - {"op":"set_day","day":"D4","date":"12/27（日）","place":"🛍️ 木更津 Outlet → 🍖 燒肉"}（每日行程標題）
