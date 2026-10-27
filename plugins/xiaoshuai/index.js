@@ -343,12 +343,12 @@ ops（day 用 D1～D6，index 是上面行程的編號數字）：
 - {"op":"set_more","day":"D2","title":"晴空塔聖誕市集資訊","lines":["📍 …","🕔 …"]}（整個換掉那天的「補充資訊」收合框，最多 8 行、每行 80 字；資訊要上網查確實再寫）
 - {"op":"remove_more","day":"D2"}（拿掉那天的補充資訊）
 行程表第一行寫「通用版面」的，另外還能用（手刻版面不能用，會被擋）：
-- {"op":"add_day","after":2,"date":"1/30","weekday":"六","emoji":"⛷️","place":"岩原滑雪場","note":"晚上：東京巨蛋點燈","color":"ski"}（新增一天；after＝插在第幾天後面，不給就加在最後；color：fly 交通日／city 城市／ski 雪場戶外；加完後面的天數會重新編號，同一批 ops 裡要加那天的行程，請下次再加）
+- {"op":"add_day","after":2,"date":"1/30","weekday":"六","emoji":"⛷️","place":"岩原滑雪場","note":"晚上：東京巨蛋點燈","color":"ski"}（新增一天；after＝插在第幾天後面，不給就加在最後；color：fly 交通日／city 城市／ski 雪場戶外；插在中間時後面的天數會往後重新編號）
 - {"op":"remove_day","day":"D3"}（刪掉一整天，後面往前遞補）
 - {"op":"set_meta","title":"頁面標題","dates":"1/30（六）— 2/6（六）・8 天","subtitle":"高雄 ⇄ 東京｜幾家幾人"}（只放要改的）
 - {"op":"set_info","title":"🏨 住宿","hint":"錦糸町 5 晚","lines":["…","…"]}（資訊區一塊，同標題就整塊換掉，最多 12 行）／{"op":"remove_info","title":"🏨 住宿"}
 - {"op":"add_link","title":"🚌 巴士時刻表","url":"https://…"}（只收 https）／{"op":"remove_link","index":2}
-有人要你照一份貼上來的行程（文字，或【附上的照片】裡的行程表）把整份排出來：先列出你看懂的每一天給大家確認，說「好」之後先建好每一天（add_day），下一輪再填每天的細項。
+有人要你照一份貼上來的行程（文字，或【附上的照片】裡的行程表）排進去：直接在這次的 JSON 給出 trip_edit（新增的天用 add_day，加在最後的話它的編號就是現有天數＋1，同一批就能接著 add_item 填細項；原本的天有變也一起改），系統會把完整修改列出來給大家確認、有人回「好」才改，所以不要只用文字問「對的話說好」而不給 trip_edit。看不清楚或跟現有行程衝突的地方，在 reply 說明你怎麼處理。一次最多 15 個修改，太多就先做前面幾天，reply 說剩下的下一輪再補。
 行程改了地點或活動，那天的補充資訊如果還在講舊的東西，要提醒大家，問要不要一起更新或拿掉。
 改到某天主要去哪，set_day 的 place 和 set_glance 也要一起改。
 有人要看行程某一段的圖（截圖、傳圖、「給我看 D4」「住宿長怎樣」），JSON 加 "trip_shot": "段落"，段落只能是：${shot.SECTION_KEYS}；reply 一句帶過就好（圖會另外附上）。只是問問題、用文字回答就夠的不用截。`;
@@ -464,7 +464,9 @@ async function tripContext(chatId, text) {
   if (!names.length) return null;
   const pending = pendingOf(chatId);
   const infos = names.map(n => trip.info(n) || { name: n, title: n, start: null });
-  if (!pending && !aboutTrip(text)) return { brief: true, all: infos.map(i => ({ title: i.title, url: trip.tripUrl(i.name) })) };
+  const lastT = lastTrip.get(chatId);
+  const tripRecent = lastT && Date.now() - lastT.at < LAST_TRIP_MS;
+  if (!pending && !tripRecent && !aboutTrip(text)) return { brief: true, all: infos.map(i => ({ title: i.title, url: trip.tripUrl(i.name) })) };
   const cands = await Promise.all(infos.map(async i => ({ ...i, outline: names.length > 1 ? await trip.outline(i.name) : '' })));
   const last = lastTrip.get(chatId);
   const pick = pickTripDetail(text, cands, { pendingName: pending?.name, lastName: last && Date.now() - last.at < LAST_TRIP_MS ? last.name : null });

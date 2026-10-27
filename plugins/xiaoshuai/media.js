@@ -28,8 +28,10 @@ export function pickImage(transcript, trigger, now = Date.now()) {
   const recent = imgs.filter(t => at - t.ts <= IMAGE_WINDOW_MS && t.ts <= at);
   if (!recent.length) return null;
   const img = recent[recent.length - 1];
-  // 貼照片的人自己接著叫小帥（例：貼行程表照片後說「小帥 幫我補行程」）→ 一定是在講那張
-  if (trigger?.userId && img.userId === trigger.userId) return img;
+  // 貼照片的人自己接著叫小帥（例：貼行程表照片後說「小帥 幫我補行程」）→ 一定是在講那張；
+  // 小帥看過、回過之後就不再每句都重看（它的回覆已經寫下照片內容，要再看請講到「照片、這張」或用回覆）
+  const answered = (transcript || []).some(t => t.self && t.ts > img.ts);
+  if (!answered && trigger?.userId && img.userId === trigger.userId) return img;
   // 或照片之後（含這句）有人講到圖片、這張…
   const after = (transcript || []).filter(t => !t.self && t.ts >= img.ts && t !== img).map(t => t.text);
   if (trigger?.text) after.push(trigger.text);

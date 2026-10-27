@@ -88,7 +88,7 @@ export async function outline(name) {
   }
 }
 
-// 第一道格式檢查（trip.mjs 會再完整驗一次並跳脫輸出）：只收已知的修改種類、D1～D9、整數編號、
+// 第一道格式檢查（trip.mjs 會再完整驗一次並跳脫輸出）：只收已知的修改種類、D1～D20、整數編號、
 // 文字欄位不含 < >，避免 AI 產出的東西帶 HTML 進公開網頁
 const OPS = new Set(['update_item', 'add_item', 'remove_item', 'set_day', 'set_glance', 'set_more', 'remove_more',
   // 通用版面才有（trip.mjs 會再擋手刻版面）
@@ -98,10 +98,10 @@ const TEXT_KEYS = new Set(['when', 'title', 'text', 'sub', 'date', 'place', 'emo
 const URL_RE = /^https:\/\/[^\s"'<>\\]{1,290}$/;
 
 export function checkOps(ops) {
-  if (!Array.isArray(ops) || !ops.length || ops.length > 8) return '修改內容格式不對';
+  if (!Array.isArray(ops) || !ops.length || ops.length > 15) return '修改內容格式不對';
   for (const op of ops) {
     if (!op || typeof op !== 'object' || !OPS.has(op.op)) return '不認得的修改';
-    if (!NO_DAY.has(op.op) && !/^D[1-9]$/i.test(String(op.day || ''))) return '日期編號不對';
+    if (!NO_DAY.has(op.op) && !/^D(?:[1-9]|1\d|20)$/i.test(String(op.day || ''))) return '日期編號不對';
     if (op.url !== undefined && (typeof op.url !== 'string' || !URL_RE.test(op.url))) return '連結要是 https:// 開頭的網址';
     if (op.color !== undefined && !['fly', 'city', 'ski'].includes(op.color)) return '顏色不對';
     for (const k of ['index', 'after']) {

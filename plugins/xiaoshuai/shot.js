@@ -2,7 +2,7 @@
  * 小帥截行程網頁的某一段回成圖片（2026-10-27）
  *
  * 只截「這個群綁定的行程網頁」（本機 temp-reports clone 的檔案，不吃任何外部網址），
- * 段落只能從固定清單選（這幾天要去哪、D1～D9、住宿交通、實用連結），AI 給不了選擇器。
+ * 段落只能從固定清單選（這幾天要去哪、D1～D20、住宿交通、實用連結），AI 給不了選擇器。
  * 圖存在 public/shots/<隨機 32 碼>.jpg，經 bot 對外網址給 LINE 抓；3 天後自動刪。
  * 瀏覽器用 Mac 上的 Google Chrome（playwright-core 驅動），閒置 2 分鐘就關。
  */
@@ -24,7 +24,7 @@ const MAX_CSS_HEIGHT = 3000; // 太長的段落截上面這段就好（LINE 圖�
 /** 能截的段落（key → 選擇器、給人看的名稱） */
 export function sectionOf(key) {
   const k = String(key || '').trim().toLowerCase();
-  const d = /^d([1-9])$/.exec(k);
+  const d = /^d([1-9]|1\d|20)$/.exec(k);
   if (d) return { sel: `#d${d[1]}`, label: `D${d[1]}` };
   if (k === 'glance') return { sel: '.glance', label: '這幾天要去哪' };
   if (k === 'info') return { sel: '.info-section', label: '住宿・交通・資訊' };
@@ -34,7 +34,7 @@ export function sectionOf(key) {
   if (k === 'links') return { sel: '.links-section', label: '實用連結' };
   return null;
 }
-export const SECTION_KEYS = 'glance（最上面「這幾天要去哪」）、D1～D9（每天的行程）、info（住宿・交通・成員整段）、stay（住宿資訊）、transport（機場交通）、members（成員）、links（實用連結・勸敗清單）';
+export const SECTION_KEYS = 'glance（最上面「這幾天要去哪」）、D1～D20（每天的行程）、info（住宿・交通・成員整段）、stay（住宿資訊）、transport（機場交通）、members（成員）、links（實用連結・勸敗清單）';
 
 let browser = null;
 let idleTimer = null;

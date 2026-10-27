@@ -315,7 +315,9 @@ await test('行程修改的格式第一道檢查', () => {
   assert.ok(checkOps([{ op: 'remove_item', day: 'D1; rm', index: 1 }]));
   assert.ok(checkOps([{ op: 'remove_item', day: 'D1', index: '1' }]));
   assert.ok(checkOps([{ op: 'set_glance', day: 'D1', note: 'x'.repeat(121) }]));
-  assert.ok(checkOps(Array(9).fill({ op: 'remove_item', day: 'D1', index: 1 })));
+  assert.ok(checkOps(Array(16).fill({ op: 'remove_item', day: 'D1', index: 1 })));
+  assert.equal(checkOps([{ op: 'add_item', day: 'D11', item: { title: '青森機場' } }]), null);
+  assert.ok(checkOps([{ op: 'add_item', day: 'D21', item: { title: 'x' } }]));
   assert.ok(checkOps([]));
 });
 
@@ -523,7 +525,7 @@ await test('行程截圖：只收固定段落', () => {
   assert.equal(shot.sectionOf('glance').label, '這幾天要去哪');
   assert.equal(shot.sectionOf('info').sel, '.info-section');
   assert.equal(shot.sectionOf('members').label, '成員');
-  for (const bad of ['D0', 'd10', '#d4', 'body', 'https://evil.example', '']) assert.equal(shot.sectionOf(bad), null);
+  for (const bad of ['D0', 'd21', '#d4', 'body', 'https://evil.example', '']) assert.equal(shot.sectionOf(bad), null);
   assert.equal(parseReply('{"reply":"給你","trip_shot":"D2"}', 'mention').tripShot, 'D2');
   assert.equal(parseReply('{"reply":"給你","trip_shot":"script"}', 'mention').tripShot, null);
   const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { url: 'https://x/t.html', outline: 'D1', pending: null } });
@@ -720,6 +722,18 @@ await test('小帥自己說過的話：擠出最近對話後仍附上（連同�
   assert.ok(p.includes('小帥（你）：收到，目前品岑家 2大1小'));
   // 超過一天的不給
   assert.deepEqual(ownHistory('GO', transcript, now + 2 * 86400_000), []);
+});
+
+await test('照片：小帥回過之後，同一人再講話不會每句都重看；D10 以後的天也截得到', () => {
+  const t0 = NOON;
+  const tr = [
+    { name: '葶', userId: 'U9', text: '［照片］', ts: t0, imageId: '999' },
+    { name: '小帥', self: true, text: '我看到的是 2/4 到 2/9…', ts: t0 + 20_000 },
+  ];
+  assert.equal(media.pickImage(tr, { userId: 'U9', text: '剛眼睛還沒開', ts: t0 + 60_000 }), null);
+  assert.equal(media.pickImage(tr, { userId: 'U9', text: '照這張改', ts: t0 + 60_000 }).imageId, '999');
+  assert.equal(shot.sectionOf('D11').sel, '#d11');
+  assert.equal(shot.sectionOf('D21'), null);
 });
 
 console.log(`\n${pass} 項全部通過`);
