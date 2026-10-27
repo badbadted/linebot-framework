@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -589,6 +589,14 @@ await test('一個群綁多份行程：判斷在講哪一份', () => {
   assert.equal(pickTrip('小帥 明年那趟', c, { now }), 'snow-trip-2027');
   assert.equal(pickTrip('小帥 一月的行程', c, { lastName: 'christmas-ski-trip', now }), 'snow-trip-2027');
   assert.ok(aboutTrip('小帥 一月那趟呢'));
+  // 看不出是哪一份 → guess（小帥會改成主動問）；有線索、接著剛剛的、只有一份都不是 guess
+  assert.equal(pickTripDetail('小帥 D3 晚上呢', c, { now }).how, 'guess');
+  assert.equal(pickTripDetail('小帥 D3 晚上呢', c, { lastName: 'snow-trip-2027', now }).how, 'last');
+  assert.equal(pickTripDetail('小帥 青森屋', c, { now }).how, 'match');
+  assert.equal(pickTripDetail('小帥 D3', [snow], { now }).how, 'only');
+  const amb = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { ambiguous: true, all: [{ title: '2026 聖誕滑雪旅行', when: '2026/12/24 出發' }, { title: '2027 青森', when: '2027/1/30 出發' }] } });
+  assert.ok(amb.includes('【這個群綁了好幾份行程】「2026 聖誕滑雪旅行」（2026/12/24 出發）、「2027 青森」（2027/1/30 出發）'));
+  assert.ok(!amb.includes('"trip_edit"'));
 });
 
 await test('舊的一群一份綁定只搬一次（取消後重開不會復活）', async () => {

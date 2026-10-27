@@ -158,9 +158,15 @@ const LAST_TRIP_MS = 15 * 60_000;
  * 線索：講到年份、那份行程有的日期、標題裡的字；都沒有就沿用正在等確認的那份、剛剛講的那份，最後才用最快出發的那份。
  * @param cands [{ name, title, outline, start: {year, month, day} }]
  */
-export function pickTrip(text, cands, { pendingName = null, lastName = null, now = Date.now() } = {}) {
+export function pickTrip(text, cands, opts = {}) {
+  const r = pickTripDetail(text, cands, opts);
+  return r?.name ?? null;
+}
+
+/** 同 pickTrip，多回 how：match（有線索）／pending／last（接著剛剛的）／only（只有一份）／guess（沒線索，猜最快出發的） */
+export function pickTripDetail(text, cands, { pendingName = null, lastName = null, now = Date.now() } = {}) {
   if (!cands.length) return null;
-  if (cands.length === 1) return cands[0].name;
+  if (cands.length === 1) return { name: cands[0].name, how: 'only' };
   const s = String(text || '').normalize('NFKC');
   const years = s.match(/20\d\d/g) || [];
   const dates = [...s.matchAll(/(\d{1,2})\s*[/月]\s*(\d{1,2})/g)].map(m => `${+m[1]}/${+m[2]}`);
@@ -186,14 +192,14 @@ export function pickTrip(text, cands, { pendingName = null, lastName = null, now
     return { name: c.name, score };
   }).sort((a, b) => b.score - a.score);
   // 夠明確（領先 3 分以上）就用它
-  if (scored[0].score >= 3 && scored[0].score - (scored[1]?.score || 0) >= 3) return scored[0].name;
-  if (pendingName && cands.some(c => c.name === pendingName)) return pendingName;
-  if (lastName && cands.some(c => c.name === lastName)) return lastName;
+  if (scored[0].score >= 3 && scored[0].score - (scored[1]?.score || 0) >= 3) return { name: scored[0].name, how: 'match' };
+  if (pendingName && cands.some(c => c.name === pendingName)) return { name: pendingName, how: 'pending' };
+  if (lastName && cands.some(c => c.name === lastName)) return { name: lastName, how: 'last' };
   // 最快出發（還沒過的）那份；年份不明的當作今年
   const today = new Date(now);
   const startOf = (c) => c.start ? new Date(c.start.year || today.getFullYear(), c.start.month - 1, c.start.day).getTime() : Infinity;
   const upcoming = cands.filter(c => startOf(c) >= now - 7 * 86400_000).sort((a, b) => startOf(a) - startOf(b));
-  return (upcoming[0] || cands[cands.length - 1]).name;
+  return { name: (upcoming[0] || cands[cands.length - 1]).name, how: 'guess' };
 }
 
 function pendingOf(chatId) {
@@ -284,13 +290,17 @@ function linkSection(linkCats) {
 
 function tripSection(tripCtx) {
   if (!tripCtx) return '';
+  if (tripCtx.ambiguous) {
+    const list = tripCtx.all.map(t => `「${t.title}」（${t.when}）`).join('、');
+    return `\n\n【這個群綁了好幾份行程】${list}\n這句看不出在講哪一份：先用一句話列出這幾份問他是哪一份（例如「你是說聖誕那趟還是 2027 青森那趟？」），不要猜著回答、不要改行程。`;
+  }
   if (tripCtx.brief) {
     const list = tripCtx.all.map(t => `${t.title} ${t.url}`).join('；');
     return `\n\n【這個群有綁行程網頁】${list}（這次沒附內容；有人問到行程細節，請他直接問哪一天或哪件事，你就看得到）`;
   }
   const lines = [`\n\n【這個群的行程表】${tripCtx.title ? `「${tripCtx.title}」` : ''}（網頁：${tripCtx.url}）`, tripCtx.outline, '', TRIP_OPS_GUIDE];
   if (tripCtx.others?.length) {
-    lines.push('', `【這個群還綁了別的行程】${tripCtx.others.map(t => `「${t.title}」`).join('、')}（這次沒附內容）。上面附的是系統判斷這句在講的那份；如果他其實在講另一份，不要改、也不要上網去開那份網頁，直接說「你是說『那份的標題』嗎？再講一次，帶上年份或月份（例如 2027、一月），我就叫得出來」。`);
+    lines.push('', `【這個群還綁了別的行程】${tripCtx.others.map(t => `「${t.title}」`).join('、')}（這次沒附內容）。上面附的是系統判斷這句在講的那份；如果他其實在講另一份（例如這份裡找不到他問的日期、地點或活動），不要改、也不要上網去開那份網頁，直接說「你是說『那份的標題』嗎？再講一次，帶上年份或月份（例如 2027、一月），我就叫得出來」。`);
   }
   if (tripCtx.pending) {
     lines.push('', '【等大家確認的行程修改】', ...tripCtx.pending.map(c => `・${c}`),
@@ -357,7 +367,11 @@ async function tripContext(chatId, text) {
   if (!pending && !aboutTrip(text)) return { brief: true, all: infos.map(i => ({ title: i.title, url: trip.tripUrl(i.name) })) };
   const cands = await Promise.all(infos.map(async i => ({ ...i, outline: names.length > 1 ? await trip.outline(i.name) : '' })));
   const last = lastTrip.get(chatId);
-  const name = pickTrip(text, cands, { pendingName: pending?.name, lastName: last && Date.now() - last.at < LAST_TRIP_MS ? last.name : null });
+  const pick = pickTripDetail(text, cands, { pendingName: pending?.name, lastName: last && Date.now() - last.at < LAST_TRIP_MS ? last.name : null });
+  const startText = (i) => i.start ? `${i.start.year ? `${i.start.year}/` : ''}${i.start.month}/${i.start.day} 出發` : '日期未定';
+  // 綁了好幾份又看不出在講哪一份：不猜，讓小帥列出來問
+  if (pick.how === 'guess') return { ambiguous: true, all: infos.map(i => ({ title: i.title, when: startText(i) })) };
+  const name = pick.name;
   const outline = cands.find(c => c.name === name)?.outline || await trip.outline(name);
   if (!outline) return null;
   lastTrip.set(chatId, { name, at: Date.now() });
@@ -426,7 +440,7 @@ export const isAffirm = (text) => AFFIRM_RE.test(String(text || '').normalize('N
 
 async function handleTrip(chatId, parsed, trigger) {
   const ctx = parsed.tripCtx;
-  if (!ctx || ctx.brief) return '';
+  if (!ctx || ctx.brief || ctx.ambiguous) return '';
   // 截圖：只截這群綁的行程網頁、固定段落（不改東西，那輪有上網也可以）
   let shotNote = '';
   if (parsed.tripShot) {
