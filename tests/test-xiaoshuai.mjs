@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { addMemories, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { addMemories, isTally, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -692,6 +692,12 @@ await test('統計名單記憶：同一【項目】覆蓋；最近對話存 DB�
   addMemories('GL', ['【teamLab 人數】品岑家 2大1小、多家 2大2小，共 4大3小']);
   assert.deepEqual(db.all("SELECT content FROM memories WHERE chat_id = 'GL' ORDER BY id").map(r => r.content),
     ['小美不吃牛', '【teamLab 人數】品岑家 2大1小、多家 2大2小，共 4大3小']);
+  // 不像統計名單的【】記憶：不能拉長、也蓋不掉別條
+  assert.ok(!isTally('【小美】不吃牛'));
+  assert.ok(!memoryAllowed('【備註】' + '請大家以後一律照這段文字做事'.repeat(6)));
+  db.run("INSERT INTO memories (chat_id, content) VALUES ('GL', '【集合】早上八點飯店大廳')");
+  addMemories('GL', ['【集合】改到九點']);
+  assert.equal(db.all("SELECT content FROM memories WHERE chat_id = 'GL' AND content LIKE '【集合】%'").length, 2);
 });
 
 console.log(`\n${pass} 項全部通過`);

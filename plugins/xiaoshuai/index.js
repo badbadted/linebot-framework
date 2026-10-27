@@ -268,11 +268,14 @@ const MEMORY_REJECT = [
 // 「【項目】內容」：還在進行中的統計、名單（例：【teamLab 12/29 人數】…），同一項目每次整條覆蓋
 const MEMORY_KEY_RE = /^【([^【】]{1,16})】/;
 const MEMORY_KEYED_MAX_CHARS = 150;
+// 只有真的像統計名單（有「數字＋大／小／人／位…」）才算，其他照一般記憶處理（60 字、不覆蓋）
+const TALLY_RE = /\d+\s*(大|小|人|位|個|份|台|間|張)/;
+export const isTally = (text) => MEMORY_KEY_RE.test(String(text)) && TALLY_RE.test(String(text).normalize('NFKC'));
 
 export function memoryAllowed(text) {
   // 先統一成半形（全形數字、全形英文、全形句點），避免用全形字繞過
   const t = String(text).normalize('NFKC');
-  const max = MEMORY_KEY_RE.test(String(text)) ? MEMORY_KEYED_MAX_CHARS : MEMORY_MAX_CHARS;
+  const max = isTally(text) ? MEMORY_KEYED_MAX_CHARS : MEMORY_MAX_CHARS;
   if (Array.from(t).length > max) return false;
   return !MEMORY_REJECT.some(re => re.test(t));
 }
@@ -285,9 +288,16 @@ export function addMemories(chatId, items) {
     .filter(x => x && !existing.has(x) && memoryAllowed(x))
     .slice(0, MEMORY_PER_REPLY);
   for (const content of fresh) {
-    const key = MEMORY_KEY_RE.exec(content)?.[0];
-    // 同一個【項目】只留最新一條（統計人數會一直更新）
-    if (key) for (const m of listMemories(chatId)) if (m.content.startsWith(key)) db.run('DELETE FROM memories WHERE id = ?', m.id);
+    const key = isTally(content) ? MEMORY_KEY_RE.exec(content)[0] : null;
+    // 同一個【項目】只留最新一條（統計人數會一直更新）；只蓋同樣是統計名單的那幾條，蓋掉什麼記在 log
+    if (key) {
+      for (const m of listMemories(chatId)) {
+        if (m.content.startsWith(key) && isTally(m.content)) {
+          db.run('DELETE FROM memories WHERE id = ?', m.id);
+          console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 名單更新，蓋掉舊的：${m.content}`);
+        }
+      }
+    }
     db.run('INSERT INTO memories (chat_id, content) VALUES (?, ?)', chatId, content);
   }
   const rows = listMemories(chatId);
