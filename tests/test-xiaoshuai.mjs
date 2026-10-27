@@ -9,6 +9,7 @@ import { parseReply, buildPrompt, memoryAllowed, isAffirm } from '../plugins/xia
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
+import * as nj from '../plugins/xiaoshuai/njevent.js';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
@@ -255,13 +256,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -433,6 +434,83 @@ await test('buildPrompt 帶記憶、對話與情況', () => {
   assert.match(p, /阿庭：小帥你會滑雪嗎/);
   assert.match(p, /小帥（你）：我只會滑手機/);
   assert.match(p, /一定要回話/);
+});
+
+// 假 Firestore：users 以 doc id 為主鍵，events 記下 add 的內容
+function fakeFs(users) {
+  const added = [];
+  const col = (name) => ({
+    doc: (id) => ({ get: async () => ({ exists: name === 'users' && !!users[id], data: () => users[id] }) }),
+    where: (_f, _op, v) => ({ limit: () => ({ get: async () => {
+      const docs = Object.entries(users).filter(([, u]) => u.displayName === v).map(([id, u]) => ({ id, data: () => u }));
+      return { empty: !docs.length, size: docs.length, docs };
+    } }) }),
+    add: async (doc) => { added.push(doc); return { id: `E${added.length}` }; },
+  });
+  return { fs: { collection: col }, added };
+}
+
+await test('妞揪開團：欄位驗證、缺什麼、草稿內容', () => {
+  const now = NOON; // 台北 2026-10-25（日）
+  assert.equal(nj.todayTaipei(now), '2026-10-25');
+  let { d, problems } = nj.mergeDraft(null, { title: '大安森林公園野餐', start_date: '2026-11-08', location: '大安森林公園<script>', category: 'picnic' }, now);
+  assert.deepEqual(problems, []);
+  assert.equal(d.location, '大安森林公園script');
+  assert.deepEqual(nj.missingOf(d), ['幾點開始', '費用（免費，或大人／小孩各多少、一家多少）', '人數上限（不限也可以）']);
+  ({ d, problems } = nj.mergeDraft(d, { start_time: '10:00', fee: { mode: 'perPerson', adult: 200 }, limit: { none: true } }, now));
+  assert.deepEqual(nj.missingOf(d), []);
+  const desc = nj.describeDraft(d).join('\n');
+  assert.match(desc, /日期：11\/8（日） 10:00/);
+  assert.match(desc, /費用：大人 200 元/);
+  assert.match(desc, /人數：不限/);
+  assert.match(desc, /分類：野餐/);
+  // 過去、不存在、太遠的日期與壞時間都不收
+  ({ problems } = nj.mergeDraft(d, { start_date: '2026-10-01' }, now)); assert.equal(problems.length, 1);
+  ({ problems } = nj.mergeDraft(d, { start_date: '2026-11-31' }, now)); assert.equal(problems.length, 1);
+  ({ problems } = nj.mergeDraft(d, { start_date: '2028-01-01' }, now)); assert.equal(problems.length, 1);
+  ({ problems } = nj.mergeDraft(d, { start_time: '25:00' }, now)); assert.equal(problems.length, 1);
+  // 投票模式至少兩個候選日；不認得的分類不收
+  let v = nj.mergeDraft(null, { title: 'x', date_mode: 'voting', candidate_dates: ['2026-11-08'], category: 'hack' }, now).d;
+  assert.ok(nj.missingOf(v).some(m => m.startsWith('候選日期')));
+  assert.equal(v.category, undefined);
+  v = nj.mergeDraft(v, { candidate_dates: ['2026-11-15', '2026-11-08'] }, now).d;
+  assert.deepEqual(v.candidateDates, ['2026-11-08', '2026-11-15']);
+  const doc = nj.eventDoc({ ...v, location: '陽明山', feeMode: 'free', limitSet: true, maxAdults: 0, maxKids: 0 }, { uid: 'N1', displayName: 'TED', avatarUrl: '' }, now);
+  assert.equal(doc.status, 'voting');
+  assert.equal(doc.dateMode, 'voting');
+  assert.equal(doc.hostId, 'N1');
+  assert.equal(doc.startDate, undefined);
+});
+
+await test('妞揪開團：認人（名稱配對後記住、冒名、未核准）', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const users = { N1: { displayName: 'TED', status: 'approved', avatarUrl: 'a' }, N2: { displayName: '小美', status: 'pending' } };
+  const { fs } = fakeFs(users);
+  nj.initNjEvent(db, { firestore: async () => fs });
+  const r = await nj.resolveHost('U1', 'TED');
+  assert.ok(r.ok); assert.equal(r.user.uid, 'N1');
+  // 另一個人改名成 TED：N1 已配給 U1 → 拒絕
+  const imp = await nj.resolveHost('U9', 'TED');
+  assert.ok(!imp.ok); assert.match(imp.error, /配對給別人/);
+  // U1 改名了還是認得
+  assert.ok((await nj.resolveHost('U1', '新名字')).ok);
+  assert.match((await nj.resolveHost('U2', '小美')).error, /核准/);
+  assert.match((await nj.resolveHost('U3', '路人')).error, /請先用 LINE 登入妞揪/);
+});
+
+await test('妞揪開團：parseReply 與 prompt', () => {
+  const p = parseReply('{"reply":"好","nj_event":{"title":"野餐"},"nj_confirm":true}', 'mention');
+  assert.deepEqual(p.njEvent, { title: '野餐' });
+  assert.equal(p.njConfirm, true);
+  assert.equal(parseReply('{"reply":"好","nj_event":[1]}', 'mention').njEvent, null);
+  assert.ok(nj.aboutEvent('小帥 幫我開一團去野餐'));
+  assert.ok(!nj.aboutEvent('小帥 今天天氣如何'));
+  const s = nj.promptSection({ title: '野餐', startDate: '2026-11-08' }, NOON);
+  assert.match(s, /今天是 2026-10-25，星期日/);
+  assert.match(s, /還缺：幾點開始/);
+  assert.match(s, /"nj_confirm": true/);
 });
 
 console.log(`\n${pass} 項全部通過`);
