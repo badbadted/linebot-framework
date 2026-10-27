@@ -71,6 +71,7 @@ export function createBrain({
     if (!entry?.text || entry.text.trim().startsWith('/')) return null;
     const s = st(chatId);
     const item = { name: entry.name || '', userId: entry.userId || '', text: entry.text, ts: entry.ts ?? now(), self: !!entry.self };
+    if (entry.imageId) item.imageId = String(entry.imageId); // 照片：之後有人問才下載來看
     s.buf.push(item);
     if (s.buf.length > c.bufferSize) s.buf.splice(0, s.buf.length - c.bufferSize);
     return item; // 回傳參考，呼叫端可事後補上名字

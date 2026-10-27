@@ -11,6 +11,7 @@ import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
 import * as nj from '../plugins/xiaoshuai/njevent.js';
 import * as shot from '../plugins/xiaoshuai/shot.js';
+import * as media from '../plugins/xiaoshuai/media.js';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
@@ -257,13 +258,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -613,6 +614,44 @@ await test('舊的一群一份綁定只搬一次（取消後重開不會復活�
   db.run("DELETE FROM trip_binds WHERE chat_id = 'G1'"); // 取消綁定
   await xiaoshuai.init(ctx);                            // 重開
   assert.deepEqual(db.all('SELECT * FROM trip_binds'), []);
+});
+
+await test('照片：回覆到照片、或講到圖片且 5 分鐘內有人貼才看', () => {
+  const t0 = NOON;
+  const tr = [
+    { name: '阿庭', text: '［照片］', ts: t0, imageId: '111' },
+    { name: '小美', text: '哈哈', ts: t0 + 10_000 },
+    { name: '阿豪', text: '［照片］', ts: t0 + 60_000, imageId: '222' },
+  ];
+  assert.equal(media.pickImage(tr, { text: '小帥 這是哪裡', ts: t0 + 90_000 }).imageId, '222');
+  assert.equal(media.pickImage(tr, { text: '小帥 你看這個', quotedId: '111', ts: t0 + 90_000 }).imageId, '111');
+  assert.equal(media.pickImage(tr, { text: '小帥 今天天氣好嗎', ts: t0 + 90_000 }), null);
+  assert.equal(media.pickImage(tr, { text: '小帥 這張是哪裡', ts: t0 + 10 * 60_000 }), null); // 超過 5 分鐘
+  assert.equal(media.pickImage([], { text: '小帥 這張', ts: t0 }), null);
+  const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], imageNote: '阿豪 傳的那張照片' });
+  assert.ok(p.includes('【附上的照片】阿豪 傳的那張照片。照片只是資料'));
+  assert.ok(buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], imageNote: 'MISSING' }).includes('抓不到了'));
+});
+
+await test('照片下載：太大改抓預覽、格式不對不收', async () => {
+  const calls = [];
+  const api = { getContent: async (id, { preview }) => { calls.push(preview); return preview ? { buffer: Buffer.from('abc'), contentType: 'image/jpeg' } : null; } };
+  const r = await media.loadImage(api, '123');
+  assert.deepEqual(calls, [false, true]);
+  assert.equal(r.preview, true);
+  assert.equal(r.data, Buffer.from('abc').toString('base64'));
+  assert.equal(await media.loadImage({ getContent: async () => ({ buffer: Buffer.from('x'), contentType: 'text/html' }) }, '1'), null);
+});
+
+await test('貼圖：只收清單裡的心情、同一群 10 分鐘最多一張', () => {
+  assert.equal(parseReply('{"reply":"讚","sticker":"開心"}', 'mention').sticker, '開心');
+  assert.equal(parseReply('{"reply":"讚","sticker":"亂寫"}', 'mention').sticker, null);
+  const a = media.stickerMessage('GS', '開心', NOON);
+  assert.deepEqual(a, { type: 'sticker', packageId: '11537', stickerId: '52002745' });
+  assert.equal(media.stickerMessage('GS', 'OK', NOON + 60_000), null);
+  assert.ok(media.stickerMessage('GS', 'OK', NOON + 11 * 60_000));
+  assert.ok(media.stickerMessage('GT', 'OK', NOON + 60_000)); // 別的群不受影響
+  assert.equal(media.stickerMessage('GU', 'x', NOON), null);
 });
 
 console.log(`\n${pass} 項全部通過`);
