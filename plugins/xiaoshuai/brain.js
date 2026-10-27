@@ -28,7 +28,7 @@ export const DEFAULTS = {
   cooldownMs: 15_000,
   maxWaitMs: 20_000,
   maxDebounceMs: 8000,   // 一直有人講話時，最多延後這麼久就要開口（不然熱絡的群永遠等不到）
-  bufferSize: 30,
+  bufferSize: 50,
 };
 
 const PRIORITY = { window: 1, idle: 2, mention: 3 };

@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { addMemories, isTally, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { addMemories, isTally, ownHistory, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -698,6 +698,28 @@ await test('統計名單記憶：同一【項目】覆蓋；最近對話存 DB�
   db.run("INSERT INTO memories (chat_id, content) VALUES ('GL', '【集合】早上八點飯店大廳')");
   addMemories('GL', ['【集合】改到九點']);
   assert.equal(db.all("SELECT content FROM memories WHERE chat_id = 'GL' AND content LIKE '【集合】%'").length, 2);
+});
+
+await test('小帥自己說過的話：擠出最近對話後仍附上（連同前一句）', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  await xiaoshuai.init({ db, lineApi: {}, providers: { llm: { generate: async () => '' } }, isAdmin: () => true });
+  const now = Date.now();
+  const add = (name, text, ts, self = 0) => db.run('INSERT INTO chat_log (chat_id, name, text, ts, self) VALUES (?, ?, ?, ?, ?)', 'GO', name, text, ts, self);
+  add('葶', '小帥我1大1小', now - 3600_000);
+  add('小帥', '收到，目前品岑家 2大1小、葶 1大1小，共 3大2小', now - 3590_000, 1);
+  const recent = [];
+  for (let i = 0; i < 35; i++) { add('阿豪', `閒聊 ${i}`, now - 3000_000 + i * 1000); recent.push({ name: '阿豪', text: `閒聊 ${i}`, ts: now - 3000_000 + i * 1000 }); }
+  add('多家', '小帥 +2大2小', now - 1000);
+  const transcript = [...recent.slice(-29), { name: '多家', text: '小帥 +2大2小', ts: now - 1000 }];
+  const own = ownHistory('GO', transcript, now);
+  assert.deepEqual(own.map(o => o.text), ['小帥我1大1小', '收到，目前品岑家 2大1小、葶 1大1小，共 3大2小']);
+  const p = buildPrompt({ mode: 'mention', nowTs: now, memories: [], transcript, own });
+  assert.ok(p.includes('【你今天稍早在這群說過的話】'));
+  assert.ok(p.includes('小帥（你）：收到，目前品岑家 2大1小'));
+  // 超過一天的不給
+  assert.deepEqual(ownHistory('GO', transcript, now + 2 * 86400_000), []);
 });
 
 console.log(`\n${pass} 項全部通過`);
