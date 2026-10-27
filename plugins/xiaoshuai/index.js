@@ -164,6 +164,12 @@ export function pickTrip(text, cands, { pendingName = null, lastName = null, now
   const s = String(text || '').normalize('NFKC');
   const years = s.match(/20\d\d/g) || [];
   const dates = [...s.matchAll(/(\d{1,2})\s*[/月]\s*(\d{1,2})/g)].map(m => `${+m[1]}/${+m[2]}`);
+  // 只講月份（「一月的行程」「2月那趟」）
+  const CN = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10, 十一: 11, 十二: 12 };
+  const months = new Set([...s.matchAll(/(十[一二]?|[一二三四五六七八九]|\d{1,2})\s*月(?!\s*\d)/g)].map(m => CN[m[1]] || +m[1]).filter(m => m >= 1 && m <= 12));
+  const thisYear = new Date(now).getFullYear();
+  const wantYear = /明年/.test(s) ? thisYear + 1 : /今年/.test(s) ? thisYear : null;
+  const monthsOf = (c) => new Set([...(c.outline || '').matchAll(/^D\d+ (\d{1,2})\//gm)].map(m => +m[1]).concat(c.start ? [c.start.month] : []));
   const COMMON = new Set(['小帥', '行程', '改成', '換成', '新增', '刪掉', '拿掉', '一下', '那天', '晚上', '早上', '下午', '幾點', '時間', '可以', '我們', '大家']);
   const grams = new Set();
   for (const run of s.match(/[一-鿿぀-ヿ]{2,}/g) || []) {
@@ -172,6 +178,9 @@ export function pickTrip(text, cands, { pendingName = null, lastName = null, now
   const scored = cands.map(c => {
     let score = 0;
     if (years.some(y => c.title.includes(y))) score += 5;
+    if (wantYear && c.start?.year === wantYear) score += 5;
+    const ms = monthsOf(c);
+    if ([...months].some(m => ms.has(m))) score += 5;
     for (const d of dates) if (new RegExp(`(^|\\D)${d.replace('/', '\\/')}(\\D|$)`).test(c.outline || '')) score += 5;
     for (const g of grams) score += c.title.includes(g) ? 3 : (c.outline || '').includes(g) ? 1 : 0;
     return { name: c.name, score };
@@ -281,7 +290,7 @@ function tripSection(tripCtx) {
   }
   const lines = [`\n\n【這個群的行程表】${tripCtx.title ? `「${tripCtx.title}」` : ''}（網頁：${tripCtx.url}）`, tripCtx.outline, '', TRIP_OPS_GUIDE];
   if (tripCtx.others?.length) {
-    lines.push('', `【這個群還綁了別的行程】${tripCtx.others.map(t => `「${t.title}」`).join('、')}（這次沒附內容）。上面附的是系統判斷這句在講的那份；如果他其實在講另一份，不要改，請他講清楚是哪一份（例如帶年份或地點）。`);
+    lines.push('', `【這個群還綁了別的行程】${tripCtx.others.map(t => `「${t.title}」`).join('、')}（這次沒附內容）。上面附的是系統判斷這句在講的那份；如果他其實在講另一份，不要改、也不要上網去開那份網頁，直接說「你是說『那份的標題』嗎？再講一次，帶上年份或月份（例如 2027、一月），我就叫得出來」。`);
   }
   if (tripCtx.pending) {
     lines.push('', '【等大家確認的行程修改】', ...tripCtx.pending.map(c => `・${c}`),
@@ -337,7 +346,7 @@ export function parseReply(raw, mode) {
 }
 
 // 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
-const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\d{1,2}\s*[/／月]\s*\d{1,2}|日期|幾點|時間|住宿|住哪|飯店|民宿|交通|機場|巴士|接駁|新幹線|電車|集合|出發|回程|班機|航班|去哪|滑雪|雪場|市集|景點|行李|成員|網頁|截圖|傳圖|給我看|補充資訊|改成|換成|加一|加個|新增|刪掉|拿掉|那天|當天|隔天|頁面|連結/;
+const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\d{1,2}\s*[/／月]\s*\d{1,2}|日期|幾點|時間|住宿|住哪|飯店|民宿|交通|機場|巴士|接駁|新幹線|電車|集合|出發|回程|班機|航班|去哪|滑雪|雪場|市集|景點|行李|成員|網頁|截圖|傳圖|給我看|補充資訊|改成|換成|加一|加個|新增|刪掉|拿掉|那天|當天|隔天|頁面|連結|那趟|這趟|[一二三四五六七八九十0-9]月/;
 export const aboutTrip = (text) => TRIP_TOPIC_RE.test(String(text || '').normalize('NFKC'));
 
 async function tripContext(chatId, text) {

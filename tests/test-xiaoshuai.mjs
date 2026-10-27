@@ -582,6 +582,13 @@ await test('一個群綁多份行程：判斷在講哪一份', () => {
   assert.equal(pickTrip('小帥 D3 晚上呢', c, { now: Date.UTC(2027, 0, 10) }), 'snow-trip-2027');
   assert.equal(pickTrip('小帥 隨便', [snow], { now }), 'snow-trip-2027');
   assert.equal(pickTrip('x', [], { now }), null);
+  // 只講月份、明年（2026-10 的實際狀況：問「一月的行程」被帶到聖誕那份）
+  assert.equal(pickTrip('小帥 一月的行程表給我', c, { now }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 2月那趟住哪', c, { now }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 十二月那趟幾點出發', c, { now }), 'christmas-ski-trip');
+  assert.equal(pickTrip('小帥 明年那趟', c, { now }), 'snow-trip-2027');
+  assert.equal(pickTrip('小帥 一月的行程', c, { lastName: 'christmas-ski-trip', now }), 'snow-trip-2027');
+  assert.ok(aboutTrip('小帥 一月那趟呢'));
 });
 
 await test('舊的一群一份綁定只搬一次（取消後重開不會復活）', async () => {
