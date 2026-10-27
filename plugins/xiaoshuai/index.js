@@ -397,6 +397,7 @@ async function handleNj(chatId, parsed, trigger) {
       return '\n\n好，這團先不開了 👌';
     }
     if (draft && parsed.njConfirm === true) {
+      parsed.reply = ''; // 開成沒開成都由程式講，不讓 AI 先說「開好了」
       const missing = nj.missingOf(draft);
       if (missing.length) return `\n\n還不能開，還缺：${missing.join('、')}`;
       if (parsed.webUsed || !isAffirm(trigger?.text)) {
