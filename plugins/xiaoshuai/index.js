@@ -92,11 +92,6 @@ function initDb() {
       created_at TEXT DEFAULT (datetime('now','+8 hours'))
     );
     CREATE INDEX IF NOT EXISTS idx_mem_chat ON memories(chat_id);
-    CREATE TABLE IF NOT EXISTS trips (
-      chat_id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      updated_at TEXT DEFAULT (datetime('now','+8 hours'))
-    );
     CREATE TABLE IF NOT EXISTS sent (
       message_id TEXT PRIMARY KEY,
       chat_id TEXT NOT NULL,
@@ -104,7 +99,8 @@ function initDb() {
       created_at TEXT DEFAULT (datetime('now','+8 hours'))
     );
   `);
-  // 一個群可以綁多份行程（2026-10-27）：舊的 trips（一群一份）搬進 trip_binds，舊表留著不再寫
+  // 一個群可以綁多份行程（2026-10-27）：舊的 trips（一群一份）搬進 trip_binds 後改名留存，
+  // 只搬這一次——不然取消綁定後重開 bot，舊表又會把它搬回來
   db.exec(`
     CREATE TABLE IF NOT EXISTS trip_binds (
       chat_id TEXT NOT NULL,
@@ -112,8 +108,14 @@ function initDb() {
       updated_at TEXT DEFAULT (datetime('now','+8 hours')),
       PRIMARY KEY (chat_id, name)
     );
-    INSERT OR IGNORE INTO trip_binds (chat_id, name, updated_at) SELECT chat_id, name, updated_at FROM trips;
   `);
+  if (db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trips'")) {
+    db.exec(`
+      INSERT OR IGNORE INTO trip_binds (chat_id, name, updated_at) SELECT chat_id, name, updated_at FROM trips;
+      ALTER TABLE trips RENAME TO trips_migrated_20261027;
+    `);
+    console.log('[xiaoshuai] 行程綁定已搬到 trip_binds（舊表改名 trips_migrated_20261027）');
+  }
   for (const r of db.all('SELECT chat_id FROM groups WHERE enabled = 1')) enabled.add(r.chat_id);
 }
 

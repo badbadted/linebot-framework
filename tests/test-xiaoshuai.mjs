@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -582,6 +582,21 @@ await test('一個群綁多份行程：判斷在講哪一份', () => {
   assert.equal(pickTrip('小帥 D3 晚上呢', c, { now: Date.UTC(2027, 0, 10) }), 'snow-trip-2027');
   assert.equal(pickTrip('小帥 隨便', [snow], { now }), 'snow-trip-2027');
   assert.equal(pickTrip('x', [], { now }), null);
+});
+
+await test('舊的一群一份綁定只搬一次（取消後重開不會復活）', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  raw.exec("CREATE TABLE trips (chat_id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at TEXT); INSERT INTO trips VALUES ('G1', 'christmas-ski-trip', '2026-10-01')");
+  const ctx = { db, lineApi: {}, providers: { llm: { generate: async () => '' } }, isAdmin: () => true };
+  await xiaoshuai.init(ctx);
+  assert.deepEqual(db.all('SELECT chat_id, name FROM trip_binds'), [{ chat_id: 'G1', name: 'christmas-ski-trip' }]);
+  assert.ok(!db.get("SELECT 1 FROM sqlite_master WHERE name = 'trips'"));
+  assert.ok(db.get("SELECT 1 FROM sqlite_master WHERE name = 'trips_migrated_20261027'"));
+  db.run("DELETE FROM trip_binds WHERE chat_id = 'G1'"); // 取消綁定
+  await xiaoshuai.init(ctx);                            // 重開
+  assert.deepEqual(db.all('SELECT * FROM trip_binds'), []);
 });
 
 console.log(`\n${pass} 項全部通過`);
