@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf } from '../plugins/xiaoshuai/index.js';
+import { parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -536,6 +536,14 @@ await test('改完行程附圖：找出動到哪幾段', () => {
   ]), ['D4', 'D2', 'glance']);
   assert.deepEqual(shotKeysOf([{ op: 'add_item', day: 'D1' }, { op: 'add_item', day: 'D2' }, { op: 'add_item', day: 'D3' }, { op: 'add_item', day: 'D5' }]), ['D1', 'D2', 'D3']);
   assert.deepEqual(shotKeysOf([{ op: 'remove_item', day: 'body' }, null]), []);
+});
+
+await test('講到行程才帶整份行程（省 token）', () => {
+  for (const t of ['小帥 D4 晚上吃什麼', '小帥 第三天幾點出發', '小帥 12/26 要去哪', '小帥 給我看住宿', '小帥 把燒肉換成拉麵', '小帥 ｄ２呢']) assert.ok(aboutTrip(t), t);
+  for (const t of ['小帥 今天好冷', '小帥 你好帥', '小帥 推薦一部電影']) assert.ok(!aboutTrip(t), t);
+  const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { url: 'https://x/t.html', brief: true } });
+  assert.ok(p.includes('【這個群有綁行程網頁】https://x/t.html'));
+  assert.ok(!p.includes('"trip_edit"'));
 });
 
 console.log(`\n${pass} 項全部通過`);

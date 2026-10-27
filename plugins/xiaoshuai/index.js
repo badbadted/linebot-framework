@@ -218,6 +218,7 @@ function linkSection(linkCats) {
 
 function tripSection(tripCtx) {
   if (!tripCtx) return '';
+  if (tripCtx.brief) return `\n\n【這個群有綁行程網頁】${tripCtx.url}（這次沒附內容；有人問到行程細節，請他直接問哪一天或哪件事，你就看得到）`;
   const lines = [`\n\n【這個群的行程表】（網頁：${tripCtx.url}）`, tripCtx.outline, '', TRIP_OPS_GUIDE];
   if (tripCtx.pending) {
     lines.push('', '【等大家確認的行程修改】', ...tripCtx.pending.map(c => `・${c}`),
@@ -272,9 +273,14 @@ export function parseReply(raw, mode) {
   return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null };
 }
 
-async function tripContext(chatId) {
+// 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
+const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\d{1,2}\s*[/／月]\s*\d{1,2}|日期|幾點|時間|住宿|住哪|飯店|民宿|交通|機場|巴士|接駁|新幹線|電車|集合|出發|回程|班機|航班|去哪|滑雪|雪場|市集|景點|行李|成員|網頁|截圖|傳圖|給我看|補充資訊|改成|換成|加一|加個|刪掉|拿掉|那天|當天|隔天/;
+export const aboutTrip = (text) => TRIP_TOPIC_RE.test(String(text || '').normalize('NFKC'));
+
+async function tripContext(chatId, text) {
   const name = tripOf(chatId);
   if (!name) return null;
+  if (!pendingOf(chatId) && !aboutTrip(text)) return { name, url: trip.tripUrl(name), brief: true };
   const outline = await trip.outline(name);
   if (!outline) return null;
   return { name, url: trip.tripUrl(name), outline, pending: pendingOf(chatId)?.changes || null };
@@ -282,7 +288,7 @@ async function tripContext(chatId) {
 
 async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
   const replying = mode === 'mention' || mode === 'followup';
-  const tripCtx = replying ? await tripContext(chatId) : null;
+  const tripCtx = replying ? await tripContext(chatId, trigger?.text) : null;
   // 這句跟收藏有關才給 AI 看每一筆（標題、說明來自網頁 → 這輪視同上網過，不寫記憶、不改行程）
   // 在開妞揪團（這句提到開團，或這個人有草稿）→ 不帶收藏細節、學習資料，避免整輪被當成「讀過外部內容」而不能開
   const njDraft = replying ? nj.draftOf(chatId, trigger?.userId) : null;
@@ -296,7 +302,7 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
     withMeta: true,
     system: PERSONA,
     messages: [{ role: 'user', content: buildPrompt({ mode, transcript, trigger, allowChimeIn, tripCtx, linkCats, learningInfo, njSection, memories: listMemories(chatId) }) }],
-    maxTokens: tripCtx || njActive ? 3000 : 1500, // AI 會先思考，400 曾在思考階段就用完、回空字串；要產行程修改再放寬
+    maxTokens: (tripCtx && !tripCtx.brief) || njActive ? 3000 : 1500, // AI 會先思考，400 曾在思考階段就用完、回空字串；要產行程修改再放寬
     // 要真的回人（被叫、接著聊）→ Sonnet 聽懂再回；判斷要不要接、冷場插話 → Haiku 省錢
     // 被叫、接著聊時可以上網查（天氣、營業時間、附近餐廳…）、打開群組裡貼的網址
     ...(replying
@@ -341,7 +347,7 @@ export const isAffirm = (text) => AFFIRM_RE.test(String(text || '').normalize('N
 
 async function handleTrip(chatId, parsed, trigger) {
   const ctx = parsed.tripCtx;
-  if (!ctx) return '';
+  if (!ctx || ctx.brief) return '';
   // 截圖：只截這群綁的行程網頁、固定段落（不改東西，那輪有上網也可以）
   let shotNote = '';
   if (parsed.tripShot) {
