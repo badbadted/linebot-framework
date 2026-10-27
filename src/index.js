@@ -98,7 +98,7 @@ async function main() {
   const logger = createLogger(dataDir);
 
   // 載入 plugins（傳入所有 providers）
-  const pluginHooks = { groupText: [], unmatched: [] };
+  const pluginHooks = { groupText: [], unmatched: [], privateText: [] };
   const loaded = await loadPlugins(config.plugins.dir, {
     router,
     scheduler,
@@ -542,6 +542,15 @@ async function main() {
           try {
             if (await h.fn({ userId, chatId: groupId || roomId, sourceType, text, replyToken, event })) return;
           } catch (err) { console.error(`[hook:${h.plugin}] unmatched error: ${err.message}`); }
+        }
+      }
+
+      // 私訊：plugin 先看要不要接手（如健身教練只接健身相關的話），沒接才交給 LLM
+      if (!isGroup) {
+        for (const h of pluginHooks.privateText) {
+          try {
+            if (await h.fn({ userId, text, replyToken, event })) return;
+          } catch (err) { console.error(`[hook:${h.plugin}] privateText error: ${err.message}`); }
         }
       }
 
