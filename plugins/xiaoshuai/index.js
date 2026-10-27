@@ -291,14 +291,14 @@ function linkSection(linkCats) {
 function tripSection(tripCtx) {
   if (!tripCtx) return '';
   if (tripCtx.ambiguous) {
-    const list = tripCtx.all.map(t => `「${t.title}」（${t.when}）`).join('、');
-    return `\n\n【這個群綁了好幾份行程】${list}\n這句看不出在講哪一份：先用一句話列出這幾份問他是哪一份（例如「你是說聖誕那趟還是 2027 青森那趟？」），不要猜著回答、不要改行程。`;
+    const list = tripCtx.all.map(t => `「${t.title}」（${t.when}）${t.url ? ` ${t.url}` : ''}`).join('、');
+    return `\n\n【這個群綁了好幾份行程】${list}\n這句看不出在講哪一份：先用一句話列出這幾份問他是哪一份（例如「你是說聖誕那趟還是 2027 青森那趟？」），不要猜著回答、不要改行程。他如果只是要網址，就把每一份的網址都列給他，不用問。`;
   }
   if (tripCtx.brief) {
     const list = tripCtx.all.map(t => `${t.title} ${t.url}`).join('；');
-    return `\n\n【這個群有綁行程網頁】${list}（這次沒附內容；有人問到行程細節，請他直接問哪一天或哪件事，你就看得到）`;
+    return `\n\n【這個群有綁行程網頁】${list}（這次沒附內容；有人要行程網址就直接把上面的網址貼給他，這是例外，可以貼；問到行程細節，請他直接問哪一天或哪件事，你就看得到）`;
   }
-  const lines = [`\n\n【這個群的行程表】${tripCtx.title ? `「${tripCtx.title}」` : ''}（網頁：${tripCtx.url}）`, tripCtx.outline, '', TRIP_OPS_GUIDE];
+  const lines = [`\n\n【這個群的行程表】${tripCtx.title ? `「${tripCtx.title}」` : ''}（網頁：${tripCtx.url}；有人要網址、連結就直接貼這個網址，這是例外，可以貼）`, tripCtx.outline, '', TRIP_OPS_GUIDE];
   if (tripCtx.others?.length) {
     lines.push('', `【這個群還綁了別的行程】${tripCtx.others.map(t => `「${t.title}」`).join('、')}（這次沒附內容）。上面附的是系統判斷這句在講的那份；如果他其實在講另一份（例如這份裡找不到他問的日期、地點或活動），不要改、也不要上網去開那份網頁，直接說「你是說『那份的標題』嗎？再講一次，帶上年份或月份（例如 2027、一月），我就叫得出來」。`);
   }
@@ -356,7 +356,7 @@ export function parseReply(raw, mode) {
 }
 
 // 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
-const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\d{1,2}\s*[/／月]\s*\d{1,2}|日期|幾點|時間|住宿|住哪|飯店|民宿|交通|機場|巴士|接駁|新幹線|電車|集合|出發|回程|班機|航班|去哪|滑雪|雪場|市集|景點|行李|成員|網頁|截圖|傳圖|給我看|補充資訊|改成|換成|加一|加個|新增|刪掉|拿掉|那天|當天|隔天|頁面|連結|那趟|這趟|[一二三四五六七八九十0-9]月/;
+const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\d{1,2}\s*[/／月]\s*\d{1,2}|日期|幾點|時間|住宿|住哪|飯店|民宿|交通|機場|巴士|接駁|新幹線|電車|集合|出發|回程|班機|航班|去哪|滑雪|雪場|市集|景點|行李|成員|網頁|截圖|傳圖|給我看|補充資訊|改成|換成|加一|加個|新增|刪掉|拿掉|那天|當天|隔天|頁面|連結|網址|網站|那趟|這趟|[一二三四五六七八九十0-9]月/;
 export const aboutTrip = (text) => TRIP_TOPIC_RE.test(String(text || '').normalize('NFKC'));
 
 async function tripContext(chatId, text) {
@@ -370,7 +370,7 @@ async function tripContext(chatId, text) {
   const pick = pickTripDetail(text, cands, { pendingName: pending?.name, lastName: last && Date.now() - last.at < LAST_TRIP_MS ? last.name : null });
   const startText = (i) => i.start ? `${i.start.year ? `${i.start.year}/` : ''}${i.start.month}/${i.start.day} 出發` : '日期未定';
   // 綁了好幾份又看不出在講哪一份：不猜，讓小帥列出來問
-  if (pick.how === 'guess') return { ambiguous: true, all: infos.map(i => ({ title: i.title, when: startText(i) })) };
+  if (pick.how === 'guess') return { ambiguous: true, all: infos.map(i => ({ title: i.title, when: startText(i), url: trip.tripUrl(i.name) })) };
   const name = pick.name;
   const outline = cands.find(c => c.name === name)?.outline || await trip.outline(name);
   if (!outline) return null;

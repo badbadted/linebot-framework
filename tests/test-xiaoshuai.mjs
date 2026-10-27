@@ -419,7 +419,7 @@ await test('buildPrompt：綁了行程才帶行程表與待確認修改', () => 
   const base = { mode: 'mention', nowTs: NOON, memories: [], transcript: [{ name: '阿庭', text: '小帥 D4 晚上改吃燒肉' }] };
   assert.ok(!buildPrompt(base).includes('行程表'));
   const p = buildPrompt({ ...base, tripCtx: { url: 'https://x/trip.html', outline: 'D4 12/27｜木更津', pending: ['D4 新增「18:30 燒肉」'] } });
-  assert.ok(p.includes('【這個群的行程表】（網頁：https://x/trip.html）'));
+  assert.ok(p.includes('【這個群的行程表】（網頁：https://x/trip.html；有人要網址、連結就直接貼這個網址'));
   assert.ok(p.includes('D4 12/27｜木更津'));
   assert.ok(p.includes('"trip_edit"'));
   assert.ok(p.includes('・D4 新增「18:30 燒肉」'));
@@ -541,6 +541,7 @@ await test('改完行程附圖：找出動到哪幾段', () => {
 await test('講到行程才帶整份行程（省 token）', () => {
   for (const t of ['小帥 D4 晚上吃什麼', '小帥 第三天幾點出發', '小帥 12/26 要去哪', '小帥 給我看住宿', '小帥 把燒肉換成拉麵', '小帥 ｄ２呢']) assert.ok(aboutTrip(t), t);
   for (const t of ['小帥 今天好冷', '小帥 你好帥', '小帥 推薦一部電影']) assert.ok(!aboutTrip(t), t);
+  for (const t of ['小帥 2027 的網址', '小帥 行程網站給我']) assert.ok(aboutTrip(t), t);
   const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { brief: true, all: [{ title: '聖誕滑雪', url: 'https://x/t.html' }] } });
   assert.ok(p.includes('【這個群有綁行程網頁】聖誕滑雪 https://x/t.html'));
   assert.ok(!p.includes('"trip_edit"'));
