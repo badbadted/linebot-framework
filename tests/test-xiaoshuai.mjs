@@ -10,6 +10,7 @@ import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
 import * as nj from '../plugins/xiaoshuai/njevent.js';
+import * as shot from '../plugins/xiaoshuai/shot.js';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
@@ -256,13 +257,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -511,6 +512,18 @@ await test('妞揪開團：parseReply 與 prompt', () => {
   assert.match(s, /今天是 2026-10-25，星期日/);
   assert.match(s, /還缺：幾點開始/);
   assert.match(s, /"nj_confirm": true/);
+});
+
+await test('行程截圖：只收固定段落', () => {
+  assert.equal(shot.sectionOf('D4').sel, '#d4');
+  assert.equal(shot.sectionOf('glance').label, '這幾天要去哪');
+  assert.ok(shot.sectionOf('info').sel.includes('住宿'));
+  for (const bad of ['D0', 'd10', '#d4', 'body', 'https://evil.example', '']) assert.equal(shot.sectionOf(bad), null);
+  assert.equal(parseReply('{"reply":"給你","trip_shot":"D2"}', 'mention').tripShot, 'D2');
+  assert.equal(parseReply('{"reply":"給你","trip_shot":"script"}', 'mention').tripShot, null);
+  const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { url: 'https://x/t.html', outline: 'D1', pending: null } });
+  assert.ok(p.includes('"trip_shot"'));
+  assert.deepEqual(shot.imageMessage({ url: 'https://a/x.jpg' }), { type: 'image', originalContentUrl: 'https://a/x.jpg', previewImageUrl: 'https://a/x.jpg' });
 });
 
 console.log(`\n${pass} 項全部通過`);

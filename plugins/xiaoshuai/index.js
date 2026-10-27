@@ -26,6 +26,7 @@ import * as trip from './trip.js';
 import * as links from './links.js';
 import * as learning from './learning.js';
 import * as nj from './njevent.js';
+import * as shot from './shot.js';
 
 const MEMORY_MAX = 30;      // 每群最多記幾條
 const MEMORY_PER_REPLY = 2; // 每次最多新增幾條
@@ -186,7 +187,8 @@ ops（day 用 D1～D6，index 是上面行程的編號數字）：
 - {"op":"remove_item","day":"D4","index":3}
 - {"op":"set_day","day":"D4","date":"12/27（日）","place":"🛍️ 木更津 Outlet → 🍖 燒肉"}（每日行程標題）
 - {"op":"set_glance","day":"D4","emoji":"🍖","place":"…","note":"…"}（最上面「這幾天要去哪」那一行）
-改到某天主要去哪，set_day 的 place 和 set_glance 也要一起改。`;
+改到某天主要去哪，set_day 的 place 和 set_glance 也要一起改。
+有人要看行程某一段的圖（截圖、傳圖、「給我看 D4」「住宿長怎樣」），JSON 加 "trip_shot": "段落"，段落只能是：${shot.SECTION_KEYS}；reply 一句帶過就好（圖會另外附上）。只是問問題、用文字回答就夠的不用截。`;
 
 const LINK_GUIDE = `收藏連結：有人要你記錄／收藏／存某個網址時，JSON 加 "save_link": {"url": "訊息裡的網址原文", "category": "對方有講分類才填（例如「記錄運動用」→ 運動），沒講就空字串，會依網頁內容自動分類"}，reply 只要一句「收到」之類的短話（存到哪一類、基本說明會由系統另外附上）。
 有人只是要看某一類（或全部）的完整清單，JSON 加 "list_links": {"category": "分類，問全部就空字串"}，reply 一句帶過就好（清單會另外附上，你不用列）。
@@ -252,6 +254,7 @@ export function parseReply(raw, mode) {
         toMe: o.to_me === true,
         tripEdit: Array.isArray(o.trip_edit?.ops) && o.trip_edit.ops.length ? o.trip_edit.ops : null,
         tripConfirm: typeof o.trip_confirm === 'boolean' ? o.trip_confirm : null,
+        tripShot: typeof o.trip_shot === 'string' && shot.sectionOf(o.trip_shot) ? o.trip_shot : null,
         saveLink: o.save_link && typeof o.save_link === 'object' && typeof o.save_link.url === 'string' ? o.save_link : null,
         listLinks: o.list_links && typeof o.list_links === 'object' ? o.list_links : null,
         njEvent: o.nj_event && typeof o.nj_event === 'object' && !Array.isArray(o.nj_event) ? o.nj_event : null,
@@ -261,7 +264,7 @@ export function parseReply(raw, mode) {
   }
   // 不是 JSON：被點名時直接把文字當回覆，其他情況當作不說話
   const plain = (mode === 'mention' || mode === 'followup') && !s.startsWith('{') ? s.slice(0, 200) : '';
-  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null };
+  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null };
 }
 
 async function tripContext(chatId) {
@@ -309,10 +312,11 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
   return parsed;
 }
 
-async function send(chatId, mode, replyToken, reply) {
+async function send(chatId, mode, replyToken, reply, images = []) {
   try {
-    const res = await lineApi.reply(replyToken, reply);
-    try { rememberSent(chatId, res, reply); } catch (err) { console.warn(`[xiaoshuai] 記錄送出訊息失敗：${err.message}`); }
+    const msgs = [...(reply ? [{ type: 'text', text: reply }] : []), ...images].slice(0, 5);
+    const res = await lineApi.reply(replyToken, msgs);
+    try { rememberSent(chatId, res, reply || '［行程截圖］'); } catch (err) { console.warn(`[xiaoshuai] 記錄送出訊息失敗：${err.message}`); }
   } catch (err) {
     // replyToken 過期就算了，不改用 push（群組推播依人數扣額度）
     console.warn(`[xiaoshuai] reply failed: ${err.message}`);
@@ -333,6 +337,20 @@ export const isAffirm = (text) => AFFIRM_RE.test(String(text || '').normalize('N
 async function handleTrip(chatId, parsed, trigger) {
   const ctx = parsed.tripCtx;
   if (!ctx) return '';
+  // 截圖：只截這群綁的行程網頁、固定段落（不改東西，那輪有上網也可以）
+  let shotNote = '';
+  if (parsed.tripShot) {
+    const r = await shot.capture(await trip.pagePath(ctx.name), parsed.tripShot);
+    if (r.ok) {
+      parsed.images = [shot.imageMessage(r)];
+      console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 行程截圖：${r.label}`);
+      if (r.cut) shotNote = `\n\n（${r.label}太長，只截了上面一段，完整的看網頁：${ctx.url}${/^d[1-9]$/i.test(parsed.tripShot) ? `#${parsed.tripShot.toLowerCase()}` : ""}）`;
+    } else shotNote = `\n\n（${r.error}）`;
+  }
+  return shotNote + await tripEdits(chatId, parsed, trigger, ctx);
+}
+
+async function tripEdits(chatId, parsed, trigger, ctx) {
   const pending = pendingOf(chatId);
   if (pending && parsed.tripConfirm === true && !parsed.webUsed && isAffirm(trigger?.text)) {
     pendingEdits.delete(chatId);
@@ -441,8 +459,8 @@ async function think(chatId, { mode, replyToken, trigger, transcript, allowChime
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
       const extra = await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger); // 先跑：可能會清掉 parsed.reply
       const reply = (parsed.reply + extra).trim();
-      if (!reply) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} followup：不說話`); return { replied: false }; }
-      return (await send(chatId, 'followup', replyToken, reply)) ? { replied: true, text: reply, asMention: true } : { replied: false };
+      if (!reply && !parsed.images) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} followup：不說話`); return { replied: false }; }
+      return (await send(chatId, 'followup', replyToken, reply, parsed.images)) ? { replied: true, text: reply, asMention: true } : { replied: false };
     }
     if (!judged.reply || !allowChimeIn) {
       console.log(`[xiaoshuai] ${chatId.slice(0, 8)} window：不是在跟小帥說話，不說話`);
@@ -454,11 +472,11 @@ async function think(chatId, { mode, replyToken, trigger, transcript, allowChime
   const parsed = await ask(chatId, mode, { trigger, transcript });
   const extra = mode === 'mention' ? await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) : ''; // 先跑：可能會清掉 parsed.reply
   const reply = (parsed.reply + extra).trim();
-  if (!reply) {
+  if (!reply && !parsed.images) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：不說話`);
     return { replied: false };
   }
-  return (await send(chatId, mode, replyToken, reply)) ? { replied: true, text: reply } : { replied: false };
+  return (await send(chatId, mode, replyToken, reply, parsed.images)) ? { replied: true, text: reply } : { replied: false };
 }
 
 // ── 名字 ───────────────────────────────────────────

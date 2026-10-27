@@ -7,7 +7,7 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
@@ -54,6 +54,14 @@ async function freshen() {
   if (Date.now() - lastPull < PULL_EVERY_MS) return;
   lastPull = Date.now();
   try { await git('pull', '-q', '--ff-only'); } catch (err) { console.warn(`[xiaoshuai-trip] pull 失敗：${err.message.split('\n')[0]}`); }
+}
+
+/** 本機的行程網頁檔（截圖用，先照常拉最新）；沒有回 null */
+export async function pagePath(name) {
+  if (!validName(name)) return null;
+  await serial(freshen);
+  const p = join(TRIP_REPO, `${name}.html`);
+  return existsSync(p) ? p : null;
 }
 
 /** 給 AI 看的精簡行程（含編號）；讀不到回 null */
