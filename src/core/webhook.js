@@ -134,6 +134,24 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
           continue;
         }
       }
+      // 群組裡的貼圖、照片：轉成一句文字給 plugin 記進對話，不觸發回覆
+      // 貼圖用 LINE 附的關鍵字（不看圖、不花 AI）；照片只記「［照片］」，真的有人問才由 plugin 去下載來看
+      if (event.type === 'message' && ['sticker', 'image'].includes(event.message?.type) && onGroupText) {
+        const chat = event.source?.groupId || event.source?.roomId;
+        if (chat) {
+          const m = event.message;
+          const clean = (s) => String(s || '').replace(/[\r\n［］【】<>]/g, ' ').trim().slice(0, 20);
+          let text = '［照片］';
+          if (m.type === 'sticker') {
+            const words = [m.text, ...(Array.isArray(m.keywords) ? m.keywords : [])].map(clean).filter(Boolean);
+            text = words.length ? `［貼圖：${[...new Set(words)].slice(0, 3).join('、')}］` : '［貼圖］';
+          }
+          console.log(`[webhook] ${src}... ${(evUserId || '').slice(0, 8)}: ${m.type}`);
+          try { onGroupText({ chatId: chat, userId: evUserId, text, event }); }
+          catch (err) { console.error(`[webhook] groupText hook error: ${err.message}`); }
+          continue;
+        }
+      }
       if (event.type !== 'message' || event.message?.type !== 'text') {
         if (event.type === 'message') {
           console.log(`[webhook] skipped non-text ${src}... ${(evUserId || '').slice(0, 8)}: ${event.message?.type || 'unknown'}`);

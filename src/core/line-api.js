@@ -102,5 +102,20 @@ export function createLineAPI(channelAccessToken) {
     if (!res.ok) throw new Error(`LINE leave failed: ${res.status} ${body}`);
   }
 
-  return { reply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, leaveChat };
+  /**
+   * 下載使用者傳的圖片（只保留一段時間，太舊會 404）。preview＝LINE 縮小過的預覽圖。
+   * 回 { buffer, contentType }；超過 maxBytes 或失敗回 null
+   */
+  async function getContent(messageId, { preview = false, maxBytes = 5_000_000 } = {}) {
+    if (!/^\d{1,30}$/.test(String(messageId || ''))) return null;
+    const res = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content${preview ? '/preview' : ''}`, { headers: { Authorization: headers.Authorization } });
+    if (!res.ok) { await res.arrayBuffer().catch(() => {}); return null; }
+    const len = Number(res.headers.get('content-length') || 0);
+    if (len > maxBytes) { res.body?.cancel?.(); return null; }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length > maxBytes) return null;
+    return { buffer, contentType: (res.headers.get('content-type') || '').split(';')[0].trim() };
+  }
+
+  return { reply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, leaveChat, getContent };
 }

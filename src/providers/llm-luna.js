@@ -90,7 +90,7 @@ export async function createLunaProvider(config) {
    *   webSearch：開 Anthropic 網路搜尋（按次計費）；webFetch：可打開對話裡出現的網址；model：'haiku'（預設）或 'sonnet'；effort：low／medium／high
    * @returns {string}
    */
-  async function generate({ system, messages, maxTokens, webSearch, webFetch, model, effort, timeoutMs, withMeta = false } = {}) {
+  async function generate({ system, messages, maxTokens, webSearch, webFetch, model, effort, image, timeoutMs, withMeta = false } = {}) {
     const limit = timeoutMs || timeout;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), limit);
@@ -98,7 +98,7 @@ export async function createLunaProvider(config) {
       const res = await fetch(`${baseUrl}/api/ext/llm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ system, messages, maxTokens, webSearch, webFetch, model, effort }),
+        body: JSON.stringify({ system, messages, maxTokens, webSearch, webFetch, model, effort, image }),
         signal: ctrl.signal,
       });
       const body = await res.json().catch(() => ({}));
