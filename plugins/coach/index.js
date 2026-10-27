@@ -176,7 +176,7 @@ function systemData(uid, p, now = Date.now()) {
   if (p) {
     lines.push('〔他的設定〕', P.profileText(p));
     const miss = P.missingProfile(p);
-    if (miss.length) lines.push(`還不知道：${miss.join('、')}（系統會問，你可以順口帶到）`);
+    if (miss.length) lines.push(`還不知道：${miss.join('、')}（系統會在你的回覆後面列出來問，你不要再問一次，回應他剛說的就好）`);
     const plan = todayPlanFor(uid, p, now);
     lines.push(plan ? `〔今天的課表〕\n${P.planText(plan)}` : '〔今天〕休息日');
     const st = sessionOn(uid, date);
