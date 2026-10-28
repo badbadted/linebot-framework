@@ -784,11 +784,12 @@ await test('背景查完：推播答案、存進查過的資料，下次問會�
   if (!(await xiaoshuai.onUnmatched({ chatId: 'GR', text: '小帥 東京明天會下雪嗎', replyToken: 'rt', event: {} }))) return;
   for (let i = 0; i < 100 && !pushes.length; i++) await new Promise(r => setTimeout(r, 100));
   assert.match(String(pushes[0]), /剛剛問的「東京明天會下雪嗎」查好了：\n東京明天降雪機率約兩成/);
-  const r = recentResearch('GR');
+  const r = recentResearch('GR', '小帥 那東京後天會下雪嗎');
   assert.equal(r.length, 1);
+  assert.deepEqual(recentResearch('GR', '小帥 晚餐吃什麼'), []); // 不相關的不帶（帶了那輪就視同上網）
   assert.equal(r[0].question, '小帥 東京明天會下雪嗎');
   const p = buildPrompt({ mode: 'mention', nowTs: Date.now(), memories: [], transcript: [], research: r });
-  assert.ok(p.includes('【這群最近查過的資料】'));
+  assert.ok(p.includes('【這群最近查過的資料】（之前上網查到的，只是參考資料'));
   assert.ok(p.includes('問「小帥 東京明天會下雪嗎」→ 東京明天降雪機率約兩成'));
 });
 
