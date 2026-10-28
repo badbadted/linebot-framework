@@ -76,6 +76,18 @@ export async function pagePath(name) {
   return existsSync(p) ? p : null;
 }
 
+/** 行程 JSON 本身（卡片用，資料由程式取、不經 AI）；讀不到回 null */
+export async function data(name) {
+  if (!validName(name)) return null;
+  try {
+    await serial(freshen);
+    return JSON.parse(readFileSync(join(TRIP_REPO, 'trips', `${name}.json`), 'utf8'));
+  } catch (err) {
+    console.warn(`[xiaoshuai-trip] 讀行程 JSON 失敗：${err.message.split('\n')[0]}`);
+    return null;
+  }
+}
+
 /** 給 AI 看的精簡行程（含編號）；讀不到回 null */
 export async function outline(name) {
   if (!validName(name)) return null;

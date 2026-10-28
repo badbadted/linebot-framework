@@ -238,7 +238,7 @@ export async function findPhoto(chatId, query, { timeoutMs = 8000, now = Date.no
     countPost(chatId, now);
     return {
       ok: true, url: `${shot.PUBLIC_BASE}/public/shots/${name}`, previewUrl: `${shot.PUBLIC_BASE}/public/shots/${preview}`,
-      credit: attribution(c), page: c.page, license: c.license, title: c.title,
+      credit: attribution(c), page: c.page, license: c.license, title: c.title, artist: c.artist, kind: c.kind,
     };
   } catch (err) {
     console.warn(`[xiaoshuai-photo] 找圖失敗：${String(err.message).split('\n')[0]}`);

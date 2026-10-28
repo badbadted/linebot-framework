@@ -103,8 +103,10 @@ export async function createLunaProvider(config) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.success) throw new Error(`Luna llm error: ${res.status} ${body.error || ''}`);
-      // withMeta：連同這次上網搜了幾次一起回（呼叫端可據此不信任搜尋後的輸出）
-      return withMeta ? { text: body.text || '', searches: body.searches || 0, fetches: body.fetches || 0 } : (body.text || '');
+      // withMeta：連同這次上網搜了幾次、真的搜到／讀過哪些網址一起回（呼叫端可據此不信任搜尋後的輸出、當來源白名單）
+      return withMeta
+        ? { text: body.text || '', searches: body.searches || 0, fetches: body.fetches || 0, sources: Array.isArray(body.sources) ? body.sources : [] }
+        : (body.text || '');
     } catch (err) {
       if (err.name === 'AbortError') throw new Error(`Luna llm timeout after ${limit}ms`);
       throw err;

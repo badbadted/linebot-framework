@@ -32,6 +32,15 @@ export function createLineAPI(channelAccessToken) {
     try { return JSON.parse(body); } catch { return {}; }
   }
 
+  /**
+   * 驗證要 reply 的訊息格式（不會送出）：LINE /v2/bot/message/validate/reply
+   * @returns {{ ok: boolean, status: number, body: string }}
+   */
+  async function validateReply(messages) {
+    const res = await fetch(`${LINE_API}/validate/reply`, { method: 'POST', headers, body: JSON.stringify({ messages }) });
+    return { ok: res.ok, status: res.status, body: await res.text() };
+  }
+
   async function push(to, text) {
     const messages = typeof text === 'string'
       ? [{ type: 'text', text }]
@@ -117,5 +126,5 @@ export function createLineAPI(channelAccessToken) {
     return { buffer, contentType: (res.headers.get('content-type') || '').split(';')[0].trim() };
   }
 
-  return { reply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, leaveChat, getContent };
+  return { reply, validateReply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, leaveChat, getContent };
 }

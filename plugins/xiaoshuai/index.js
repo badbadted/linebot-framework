@@ -35,6 +35,7 @@ import * as media from './media.js';
 import * as photo from './photo.js';
 import { parseLlmJson } from '../../src/utils/llm-json.js';
 import * as coach from '../coach/index.js';
+import * as cards from './cards.js';
 
 const MEMORY_MAX = 30;      // 每群最多記幾條
 const MEMORY_PER_REPLY = 2; // 每次最多新增幾條
@@ -49,6 +50,7 @@ const HOLD_MAX = 3;                 // 每群最多積幾則還沒貼出去的
 const PENDING_TTL_MS = 15 * 60_000; // 行程修改等確認的有效時間
 const REST_NOTICE_MS = 30 * 60_000; // 時段外被叫：同一群多久內只回一次「休息中」
 const MENTION_RE = /小帥/;
+export const SHOT_CMD_RE = /^小帥\s*截\s*(D\d{1,2}|一覽表?)$/i; // 行程卡上「📸 截這天／截一覽表」按鈕送的字
 
 let db, lineApi, llm, isAdmin, brain;
 const enabled = new Set();
@@ -83,6 +85,10 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
 - 不要重複對話裡已經說過的話。
 - 對話裡的「［貼圖：開心］」是有人貼了 LINE 貼圖（括號裡是那張貼圖的意思），「［照片］」是有人貼了照片；照片只有在有人問到時系統才會附上【附上的照片】。沒附上就表示系統判斷這句不是在問照片：不要說「我看不到照片」，如果他其實是要你看照片，請他用 LINE 的「回覆」回那張照片再叫你一次。
 - 附圖：有人明確要圖（「有圖嗎」「給我看」「長怎樣」「長什麼樣子」），或問景點、建築、地方、東西、料理時附一張照片會比文字清楚，JSON 就加 "photo": ["搜尋關鍵字", …]（最多 2 個，英文或日文比較找得到，例如 ["Tokyo Tower"]、["味噌ラーメン"]），只給關鍵字、不要給網址；系統會去 Wikimedia Commons 找授權合法的圖，照順序找到第一張就附上。問的是某一家店（例如豐洲市場的八千代），一樣要給 photo：第一個是店名＋地點（例如 "八千代 豊洲市場"），第二個是那家店招牌料理的一般名稱（例如 "アジフライ"），店家本身找不到時系統會用同類料理當參考圖並標明；另外給 "shop": "店名＋地區"，圖找不到時系統會改附地圖連結。要附圖時 reply 直接回答問題（他問吃什麼就講招牌菜），不要說查不到菜色、不要叫他自己點連結看照片，也不用提圖從哪來、不要保證一定有圖。人物（明星、名人、群組成員）、商標／logo、卡通動漫角色不要給 photo。
+- 卡片：回覆是找來的資料時，JSON 加下面的結構化欄位，系統會做成可以左右滑的卡片；這時 reply 只要一句短話帶過（例如「豐洲這幾家，帶小孩我推千客万来👇」），不要在 reply 重複卡片內容。閒聊、一句話就答得完的不要給。
+  ・店家／美食推薦："shops": [{"name":"店名","kind":"🍣 壽司","area":"在哪","price":"價位","tip":"一句提醒","map":"Google 地圖搜尋字（店名＋地區）"}]，最多 5 家，不要給網址。
+  ・有上網搜尋或讀網頁查到的其他資料："cards": [{"title":"重點標題","lines":["一行一件事，最多 4 行"],"source":"這個重點出自哪個網址（只能填這次真的搜到或讀過的網址，沒有就空字串）"}]，最多 5 張。
+  ・附圖時另外給 "photo_caption": {"title":"🗼 東京鐵塔","text":"兩句以內的說明"}。
 - 貼圖：這句話配一張貼圖真的很貼切、會讓人會心一笑時，JSON 加 "sticker": "心情"（只能是：${media.STICKER_KEYS}），挑意思最貼近的；不貼切就不要給，不用每次都給。【這次能不能貼圖】寫不能時一定不要給，也不要說要貼圖。正經事（改行程、開團、錢、有人難過、生病或抱怨時）不要給。有人問你會不會貼圖：會，覺得合適就貼，但不會連續貼、也不會太常貼。
 輸出格式：只輸出一個 JSON 物件，前後不要有其他文字：
 {"reply":"要說的話，不說就空字串","remember":["值得長期記住的事，0～2 條，沒有就空陣列"]}
@@ -163,6 +169,8 @@ function initDb() {
     `);
     console.log('[xiaoshuai] 行程綁定已搬到 trip_binds（舊表改名 trips_migrated_20261027）');
   }
+  // 查太久補貼的答案也能帶卡片（2026-10-28）：msgs＝要接在文字後面的 Flex 訊息（JSON）
+  if (!db.all('PRAGMA table_info(held_answers)').some(c => c.name === 'msgs')) db.exec('ALTER TABLE held_answers ADD COLUMN msgs TEXT');
   for (const r of db.all('SELECT chat_id FROM groups WHERE enabled = 1')) enabled.add(r.chat_id);
 }
 
@@ -422,6 +430,7 @@ ops（day 用 D1～D6，index 是上面行程的編號數字）：
 有人要你照一份貼上來的行程（文字，或【附上的照片】裡的行程表）排進去：直接在這次的 JSON 給出 trip_edit（新增的天用 add_day，加在最後的話它的編號就是現有天數＋1，同一批就能接著 add_item 填細項；原本的天有變也一起改），系統會把完整修改列出來給大家確認、有人回「好」才改，所以不要只用文字問「對的話說好」而不給 trip_edit。看不清楚或跟現有行程衝突的地方，在 reply 說明你怎麼處理。一次最多 15 個修改，太多就先做前面幾天，reply 說剩下的下一輪再補。
 行程改了地點或活動，那天的補充資訊如果還在講舊的東西，要提醒大家，問要不要一起更新或拿掉。
 改到某天主要去哪，set_day 的 place 和 set_glance 也要一起改。
+有人問整趟行程大概怎樣、或某幾天要幹嘛，JSON 加 "trip_cards": ["D3"]（整趟給 ["all"]），系統會用行程表做成一天一張的卡片；reply 只要一句「行程在這，左右滑看每天👇」，不要自己再列一次行程。
 有人要看行程某一段的圖（截圖、傳圖、「給我看 D4」「住宿長怎樣」），JSON 加 "trip_shot": "段落"，段落只能是：${shot.SECTION_KEYS}；reply 一句帶過就好（圖會另外附上）。只是問問題、用文字回答就夠的不用截。`;
 
 const LINK_GUIDE = `收藏連結：有人要你記錄／收藏／存某個網址時，JSON 加 "save_link": {"url": "訊息裡的網址原文", "category": "對方有講分類才填（例如「記錄運動用」→ 運動），沒講就空字串，會依網頁內容自動分類"}，reply 只要一句「收到」之類的短話（存到哪一類、基本說明會由系統另外附上）。
@@ -526,13 +535,17 @@ export function parseReply(raw, mode) {
       photo: photoQueries(o.photo),
       shop: typeof o.shop === 'string' && o.shop.trim() ? o.shop.trim().slice(0, 60) : null,
       toLuna: o.to_luna === true,
+      tripCards: Array.isArray(o.trip_cards) ? o.trip_cards.filter(x => typeof x === 'string').slice(0, 7) : (typeof o.trip_cards === 'string' ? [o.trip_cards] : null),
+      photoCaption: o.photo_caption && typeof o.photo_caption === 'object' ? { title: cards.clean(o.photo_caption.title, 40), text: cards.clean(o.photo_caption.text, 100) } : null,
+      shops: Array.isArray(o.shops) && o.shops.length ? o.shops.slice(0, 5) : null,
+      cards: Array.isArray(o.cards) && o.cards.length ? o.cards.slice(0, 5) : null,
       fitness: coach.parseFitness(o),
     };
   }
   // 沒有完整 JSON：被點名時用救回的 reply（或 JSON 前的話）當回覆，絕不送 JSON 原文；其他情況當作不說話
   const plain = mode === 'mention' || mode === 'followup' ? text.slice(0, 400) : '';
   if (/\{\s*"/.test(String(raw || ''))) console.warn(`[xiaoshuai] AI 回覆的 JSON 不完整（${String(raw).length} 字，結尾：${JSON.stringify(String(raw).slice(-40))}）`);
-  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null };
+  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null };
 }
 
 // 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
@@ -606,6 +619,8 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true, lon
   });
   const parsed = parseReply(res.text, mode);
   parsed.tripCtx = tripCtx;
+  parsed.searched = (res.searches || 0) + (res.fetches || 0) > 0;
+  parsed.sources = Array.isArray(res.sources) ? res.sources : [];
   parsed.fitnessOn = !!fitness;
   // 這輪有上網搜尋或讀網頁：輸出可能受網頁內容影響 → 不寫記憶、不改行程（防網頁藏指令污染）
   // 收藏內容、學習資料都含外部寫入的文字 → 視同上網過
@@ -633,15 +648,33 @@ function withSticker(chatId, parsed, reply) {
 }
 
 // ── 查太久的答案（2026-10-28）：背景查好先存著，等群裡下一個人講話，用那則的免費回覆貼出來（不用推播扣額度） ──
-function holdAnswer(chatId, text) {
-  db.run('INSERT INTO held_answers (chat_id, text, at) VALUES (?, ?, ?)', chatId, text, Date.now());
+function holdAnswer(chatId, text, msgs = []) {
+  db.run('INSERT INTO held_answers (chat_id, text, at, msgs) VALUES (?, ?, ?, ?)', chatId, text, Date.now(), msgs.length ? JSON.stringify(msgs) : null);
   db.run('DELETE FROM held_answers WHERE at < ?', Date.now() - HOLD_KEEP_MS);
   // 只留最新幾則
   db.run('DELETE FROM held_answers WHERE chat_id = ? AND id NOT IN (SELECT id FROM held_answers WHERE chat_id = ? ORDER BY id DESC LIMIT ?)', chatId, chatId, HOLD_MAX);
 }
 export function heldAnswers(chatId, limit = HOLD_MAX, now = Date.now()) {
   if (!db) return [];
-  return db.all('SELECT id, text FROM held_answers WHERE chat_id = ? AND at > ? ORDER BY id LIMIT ?', chatId, now - HOLD_KEEP_MS, limit);
+  return db.all('SELECT id, text, msgs FROM held_answers WHERE chat_id = ? AND at > ? ORDER BY id LIMIT ?', chatId, now - HOLD_KEEP_MS, limit);
+}
+/** 一則存著的答案要送的訊息：文字＋卡片 */
+function heldMessages(row) {
+  let extra = [];
+  try { extra = row.msgs ? JSON.parse(row.msgs) : []; } catch { /* 壞掉就只送文字 */ }
+  return [{ type: 'text', text: row.text }, ...(Array.isArray(extra) ? extra : [])];
+}
+/** 塞得下 room 則訊息的存著的答案（照順序，放不下的等下次） */
+function heldFitting(chatId, room) {
+  const out = [];
+  let used = 0;
+  for (const r of heldAnswers(chatId)) {
+    const n = heldMessages(r).length;
+    if (used + n > room) break;
+    out.push(r);
+    used += n;
+  }
+  return out;
 }
 function releaseHeld(chatId, rows) {
   for (const r of rows) {
@@ -650,12 +683,23 @@ function releaseHeld(chatId, rows) {
   }
 }
 
+/** reply；含卡片而被 LINE 拒絕（格式錯）時，卡片換成純文字再送一次 */
+async function replyMsgs(replyToken, msgs) {
+  try {
+    return await lineApi.reply(replyToken, msgs);
+  } catch (err) {
+    if (!msgs.some(m => m?.type === 'flex') || !/\b400\b/.test(err.message)) throw err;
+    console.warn(`[xiaoshuai] 卡片送不出去，改用純文字：${err.message.slice(0, 200)}`);
+    return lineApi.reply(replyToken, cards.plainFallback(msgs));
+  }
+}
+
 /** 群裡有人講話、小帥這次不用回：用這則的回覆把查好的答案貼出來 */
 async function deliverHeld(chatId, replyToken) {
-  const rows = heldAnswers(chatId);
+  const rows = heldFitting(chatId, 5);
   if (!rows.length || !replyToken) return false;
   try {
-    const res = await lineApi.reply(replyToken, rows.map(r => ({ type: 'text', text: r.text })));
+    const res = await replyMsgs(replyToken, rows.flatMap(heldMessages));
     releaseHeld(chatId, rows);
     try { rememberSent(chatId, res, rows.map(r => r.text).join('\n')); } catch { /* 記不起來不影響 */ }
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 有人講話，貼出查好的答案 ${rows.length} 則`);
@@ -670,9 +714,9 @@ async function send(chatId, mode, replyToken, reply, images = []) {
   let held = [];
   try {
     const main = [...(reply ? [{ type: 'text', text: reply }] : []), ...images].slice(0, 5);
-    held = heldAnswers(chatId, Math.min(HOLD_MAX, 5 - main.length)); // 一次最多 5 則，放不下的等下次
-    const msgs = [...held.map(r => ({ type: 'text', text: r.text })), ...main];
-    const res = await lineApi.reply(replyToken, msgs);
+    held = heldFitting(chatId, 5 - main.length); // 一次最多 5 則，放不下的等下次
+    const msgs = [...held.flatMap(heldMessages), ...main];
+    const res = await replyMsgs(replyToken, msgs);
     if (held.length) releaseHeld(chatId, held);
     try { rememberSent(chatId, res, reply || '［行程截圖］'); } catch (err) { console.warn(`[xiaoshuai] 記錄送出訊息失敗：${err.message}`); }
   } catch (err) {
@@ -695,6 +739,11 @@ export const isAffirm = (text) => AFFIRM_RE.test(String(text || '').normalize('N
 async function handleTrip(chatId, parsed, trigger) {
   const ctx = parsed.tripCtx;
   if (!ctx || ctx.brief || ctx.ambiguous) return '';
+  // 行程卡：資料從行程 JSON 取（不是 AI 寫的），一天一張
+  if (parsed.tripCards?.length) {
+    const fl = cards.tripFlex(await trip.data(ctx.name), { days: parsed.tripCards, url: ctx.url, title: ctx.title });
+    if (fl) parsed.images = [...(parsed.images || []), fl];
+  }
   // 截圖：只截這群綁的行程網頁、固定段落（不改東西，那輪有上網也可以）
   let shotNote = '';
   if (parsed.tripShot) {
@@ -842,9 +891,9 @@ async function handleFitness(chatId, parsed, trigger) {
 }
 
 /**
- * 附圖（photo.js）：AI 給了關鍵字才找，照順序找到第一張就停；圖接在回覆文字後面，跟回覆一起用 reply 送（不推播）。
- * 群組不顯示署名（使用者 2026-10-28 定：私人群組用，不用署名）；作者、授權、檔案頁照樣寫進 log，要查得到出處。
- * 特定店家：第一個關鍵字是店，第二個是同類料理；用到第二個時回覆後面註明「同類料理參考圖」，免得誤會是那家店的。
+ * 附圖（photo.js）：AI 給了關鍵字才找，照順序找到第一張就停；做成一張附圖卡（圖、標題、說明、底部小字署名、地圖與圖片來源按鈕），
+ * 跟回覆一起用 reply 送（不推播）。版面照使用者 2026-10-28 確認的卡片預覽：署名縮成卡片底部小字。
+ * 特定店家：第一個關鍵字是店，第二個是同類料理；用到第二個時卡片註明「同類料理參考圖」，免得誤會是那家店的。
  * 都找不到：有給 shop 就附程式組的 Google 地圖連結，並說一聲找不到合法授權的圖。回傳要接在 reply 後面的文字
  */
 export async function handlePhoto(chatId, parsed, trigger, now = Date.now()) {
@@ -858,8 +907,14 @@ export async function handlePhoto(chatId, parsed, trigger, now = Date.now()) {
     tried = true;
     const r = await photo.findPhoto(chatId, q, { timeoutMs: Math.min(10_000, left) });
     if (r.ok) {
-      parsed.images = [...(parsed.images || []), { type: 'image', originalContentUrl: r.url, previewImageUrl: r.previewUrl }].slice(0, 4);
-      if (i > 0 && parsed.shop) note = `\n\n（圖是同類料理的參考圖，不是${parsed.shop}的）`;
+      const cap = parsed.photoCaption || {};
+      const title = cap.title || (i > 0 && parsed.shop ? q : parsed.photo[0]);
+      const mapQ = parsed.shop || String(title).replace(/[^\p{L}\p{N}\s]/gu, ' ').trim() || q;
+      const fl = cards.photoFlex(r, {
+        title, text: cap.text, mapUri: photo.mapLink(mapQ),
+        note: i > 0 && parsed.shop ? `同類料理參考圖，不是${parsed.shop}的` : '',
+      });
+      parsed.images = [...(parsed.images || []), fl].slice(0, 4);
       posted = true;
       console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 附圖「${q}」→ ${r.credit}`);
       break;
@@ -873,6 +928,24 @@ export async function handlePhoto(chatId, parsed, trigger, now = Date.now()) {
     if (link) note += `\n\n📍 ${parsed.shop} 地圖：${link}`;
   }
   return note;
+}
+
+/** 店家推薦、上網查到的重點 → 卡片訊息（查資料卡只在這輪真的有搜尋／讀網頁時才做，來源按鈕只收這輪的來源清單） */
+export function cardMessages(parsed) {
+  const out = [];
+  const shopsMsg = parsed.shops ? cards.shopsFlex(parsed.shops, photo.mapLink) : null;
+  if (shopsMsg) out.push(shopsMsg);
+  const researchMsg = parsed.cards && parsed.searched ? cards.researchFlex(parsed.cards, parsed.sources) : null;
+  if (researchMsg) out.push(researchMsg);
+  return out;
+}
+async function handleCards(chatId, parsed) {
+  const msgs = cardMessages(parsed);
+  if (msgs.length) {
+    parsed.images = [...(parsed.images || []), ...msgs].slice(0, 4);
+    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 卡片 ${msgs.length} 則（${msgs.map(m => m.altText.slice(0, 20)).join('｜')}）`);
+  }
+  return '';
 }
 
 /** 被叫或在跟小帥說話時出錯（查太久逾時、Luna 掛掉）：至少回一句，不要沉默 */
@@ -927,7 +1000,7 @@ async function longResearch(chatId, job) {
     const who = job.trigger?.name ? `${job.trigger.name} ` : '';
     const q = String(job.trigger?.text || '').replace(/^小帥\s*/, '').slice(0, 30);
     const when = new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false });
-    holdAnswer(chatId, `🔎 ${who}剛剛問的「${q}」查好了（${when}）：\n${answer}`);
+    holdAnswer(chatId, `🔎 ${who}剛剛問的「${q}」查好了（${when}）：\n${answer}`, cardMessages(parsed));
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 背景查完，等人講話再貼：${answer.slice(0, 60)}`);
   } catch (err) {
     // 背景也查不完：說一聲，不要讓人以為小帥還在查
@@ -947,7 +1020,7 @@ async function thinkInner(chatId, job) {
       job.toMe = true;
       // 第二段：是在接小帥的話 → 跟被叫一樣，用 Sonnet 認真回，並重開視窗
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
-      const extra = await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger); // 先跑：可能會清掉 parsed.reply
+      const extra = await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed); // 先跑：可能會清掉 parsed.reply
       const reply = (parsed.reply + extra).trim();
       if (!reply && !parsed.images) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} followup：不說話`); return { replied: false }; }
       const extras = withSticker(chatId, parsed, reply);
@@ -960,10 +1033,24 @@ async function thinkInner(chatId, job) {
     return (await send(chatId, 'window', replyToken, judged.reply)) ? { replied: true, text: judged.reply } : { replied: false };
   }
 
+  // 卡片上的「📸 截這天」按鈕會送「小帥 截 D3」：不經 AI，直接截這群綁的行程
+  const shotReq = mode === 'mention' ? SHOT_CMD_RE.exec(String(trigger?.text || '').normalize('NFKC').trim()) : null;
+  if (shotReq) {
+    const names = tripsOf(chatId);
+    const name = names.length === 1 ? names[0] : (lastTrip.get(chatId)?.name && names.includes(lastTrip.get(chatId).name) ? lastTrip.get(chatId).name : null);
+    if (name) {
+      const key = /^d/i.test(shotReq[1]) ? shotReq[1].toLowerCase() : 'glance';
+      const r = await shot.capture(await trip.pagePath(name), key);
+      const msg = r.ok ? `📸 ${r.label}${r.cut ? `（太長，只截了上面一段，完整的看網頁：${trip.tripUrl(name)}）` : ''}` : `（${r.error}）`;
+      console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 截圖按鈕：${name} ${key} → ${r.ok ? 'ok' : r.error}`);
+      return (await send(chatId, mode, replyToken, msg, r.ok ? [shot.imageMessage(r)] : [])) ? { replied: true, text: msg } : { replied: false };
+    }
+  }
+
   const parsed = await ask(chatId, mode, { trigger, transcript, dm: !!job.dm });
   // 私訊講到家裡設備：不回，回覆留給 Luna
   if (job.dm && parsed.toLuna) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 私訊：家裡的事，交給 Luna`); return { replied: false, handoff: true }; }
-  const extra = mode === 'mention' ? await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handleFitness(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) : ''; // 先跑：可能會清掉 parsed.reply
+  const extra = mode === 'mention' ? await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handleFitness(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) : ''; // 先跑：可能會清掉 parsed.reply
   const reply = (parsed.reply + extra).trim();
   if (!reply && !parsed.images) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：不說話`);

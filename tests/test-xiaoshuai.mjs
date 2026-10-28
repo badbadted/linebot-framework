@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { handlePhoto, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { handlePhoto, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -13,6 +13,7 @@ import * as nj from '../plugins/xiaoshuai/njevent.js';
 import * as shot from '../plugins/xiaoshuai/shot.js';
 import * as media from '../plugins/xiaoshuai/media.js';
 import * as photo from '../plugins/xiaoshuai/photo.js';
+import * as cards from '../plugins/xiaoshuai/cards.js';
 import coach, * as coachMod from '../plugins/coach/index.js';
 import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -263,13 +264,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -1011,16 +1012,21 @@ await test('附圖：AI 沒給 photo → 不查 Commons、不附圖', async () =
   assert.equal(fc.calls.length, 0);
 });
 
-await test('附圖：AI 給 photo → 回覆＋圖一起 reply（不顯示署名）；那輪不寫記憶', async () => {
+await test('附圖：AI 給 photo → 回覆＋附圖卡一起 reply；那輪不寫記憶', async () => {
   const fc = fakeCommons();
   photo.configure({ fetch: fc.f, dir: mkdtempSync(pjoin(tmpdir(), 'xs-photo-')) });
   const { db, replies } = await photoBot('{"reply":"東京鐵塔是紅白色的鐵塔","photo":"Tokyo Tower","remember":["阿庭想去東京鐵塔"]}');
   if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 東京鐵塔長怎樣', replyToken: 'rt', event: {} }))) return;
   await waitReply(replies);
   const msgs = replies[0];
-  assert.deepEqual(msgs.map(m => m.type).slice(0, 2), ['text', 'image']);
-  assert.ok(!msgs.some(m => m.type === 'text' && m.text.startsWith('📷'))); // 不顯示署名
-  assert.match(msgs[1].originalContentUrl, /\/public\/shots\/[0-9a-f]{32}\.jpg$/);
+  assert.deepEqual(msgs.map(m => m.type).slice(0, 2), ['text', 'flex']);
+  const card = msgs[1].contents;
+  assert.equal(card.size, 'mega');
+  assert.match(card.hero.url, /\/public\/shots\/[0-9a-f]{32}\.jpg$/);
+  assert.match(JSON.stringify(card.body), /📷 Taro・CC BY-SA 4\.0・Wikimedia Commons/); // 署名縮成底部小字
+  assert.deepEqual(card.footer.contents.map(b => b.action.label), ['📍 地圖', '圖片來源']);
+  assert.match(card.footer.contents[1].action.uri, /^https:\/\/commons\.wikimedia\.org\/wiki\/File:/);
+  assert.match(msgs[1].altText, /Tokyo Tower/);
   assert.equal(db.all("SELECT * FROM memories WHERE chat_id = 'GPB'").length, 0);
 });
 
@@ -1135,8 +1141,9 @@ await test('附圖：特定店家先找店、找不到用同類料理並標明�
   } });
   const parsed = { photo: ['八千代 豊洲市場', 'アジフライ'], shop: '八千代 豐洲市場' };
   const note = await handlePhoto('GSHOP', parsed, { ts: Date.now() });
-  assert.equal(note, '\n\n（圖是同類料理的參考圖，不是八千代 豐洲市場的）');
-  assert.deepEqual(parsed.images.map(m => m.type), ['image']);
+  assert.equal(note, '');
+  assert.deepEqual(parsed.images.map(m => m.type), ['flex']);
+  assert.match(JSON.stringify(parsed.images[0].contents.body), /同類料理參考圖，不是八千代 豐洲市場的/);
   // 都找不到 → 說一聲、附地圖
   photo.configure({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ query: { pages: [] } }) }) });
   const p2 = { photo: ['八千代 豊洲市場', 'アジフライ'], shop: '八千代 豐洲市場' };
@@ -1147,6 +1154,129 @@ await test('附圖：特定店家先找店、找不到用同類料理並標明�
 
 await test('健身：講到「運動」也帶健身資料', () => {
   assert.equal(coachMod.FITNESS_RE.test('今天要做什麼運動？'), true);
+});
+
+// ── Flex 卡片 ─────────────────────────────────────
+const TRIP = {
+  title: '2026 聖誕滑雪旅行',
+  days: [
+    { id: 'D1', key: 'd1', color: 'c-fly', date: '12/24（四）', place: '✈️ 飛東京', glance: { d: '12/24', emoji: '✈️', place: '飛東京' }, items: [{ when: '07:00', title: '出發' }] },
+    { id: 'D2', key: 'd2', color: 'c-tokyo', date: '12/25（五）', place: '👘 淺草', glance: { d: '12/25', emoji: '👘', place: '淺草' }, items: [] },
+    { id: 'D3', key: 'd3', color: 'c-ski', date: '12/26（六）', place: '⛷️ 神樂滑雪場 → 🌃 都廳光雕秀', glance: { d: '12/26', emoji: '⛷️', place: '神樂' },
+      items: [{ when: '07:04', title: '東京 → 越後湯澤' }, { when: '早上', text: '<b>換裝備</b>\u0007' }, { when: '10-16', title: '神樂滑雪課程' }, { when: '16:34', text: '回湯澤' }, { when: '17:16', title: '回東京' }, { when: '晚上', title: '光雕秀' }] },
+  ],
+};
+const bubblesOf = (m) => (m.contents.type === 'carousel' ? m.contents.contents : [m.contents]);
+
+await test('卡片：文字當資料（去 HTML、控制字元、限長）；按鈕網址只收 https＋白名單', () => {
+  assert.equal(cards.clean('<b>粗</b>\u0000體‮  文字', 20), '粗 體 文字');
+  assert.equal(Array.from(cards.clean('好'.repeat(50), 10)).length, 10);
+  assert.equal(cards.safeUri('https://a.com/x', () => true), 'https://a.com/x');
+  assert.equal(cards.safeUri('http://a.com/x', () => true), null);
+  assert.equal(cards.safeUri('javascript:alert(1)', () => true), null);
+  assert.equal(cards.safeUri('https://a.com/x', () => false), null);
+  assert.equal(cards.flex([], 'x'), null);
+});
+
+await test('行程卡：封面＋一天一張、標頭顏色、按鈕、超過 4 項寫還有幾項、altText', () => {
+  const m = cards.tripFlex(TRIP, { days: ['all'], url: 'https://badbadted.github.io/temp-reports/x.html' });
+  const bs = bubblesOf(m);
+  assert.equal(bs.length, 4); // 封面＋3 天
+  assert.ok(bs.every(b => b.size === 'kilo'));
+  assert.equal(bs[0].header.backgroundColor, '#1e293b');
+  assert.deepEqual(bs.slice(1).map(b => b.header.backgroundColor), ['#c2620a', '#0f8a6a', '#2563a8']); // 飛行橘、城市綠、滑雪藍
+  const d3 = bs[3];
+  assert.equal(d3.header.contents[1].maxLines, 2);              // 標題最多 2 行
+  const rows = d3.body.contents.filter(c => c.layout === 'baseline');
+  assert.equal(rows.length, 4);                                  // 最多 4 項
+  assert.ok(rows.every(r => r.contents[1].wrap === false));      // 每項 1 行
+  assert.equal(rows[1].contents[1].text, '換裝備');                // HTML、控制字元拿掉
+  assert.match(JSON.stringify(d3.body), /還有 2 項…/);
+  assert.deepEqual(d3.footer.contents.map(b => b.action), [
+    { type: 'message', label: '📸 截這天', text: '小帥 截 D3' },
+    { type: 'uri', label: '開網頁', uri: 'https://badbadted.github.io/temp-reports/x.html#d3' },
+  ]);
+  assert.equal(m.altText, '2026 聖誕滑雪旅行（12/24 – 12/26・3 天）：D1 飛東京、D2 淺草、D3 神樂');
+  // 只問某天：沒有封面
+  const one = cards.tripFlex(TRIP, { days: ['d3'], url: 'https://badbadted.github.io/temp-reports/x.html' });
+  assert.equal(one.contents.type, 'bubble');
+  assert.match(one.altText, /07:04 東京 → 越後湯澤/);
+  // 11 天的行程：最多 7 張，封面說後面怎麼看
+  const long = { title: '長行程', days: Array.from({ length: 11 }, (_, i) => ({ id: `D${i + 1}`, key: `d${i + 1}`, color: 'c-ski', date: `1/${i + 1}`, place: `第${i + 1}天`, items: [] })) };
+  const lb = bubblesOf(cards.tripFlex(long, { days: ['all'] }));
+  assert.equal(lb.length, 7);
+  assert.match(JSON.stringify(lb[0]), /D7 之後跟我說/);
+  assert.equal(cards.tripFlex({ days: [] }, {}), null);
+});
+
+await test('店家卡：一家一張、料理類別顏色、只有程式組的地圖按鈕（不收 AI 網址）、最多 5 家', () => {
+  const shops = Array.from({ length: 7 }, (_, i) => ({ name: `店${i}`, kind: i ? '🍜 拉麵' : '🍣 壽司', area: '豐洲', price: '¥1,000', tip: '早點去', map: '', url: 'https://evil.example/' }));
+  const m = cards.shopsFlex(shops, photo.mapLink);
+  const bs = bubblesOf(m);
+  assert.equal(bs.length, 5);
+  assert.equal(bs[0].header.backgroundColor, '#b4462b');
+  assert.equal(bs[1].header.backgroundColor, '#c2620a');
+  assert.ok(!JSON.stringify(m).includes('evil.example'));
+  assert.deepEqual(bs[0].footer.contents.map(b => b.action.label), ['📍 Google 地圖']);
+  assert.match(bs[0].footer.contents[0].action.uri, /^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=/);
+  assert.match(m.altText, /1\. 店0（豐洲）/);
+});
+
+await test('查資料卡：「看來源」只收這輪真的搜到的網址；沒有清單就不放按鈕', () => {
+  const sources = [{ url: 'https://www.tokyotower.co.jp/', title: '東京鐵塔官網' }];
+  const m = cards.researchFlex([
+    { title: '營業時間', lines: ['09:00～23:00', '最後入場 22:30'], source: 'https://www.tokyotower.co.jp' },
+    { title: 'AI 自己寫的網址', lines: ['x'], source: 'https://made-up.example/page' },
+    { title: '沒來源', lines: ['y'] },
+  ], sources);
+  const bs = bubblesOf(m);
+  assert.deepEqual(bs[0].footer.contents[0].action, { type: 'uri', label: '看來源', uri: 'https://www.tokyotower.co.jp/' });
+  assert.equal(bs[1].footer, undefined);
+  assert.equal(bs[2].footer, undefined);
+  assert.equal(bubblesOf(cards.researchFlex([{ title: 'a', lines: ['b'], source: 'https://www.tokyotower.co.jp/' }], []))[0].footer, undefined);
+  assert.match(m.altText, /營業時間：09:00～23:00，最後入場 22:30/);
+});
+
+await test('卡片：只有這輪真的上網查過才做查資料卡；店家卡不受限', () => {
+  const p = parseReply('{"reply":"整理好了","cards":[{"title":"重點","lines":["a"]}],"shops":[{"name":"大和壽司","kind":"🍣"}]}', 'mention');
+  assert.deepEqual(cardMessages({ ...p, searched: false }).map(m => m.altText), ['1. 大和壽司']);
+  assert.equal(cardMessages({ ...p, searched: true, sources: [] }).length, 2);
+  assert.equal(cardMessages(parseReply('{"reply":"閒聊"}', 'mention')).length, 0); // 閒聊照舊純文字
+});
+
+await test('卡片：送不出去（400）就退回純文字；附圖卡退回圖片＋文字', async () => {
+  const flexMsg = cards.shopsFlex([{ name: '大和壽司' }], photo.mapLink);
+  assert.deepEqual(cards.plainFallback([{ type: 'text', text: 'hi' }, flexMsg]), [{ type: 'text', text: 'hi' }, { type: 'text', text: flexMsg.altText }]);
+  const pf = cards.photoFlex({ url: 'https://bot.pushbike-training.app/public/shots/a.jpg', page: 'https://commons.wikimedia.org/wiki/File:A.jpg', artist: 'Taro', license: 'CC BY 4.0' }, { title: '東京鐵塔' });
+  assert.deepEqual(cards.plainFallback([pf]).map(m => m.type), ['image', 'text']);
+  // 實際送：第一次 400 → 改送純文字
+  const fc = fakeCommons();
+  photo.configure({ fetch: fc.f, dir: mkdtempSync(pjoin(tmpdir(), 'xs-photo-')) });
+  const { replies } = await photoBot('{"reply":"豐洲這幾家👇","shops":[{"name":"大和壽司","kind":"🍣 壽司","area":"豐洲"}]}');
+  const tries = [];
+  const orig = replies.push.bind(replies);
+  replies.push = (m) => { tries.push(m); if (m.some(x => x.type === 'flex')) throw new Error('LINE reply failed: 400 {"message":"A message (messages[1]) in the request body is invalid"}'); return orig(m); };
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 豐洲吃什麼', replyToken: 'rt', event: {} }))) return;
+  await waitReply(replies);
+  assert.deepEqual(tries.map(t => t.map(m => m.type)), [['text', 'flex'], ['text', 'text']]);
+  assert.match(replies[0][1].text, /大和壽司/);
+});
+
+await test('卡片：查太久補貼的答案也帶卡片', async () => {
+  const { db, replies } = await photoBot('{"reply":"在喔"}');
+  const card = cards.researchFlex([{ title: '營業時間', lines: ['09:00～23:00'] }], []);
+  db.run('INSERT INTO held_answers (chat_id, text, at, msgs) VALUES (?, ?, ?, ?)', 'GPB', '🔎 查好了', Date.now(), JSON.stringify([card]));
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return;
+  await waitReply(replies);
+  assert.deepEqual(replies[0].map(m => m.type), ['text', 'flex', 'text']);
+  assert.equal(replies[0][1].altText, card.altText);
+});
+
+await test('卡片：行程卡按鈕送的「小帥 截 D3」不經 AI', () => {
+  assert.ok(SHOT_CMD_RE.test('小帥 截 D3'));
+  assert.ok(SHOT_CMD_RE.test('小帥 截 一覽'));
+  assert.ok(!SHOT_CMD_RE.test('小帥 截圖給我看住宿'));
+  assert.deepEqual(parseReply('{"reply":"行程在這","trip_cards":["all"]}', 'mention').tripCards, ['all']);
 });
 
 console.log(`\n${pass} 項全部通過`);
