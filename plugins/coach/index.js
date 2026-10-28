@@ -16,7 +16,7 @@
 import * as P from './program.js';
 
 const WINDOW_MS = 10 * 60_000;   // 講過健身（或推過提醒）後多久內，不必再提到健身也帶健身資料
-export const FITNESS_RE = /教練|健身|重訓|訓練|課表|練了|練完|有練|沒練|去練|深蹲|臥推|划船|硬舉|肩推|下拉|腿推|體重|增重|增肌|蛋白質|碳水|休息日|\d+\s*(kg|公斤)/i;
+export const FITNESS_RE = /教練|健身|運動|重訓|訓練|課表|練了|練完|有練|沒練|去練|深蹲|臥推|划船|硬舉|肩推|下拉|腿推|體重|增重|增肌|蛋白質|碳水|休息日|\d+\s*(kg|公斤)/i;
 
 let db, lineApi, scheduler, isAdmin;
 const lastFitnessAt = new Map(); // userId → 上次聊健身／推提醒的時間

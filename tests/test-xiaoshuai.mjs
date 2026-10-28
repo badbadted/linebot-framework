@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { handlePhoto, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -13,7 +13,7 @@ import * as nj from '../plugins/xiaoshuai/njevent.js';
 import * as shot from '../plugins/xiaoshuai/shot.js';
 import * as media from '../plugins/xiaoshuai/media.js';
 import * as photo from '../plugins/xiaoshuai/photo.js';
-import coach from '../plugins/coach/index.js';
+import coach, * as coachMod from '../plugins/coach/index.js';
 import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as pjoin } from 'node:path';
@@ -978,7 +978,8 @@ await test('附圖：每群每天上限，隔天重算、存 DB', async () => {
 
 await test('附圖：parseReply 讀 photo／shop；沒給就是 null', () => {
   const a = parseReply('{"reply":"東京鐵塔長這樣","photo":"Tokyo Tower"}', 'mention');
-  assert.equal(a.photo, 'Tokyo Tower');
+  assert.deepEqual(a.photo, ['Tokyo Tower']);
+  assert.deepEqual(parseReply('{"reply":"x","photo":["八千代 豊洲市場","アジフライ","多的"]}', 'mention').photo, ['八千代 豊洲市場', 'アジフライ']);
   const b = parseReply('{"reply":"在喔"}', 'mention');
   assert.equal(b.photo, null);
   assert.equal(b.shop, null);
@@ -1120,6 +1121,33 @@ await test('私訊：傳照片再問，小帥看得到那張', async () => {
   await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '這是什麼', replyToken: 'rt', event: {} });
   assert.deepEqual(contents, ['IMG1']);
   assert.match(prompts[0], /【附上的照片】/);
+});
+
+await test('附圖：特定店家先找店、找不到用同類料理並標明；都沒有才附地圖', async () => {
+  const dir = mkdtempSync(pjoin(tmpdir(), 'xs-photo-'));
+  // 店名搜不到（Commons 回空），料理搜得到
+  const calls = [];
+  photo.configure({ dir, fetch: async (url, opts) => {
+    calls.push(String(url));
+    const u = new URL(url);
+    if (u.hostname === 'commons.wikimedia.org') return { ok: true, status: 200, json: async () => ({ query: { pages: u.searchParams.get('gsrsearch').includes('豊洲') ? [] : [page(1, 'File:Aji.jpg', okMeta)] } }) };
+    return { ok: true, status: 200, headers: { get: (k) => (k === 'content-type' ? 'image/jpeg' : '504') }, arrayBuffer: async () => JPEG };
+  } });
+  const parsed = { photo: ['八千代 豊洲市場', 'アジフライ'], shop: '八千代 豐洲市場' };
+  const note = await handlePhoto('GSHOP', parsed, { ts: Date.now() });
+  assert.equal(note, '');
+  assert.equal(parsed.images[0].type, 'image');
+  assert.match(parsed.images[1].text, /^📷 同類料理參考圖（不是八千代 豐洲市場的）：Taro／CC BY-SA 4\.0／/);
+  // 都找不到 → 說一聲、附地圖
+  photo.configure({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ query: { pages: [] } }) }) });
+  const p2 = { photo: ['八千代 豊洲市場', 'アジフライ'], shop: '八千代 豐洲市場' };
+  const n2 = await handlePhoto('GSHOP', p2, { ts: Date.now() });
+  assert.equal(p2.images, undefined);
+  assert.match(n2, /找不到可以合法使用的圖片[\s\S]*📍 八千代 豐洲市場 地圖：https:\/\/www\.google\.com\/maps/);
+});
+
+await test('健身：講到「運動」也帶健身資料', () => {
+  assert.equal(coachMod.FITNESS_RE.test('今天要做什麼運動？'), true);
 });
 
 console.log(`\n${pass} 項全部通過`);
