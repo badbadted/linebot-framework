@@ -36,6 +36,8 @@ import * as photo from './photo.js';
 import { parseLlmJson } from '../../src/utils/llm-json.js';
 import * as coach from '../coach/index.js';
 import * as cards from './cards.js';
+import * as kb from './kb.js';
+import { join as pathJoin, resolve as pathResolve } from 'node:path';
 
 const MEMORY_MAX = 30;      // 每群最多記幾條
 const MEMORY_PER_REPLY = 2; // 每次最多新增幾條
@@ -53,6 +55,7 @@ const MENTION_RE = /小帥/;
 export const SHOT_CMD_RE = /^小帥\s*截\s*(D\d{1,2}|一覽表?)$/i; // 行程卡上「📸 截這天／截一覽表」按鈕送的字
 
 let db, lineApi, llm, isAdmin, brain;
+let kbTimer = null;
 const enabled = new Set();
 const nameCache = new Map(); // `${chatId}:${userId}` → displayName
 const lastItem = new Map();  // chatId → 最近 observe 的那則（onUnmatched 拿來當觸發訊息）
@@ -171,6 +174,8 @@ function initDb() {
   }
   // 查太久補貼的答案也能帶卡片（2026-10-28）：msgs＝要接在文字後面的 Flex 訊息（JSON）
   if (!db.all('PRAGMA table_info(held_answers)').some(c => c.name === 'msgs')) db.exec('ALTER TABLE held_answers ADD COLUMN msgs TEXT');
+  // 小卡（2026-10-28）：記下每則的 LINE 訊息 ID，用回覆功能回某則再說「加到小卡」時取那則的全文
+  if (!db.all('PRAGMA table_info(chat_log)').some(c => c.name === 'msg_id')) db.exec('ALTER TABLE chat_log ADD COLUMN msg_id TEXT');
   for (const r of db.all('SELECT chat_id FROM groups WHERE enabled = 1')) enabled.add(r.chat_id);
 }
 
@@ -201,7 +206,7 @@ const LOG_RESTORE_MS = 24 * 3600_000;   // 重開時只還原一天內的
 function saveLog(chatId, item) {
   if (!db) return;
   const r = db.run('INSERT INTO chat_log (chat_id, name, user_id, text, ts, self, image_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    chatId, item.name || '', item.userId || '', String(item.text).slice(0, 1000), item.ts, item.self ? 1 : 0, item.imageId || null);
+    chatId, item.name || '', item.userId || '', String(item.text).slice(0, 5000), item.ts, item.self ? 1 : 0, item.imageId || null);
   item.logId = r?.lastInsertRowid;
   db.run('DELETE FROM chat_log WHERE chat_id = ? AND id NOT IN (SELECT id FROM chat_log WHERE chat_id = ? ORDER BY id DESC LIMIT ?)', chatId, chatId, LOG_KEEP);
 }
@@ -285,6 +290,78 @@ function quotedSelf(event) {
   const id = event?.message?.quotedMessageId;
   if (!id || !db) return null;
   return db.get('SELECT text FROM sent WHERE message_id = ?', String(id))?.text ?? null;
+}
+
+/** 記下這則的 LINE 訊息 ID（之後有人用回覆功能回它時找得到全文） */
+function tagMsgId(item, event) {
+  const id = event?.message?.id;
+  if (item?.logId && id) db.run('UPDATE chat_log SET msg_id = ? WHERE id = ?', String(id), item.logId);
+}
+
+/** 被回覆的那則：{ text, userId, name, bot }；找不到回 null */
+function quotedMessage(chatId, event) {
+  const id = event?.message?.quotedMessageId;
+  if (!id || !db) return null;
+  const r = db.get('SELECT text, user_id, name FROM chat_log WHERE chat_id = ? AND msg_id = ?', chatId, String(id));
+  if (r) return { text: r.text, userId: r.user_id, name: r.name };
+  const s = db.get('SELECT text FROM sent WHERE message_id = ?', String(id));
+  return s ? { text: s.text, userId: '', name: '小帥', bot: true } : null;
+}
+
+// ── 小卡：「小帥 加到小卡」→ 整理 → 預覽 → 管理員回「好」才存 ──
+const KB_ADD_RE = /加(?:到|進|入)\s*小卡/;
+const KB_CANCEL_RE = /^(小帥\s*[,，、]?\s*)?(取消|不要存|不用存|算了|不用了)\s*[!！。.~～]*$/;
+
+/**
+ * 小卡的新增與確認，回 true＝這則處理掉了（回覆已用掉）
+ * @param dm 私訊；群組要有叫小帥（或用回覆功能回小帥）才算
+ */
+async function kbIntercept({ chatId, userId, text, replyToken, event, mention, dm }) {
+  const t = String(text || '').normalize('NFKC').trim();
+  const addReq = (dm || mention) && KB_ADD_RE.test(t);
+  const draft = kb.draftOf(chatId);
+  if (!addReq && !draft) return false;
+  const admin = !!userId && isAdmin(userId);
+  const say = async (msgs) => {
+    try { await replyMsgs(replyToken, typeof msgs === 'string' ? [{ type: 'text', text: msgs }] : msgs); } catch (err) { console.warn(`[xiaoshuai-kb] 回覆失敗：${err.message}`); }
+    return true;
+  };
+  if (addReq && !admin) return say('這個要請 TED 加 🙏');
+  if (!admin) return false; // 別人在草稿等確認時說話：不算數，照平常處理
+
+  // 確認／取消／要改（草稿只認管理員）
+  if (draft && !addReq) {
+    if (isAffirm(t)) {
+      const row = kb.save(draft.draft, draft.raw, { source: draft.from || 'TED' });
+      kb.clearDraft(chatId);
+      console.log(`[xiaoshuai-kb] ${chatId.slice(0, 8)} 存小卡「${row.title}」第 ${row.version} 版`);
+      return say(`✅ 存好了：小卡「${row.title}」${row.version > 1 ? `（第 ${row.version} 版，舊版留著）` : ''}\n開了小帥的群組和私訊都會用到，問到相關的我就照這張回答。`);
+    }
+    if (KB_CANCEL_RE.test(t)) { kb.clearDraft(chatId); return say('好，這張小卡不存了 👌'); }
+    if (!dm && !mention) return false; // 群組裡沒叫小帥的閒聊：不當成要改
+    const r = await kb.organize(llm, draft.raw, { feedback: t, previous: draft.draft });
+    if (r.error) return say(`改不出來：${r.error}，再說清楚一點要改哪裡？`);
+    kb.setDraft(chatId, { ...draft, draft: r });
+    return say(kb.previewMessages({ ...draft, draft: r }));
+  }
+
+  // 新增：內容只能來自這則訊息本身，或被回覆的那則
+  // 原文照存（不做 NFKC，免得全形標點被改掉）
+  let raw = String(text || '').trim().replace(/^.*?加(?:到|進|入)\s*小卡[:：,，、\s]*/s, '').trim();
+  let from = '';
+  if (event?.message?.quotedMessageId) {
+    const q = quotedMessage(chatId, event);
+    if (!q) return say('找不到你回覆的那則（太久了），請直接在「小帥 加到小卡」後面貼內容');
+    raw = q.text;
+    if (q.bot || q.userId !== userId) from = q.name || '別人';
+  }
+  if (Array.from(raw).length < 10) return say('要加什麼？在「小帥 加到小卡」後面貼上內容，或用回覆功能回那則訊息再說一次');
+  const r = await kb.organize(llm, raw);
+  if (r.error) return say(`整理不出來：${r.error}`);
+  const d = { by: userId, raw, from, draft: r };
+  kb.setDraft(chatId, d);
+  console.log(`[xiaoshuai-kb] ${chatId.slice(0, 8)} 小卡預覽「${r.title}」${from ? `（內容來自 ${from}）` : ''}`);
+  return say(kb.previewMessages(d));
 }
 
 const tripsOf = (chatId) => (db?.all('SELECT name FROM trip_binds WHERE chat_id = ? ORDER BY updated_at', chatId) || []).map(r => r.name);
@@ -535,6 +612,8 @@ export function parseReply(raw, mode) {
       photo: photoQueries(o.photo),
       shop: typeof o.shop === 'string' && o.shop.trim() ? o.shop.trim().slice(0, 60) : null,
       toLuna: o.to_luna === true,
+      kb: typeof o.kb === 'string' && o.kb.trim() ? o.kb.trim().slice(0, 30) : null,
+      kbCards: o.kb_cards === true,
       tripCards: Array.isArray(o.trip_cards) ? o.trip_cards.filter(x => typeof x === 'string').slice(0, 7) : (typeof o.trip_cards === 'string' ? [o.trip_cards] : null),
       photoCaption: o.photo_caption && typeof o.photo_caption === 'object' ? { title: cards.clean(o.photo_caption.title, 40), text: cards.clean(o.photo_caption.text, 100) } : null,
       shops: Array.isArray(o.shops) && o.shops.length ? o.shops.slice(0, 5) : null,
@@ -545,7 +624,7 @@ export function parseReply(raw, mode) {
   // 沒有完整 JSON：被點名時用救回的 reply（或 JSON 前的話）當回覆，絕不送 JSON 原文；其他情況當作不說話
   const plain = mode === 'mention' || mode === 'followup' ? text.slice(0, 400) : '';
   if (/\{\s*"/.test(String(raw || ''))) console.warn(`[xiaoshuai] AI 回覆的 JSON 不完整（${String(raw).length} 字，結尾：${JSON.stringify(String(raw).slice(-40))}）`);
-  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null };
+  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false };
 }
 
 // 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
@@ -602,10 +681,12 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true, lon
   const research = replying ? recentResearch(chatId, trigger?.text) : [];
   // 健身：只在管理員私訊、講到健身（或剛聊過）才帶課表與紀錄（個人資料，不進群組）
   const fitness = dm && coach.ready() && coach.aboutFitness(chatId, trigger?.text) ? coach.fitnessSection(chatId) : '';
+  // 小卡：問題命中標題或關鍵字才帶原文全文（TED 親自給的，視為可信，不算上網）
+  const kbRows = replying ? kb.match(trigger?.text) : [];
   const res = await llm.generate({
     withMeta: true,
     system: PERSONA,
-    messages: [{ role: 'user', content: buildPrompt({ mode, transcript, trigger, allowChimeIn, tripCtx, linkCats, learningInfo, njSection, imageNote, own: replying ? ownHistory(chatId, transcript) : [], research, dm, fitness, stickerOk: replying ? media.canSticker(chatId) : null, memories: listMemories(chatId) }) }],
+    messages: [{ role: 'user', content: buildPrompt({ mode, transcript, trigger, allowChimeIn, tripCtx, linkCats, learningInfo, njSection, imageNote, own: replying ? ownHistory(chatId, transcript) : [], research, dm, fitness: fitness + kb.promptSection(kbRows), stickerOk: replying ? media.canSticker(chatId) : null, memories: listMemories(chatId) }) }],
     ...(image ? { image: { mediaType: image.mediaType, data: image.data } } : {}),
     maxTokens: (tripCtx && !tripCtx.brief) || njActive || fitness ? 3000 : 1500, // AI 會先思考，400 曾在思考階段就用完、回空字串；要產行程修改再放寬
     // 要真的回人（被叫、接著聊）→ Sonnet 聽懂再回；判斷要不要接、冷場插話 → Haiku 省錢
@@ -619,6 +700,7 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true, lon
   });
   const parsed = parseReply(res.text, mode);
   parsed.tripCtx = tripCtx;
+  parsed.kbRows = kbRows;
   parsed.searched = (res.searches || 0) + (res.fetches || 0) > 0;
   parsed.sources = Array.isArray(res.sources) ? res.sources : [];
   parsed.fitnessOn = !!fitness;
@@ -939,6 +1021,18 @@ export function cardMessages(parsed) {
   if (researchMsg) out.push(researchMsg);
   return out;
 }
+/** 回答用到小卡：問整體就附整理好的卡片；最後由程式附「根據小卡（M/D 整理）」 */
+function handleKb(chatId, parsed) {
+  if (!parsed.kb || !parsed.kbRows?.length) return '';
+  const row = parsed.kbRows.find(r => r.title === parsed.kb) || parsed.kbRows[0];
+  if (parsed.kbCards) {
+    const fl = kb.kbFlex(row);
+    if (fl) parsed.images = [...(parsed.images || []), fl].slice(0, 4);
+  }
+  console.log(`[xiaoshuai-kb] ${chatId.slice(0, 8)} 用小卡「${row.title}」回答${parsed.kbCards ? '（附卡片）' : ''}`);
+  return `\n\n${kb.footer(row)}`;
+}
+
 async function handleCards(chatId, parsed) {
   const msgs = cardMessages(parsed);
   if (msgs.length) {
@@ -1020,7 +1114,7 @@ async function thinkInner(chatId, job) {
       job.toMe = true;
       // 第二段：是在接小帥的話 → 跟被叫一樣，用 Sonnet 認真回，並重開視窗
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
-      const extra = await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed); // 先跑：可能會清掉 parsed.reply
+      const extra = await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) + handleKb(chatId, parsed); // 先跑：可能會清掉 parsed.reply
       const reply = (parsed.reply + extra).trim();
       if (!reply && !parsed.images) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} followup：不說話`); return { replied: false }; }
       const extras = withSticker(chatId, parsed, reply);
@@ -1050,7 +1144,7 @@ async function thinkInner(chatId, job) {
   const parsed = await ask(chatId, mode, { trigger, transcript, dm: !!job.dm });
   // 私訊講到家裡設備：不回，回覆留給 Luna
   if (job.dm && parsed.toLuna) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 私訊：家裡的事，交給 Luna`); return { replied: false, handoff: true }; }
-  const extra = mode === 'mention' ? await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handleFitness(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) : ''; // 先跑：可能會清掉 parsed.reply
+  const extra = mode === 'mention' ? await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handleFitness(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) + handleKb(chatId, parsed) : ''; // 先跑：可能會清掉 parsed.reply
   const reply = (parsed.reply + extra).trim();
   if (!reply && !parsed.images) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：不說話`);
@@ -1207,6 +1301,7 @@ export default {
 /小帥 行程 — 看這群綁的行程網頁（綁了之後可以請小帥改行程）
 /小帥 存 <分類> <網址> — 收藏連結（也可以叫小帥「幫我記錄運動用 <網址>」）
 /小帥 收藏 [分類] — 看收藏；/小帥 收藏 刪 #編號 — 刪掉一筆
+小帥 加到小卡 <內容> — （管理員）加一張資料卡，大家問到就照它回答；/小帥 小卡 列出、/小帥 小卡 刪 <標題>
 /小帥 開｜關 — （管理員）讓小帥進來／離開
 /小帥 行程 <名稱>｜取消 [名稱] — （管理員）綁定／取消行程網頁，一個群可以綁好幾份
 /小帥 新行程 <名稱> <標題> — （管理員）開一份新行程網頁並綁到這群，例如 /小帥 新行程 hokkaido-2028 2028 北海道滑雪`,
@@ -1237,6 +1332,20 @@ export default {
         if (!chatId) return '收藏連結要在群組裡用';
         if (m[1]) return links.removeLink(chatId, m[1], ctx.userId, isAdmin(ctx.userId));
         return links.listText(chatId, m[2] || '');
+      },
+    },
+    {
+      name: 'xiaoshuai-kb',
+      pattern: /^\/小帥\s*小卡(?:\s+刪\s+(.+))?$/,
+      describe: '/小帥 小卡 [刪 <標題>] — （管理員）列出／刪除小卡',
+      type: 'query',
+      handler: async (m, ctx) => {
+        if (!isAdmin(ctx.userId)) return '⛔ 小卡只有管理員能管';
+        if (m[1]) return kb.softDelete(m[1].trim()) ? `🗑️ 小卡「${m[1].trim()}」刪掉了（資料留著，要救回跟我說）` : `沒有叫「${m[1].trim()}」的小卡`;
+        const rows = kb.list();
+        if (!rows.length) return '還沒有小卡。要加的話跟我說「小帥 加到小卡」＋內容';
+        const when = (ts) => new Date(ts).toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei' });
+        return [`📇 小卡（${rows.length}）`, ...rows.map(r => `・${r.title}（第 ${r.version} 版，${when(r.updated_at)} 更新）`)].join('\n');
       },
     },
     {
@@ -1275,6 +1384,8 @@ export default {
     links.initLinks(db, llm);
     nj.initNjEvent(db);
     media.initStickers(db);
+    kb.initKb(db, { backups: process.env.XIAOSHUAI_KB_BACKUPS || pathJoin(pathResolve(import.meta.dirname, '..', '..'), 'data', 'backups', 'xiaoshuai-kb') });
+    if (!kbTimer) { kbTimer = setInterval(() => kb.backupDaily(), 3600_000); kbTimer.unref?.(); }
     photo.initPhotos(db);
     restoreLogs();
     // 健身提醒是推播（coach 排程）：記成小帥在私訊說過的話，他回「練了」才接得上
@@ -1289,6 +1400,7 @@ export default {
     if (!brain || (dm ? !isAdmin?.(userId) : !enabled.has(chatId))) return;
     const imageId = event?.message?.type === 'image' ? event.message.id : null;
     const item = brain.observe(chatId, { userId, text, imageId });
+    tagMsgId(item, event);
     lastItem.set(chatId, item);
     if (item) resolveName(chatId, userId, item);
     // 文字訊息等 onUnmatched 再決定（可能是指令或在叫小帥，回覆要留給那邊）
@@ -1300,9 +1412,11 @@ export default {
   /** 私訊：管理員講的話都由小帥回（家裡設備交給 Luna）；其他人私訊照舊交給原本的 AI */
   async onPrivateText({ userId, text, replyToken, event }) {
     if (!brain || !llm?.generate || !userId || !isAdmin(userId)) return false;
-    if (HOME_RE.test(String(text || '').normalize('NFKC'))) return false;
+    if (HOME_RE.test(String(text || '').normalize('NFKC')) && !KB_ADD_RE.test(String(text || '')) && !kb.draftOf(userId)) return false;
     const item = brain.observe(userId, { userId, text });
+    tagMsgId(item, event);
     if (item) await resolveName(userId, userId, item);
+    if (await kbIntercept({ chatId: userId, userId, text, replyToken, event, dm: true })) return true;
     const trigger = item || { text, userId, ts: Date.now() };
     const quoted = quotedSelf(event);
     if (quoted) trigger.quoted = quoted;
@@ -1319,7 +1433,7 @@ export default {
     return !r?.handoff;
   },
 
-  async onUnmatched({ chatId, text, replyToken, event }) {
+  async onUnmatched({ chatId, userId, text, replyToken, event }) {
     if (!brain || !chatId || !llm?.generate) return false;
     const item = lastItem.get(chatId);
     const trigger = item?.text === text ? item : { text };
@@ -1329,6 +1443,7 @@ export default {
     // 用回覆功能回某則訊息（可能是照片）→ 記下那則的 ID，看照片時用
     if (event?.message?.quotedMessageId) trigger.quotedId = String(event.message.quotedMessageId);
     const isMention = !!quoted || isMentioned(text, event);
+    if (enabled.has(chatId) && await kbIntercept({ chatId, userId, text, replyToken, event, mention: isMention, dm: false })) return true;
     // 時段外被叫：回一句休息中（reply 免費），同一群 30 分鐘內只回一次
     if (isMention && enabled.has(chatId) && !brain.inHours()) {
       const last = restNoticeAt.get(chatId) || 0;

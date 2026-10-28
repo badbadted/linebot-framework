@@ -14,6 +14,7 @@ import * as shot from '../plugins/xiaoshuai/shot.js';
 import * as media from '../plugins/xiaoshuai/media.js';
 import * as photo from '../plugins/xiaoshuai/photo.js';
 import * as cards from '../plugins/xiaoshuai/cards.js';
+import * as kb from '../plugins/xiaoshuai/kb.js';
 import coach, * as coachMod from '../plugins/coach/index.js';
 import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -264,13 +265,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -1277,6 +1278,140 @@ await test('卡片：行程卡按鈕送的「小帥 截 D3」不經 AI', () => {
   assert.ok(SHOT_CMD_RE.test('小帥 截 一覽'));
   assert.ok(!SHOT_CMD_RE.test('小帥 截圖給我看住宿'));
   assert.deepEqual(parseReply('{"reply":"行程在這","trip_cards":["all"]}', 'mention').tripCards, ['all']);
+});
+
+// ── 小卡 ─────────────────────────────────────────
+const KB_DRAFT = { title: '日本退稅新制', keywords: ['退稅', '免稅', 'tax free', '免税', '海關確認', '紅燈'], cards: [
+  { title: '🆚 新制差在哪', lines: ['結帳先付含稅全額', '離境海關確認後才退'] },
+  { title: '🛫 機場那天', lines: ['先海關確認', '看燈號', '才託運行李'] },
+] };
+const KB_RAW = '日本退稅新制重點整理：2026/11/1 起結帳先付含稅全額，離境機場完成海關確認後才退稅。機場一定要先做海關確認再託運行李，紅燈要帶商品去人工櫃檯。';
+
+async function kbBot({ answer = '{"reply":"在喔"}', draft = KB_DRAFT } = {}) {
+  process.env.XIAOSHUAI_KB_BACKUPS = mkdtempSync(pjoin(tmpdir(), 'xs-kb-'));
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const prompts = [];
+  const organizes = [];
+  const lineApi = {
+    reply: async (_t, m) => { replies.push(Array.isArray(m) ? m : [{ type: 'text', text: m }]); return {}; }, push: async () => { throw new Error('不該推播'); },
+    getGroupMemberProfile: async (_g, u) => ({ displayName: u === 'UADMIN' ? 'TED' : '阿庭' }), getProfile: async () => ({ displayName: 'TED' }),
+  };
+  const ctx = { db, lineApi, isAdmin: (u) => u === 'UADMIN',
+    providers: { llm: { generate: async ({ system, messages }) => {
+      if (system.includes('資料整理員')) { organizes.push(messages[0].content); return { text: JSON.stringify(typeof draft === 'function' ? draft(messages[0].content) : draft) }; }
+      prompts.push(messages[0].content);
+      return { text: typeof answer === 'function' ? answer(messages[0].content) : answer };
+    } } } };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GKB', 1)");
+  await xiaoshuai.init(ctx);
+  let seq = 100;
+  // 群組裡講一句：先 onGroupText（記對話）再 onUnmatched（跟 webhook 一樣的順序）
+  const say = async (userId, text, extra = {}) => {
+    const id = String(++seq);
+    const event = { message: { type: 'text', id, text, ...extra } };
+    xiaoshuai.onGroupText({ chatId: 'GKB', userId, text, event });
+    await new Promise(r => setTimeout(r, 10)); // 等名字查完
+    const n = replies.length;
+    const handled = await xiaoshuai.onUnmatched({ chatId: 'GKB', userId, text, replyToken: `rt${id}`, event });
+    return { id, handled, reply: replies.length > n ? replies.at(-1) : null };
+  };
+  return { db, replies, prompts, organizes, say };
+}
+
+await test('小卡：非管理員擋下、沒說好不存、只有管理員的「好」算數', async () => {
+  const { db, say, organizes } = await kbBot();
+  let r = await say('UOTHER', `小帥 加到小卡 ${KB_RAW}`);
+  assert.equal(r.reply[0].text, '這個要請 TED 加 🙏');
+  assert.equal(organizes.length, 0);
+  r = await say('UADMIN', `小帥 加到小卡 ${KB_RAW}`);
+  assert.deepEqual(r.reply.map(m => m.type), ['text', 'flex']);
+  assert.match(r.reply[0].text, /📇 小卡預覽：日本退稅新制\n關鍵字：退稅、免稅、tax free/);
+  assert.ok(!r.reply[0].text.includes('內容來自'));
+  assert.equal(r.reply[1].contents.contents.length, 2);
+  assert.equal(organizes.length, 1);
+  assert.match(organizes[0], /日本退稅新制重點整理/);
+  assert.deepEqual(kb.list(), []);                     // 還沒說好
+  await say('UOTHER', '好');
+  assert.deepEqual(kb.list(), []);                     // 別人的「好」不算
+  r = await say('UADMIN', '好');
+  assert.match(r.reply[0].text, /^✅ 存好了：小卡「日本退稅新制」/);
+  const row = db.get("SELECT * FROM kb_cards WHERE title = '日本退稅新制' AND active = 1");
+  assert.equal(row.raw, KB_RAW);                       // 原文全文
+  assert.equal(row.version, 1);
+  assert.equal(JSON.parse(row.cards).length, 2);
+});
+
+await test('小卡：取消、要改就重新整理', async () => {
+  const { say, organizes } = await kbBot({ draft: (c) => (c.includes('標題改成') ? { ...KB_DRAFT, title: '日本免稅新制' } : KB_DRAFT) });
+  await say('UADMIN', `小帥 加到小卡 ${KB_RAW}`);
+  const r = await say('UADMIN', '小帥 標題改成日本免稅新制');
+  assert.equal(organizes.length, 2);
+  assert.match(organizes[1], /【上一版整理】[\s\S]*【管理員要你這樣改】\n小帥 標題改成日本免稅新制/);
+  assert.match(r.reply[0].text, /小卡預覽：日本免稅新制/);
+  const c = await say('UADMIN', '取消');
+  assert.match(c.reply[0].text, /不存了/);
+  await say('UADMIN', '好');
+  assert.deepEqual(kb.list(), []);
+});
+
+await test('小卡：用回覆功能回別人的訊息再說「加到小卡」→ 內容取那則、預覽標明來源', async () => {
+  const { say, organizes } = await kbBot();
+  const src = await say('UOTHER', KB_RAW);
+  const r = await say('UADMIN', '小帥 加到小卡', { quotedMessageId: src.id });
+  assert.match(organizes[0], /日本退稅新制重點整理/);
+  assert.match(r.reply[0].text, /⚠️ 內容來自 阿庭（不是 TED 發的）/);
+});
+
+await test('小卡：同標題再加是新版本（舊版留著）、刪除是軟刪除', async () => {
+  const { db, say } = await kbBot();
+  await say('UADMIN', `小帥 加到小卡 ${KB_RAW}`); await say('UADMIN', '好');
+  await say('UADMIN', `小帥 加到小卡 ${KB_RAW} 補充：紅燈要開箱`); const r = await say('UADMIN', 'OK');
+  assert.match(r.reply[0].text, /第 2 版，舊版留著/);
+  assert.deepEqual(db.all("SELECT version, active FROM kb_cards WHERE title = '日本退稅新制' ORDER BY version"), [{ version: 1, active: 0 }, { version: 2, active: 1 }]);
+  const cmd = xiaoshuai.commands.find(c => c.name === 'xiaoshuai-kb');
+  assert.equal(await cmd.handler(cmd.pattern.exec('/小帥 小卡 刪 日本退稅新制'), { userId: 'UOTHER' }), '⛔ 小卡只有管理員能管');
+  assert.match(await cmd.handler(cmd.pattern.exec('/小帥 小卡'), { userId: 'UADMIN' }), /・日本退稅新制（第 2 版/);
+  assert.match(await cmd.handler(cmd.pattern.exec('/小帥 小卡 刪 日本退稅新制'), { userId: 'UADMIN' }), /刪掉了/);
+  assert.deepEqual(kb.list(), []);
+  assert.equal(db.all("SELECT * FROM kb_cards WHERE title = '日本退稅新制'").length, 2); // 資料還在
+  assert.ok(db.get("SELECT deleted_at FROM kb_cards WHERE version = 2").deleted_at > 0);
+  assert.deepEqual(kb.match('日本退稅要怎麼做'), []);                                       // 刪了就不再用
+});
+
+await test('小卡：命中關鍵字才帶入；問整體附卡片＋「根據小卡」', async () => {
+  const { db, say, prompts, replies } = await kbBot({ answer: (p) => (p.includes('【小卡】') ? '{"reply":"新制是結帳先付全額，離境時海關確認後才退👇","kb":"日本退稅新制","kb_cards":true}' : '{"reply":"在喔"}') });
+  await say('UADMIN', `小帥 加到小卡 ${KB_RAW}`); await say('UADMIN', '好');
+  db.run("UPDATE kb_cards SET caveat = '以國稅廳與機場現場公告為準'");
+  // 用管理員私訊測（不用等群組的隨機延遲；小卡群組、私訊共用）
+  const dm = (text, id) => xiaoshuai.onPrivateText({ userId: 'UADMIN', text, replyToken: `d${id}`, event: { message: { type: 'text', id: String(id), text } } });
+  await dm('今天天氣好嗎', 901);
+  assert.ok(!prompts.at(-1).includes('【小卡】'));                // 沒命中不帶
+  await dm('日本退稅要怎麼做', 902);
+  assert.match(prompts.at(-1), /【小卡】[\s\S]*日本退稅新制重點整理/); // 命中帶原文全文
+  const last = replies.at(-1);
+  assert.deepEqual(last.map(m => m.type), ['text', 'flex']);
+  assert.match(last[0].text, /👇\n\n📇 根據小卡（\d{1,2}\/\d{1,2} 整理），以國稅廳與機場現場公告為準$/);
+  assert.match(last[1].altText, /^日本退稅新制\n・🆚 新制差在哪/);
+  assert.equal(kb.match('紅燈怎麼辦')[0]?.title, '日本退稅新制');                        // 關鍵字命中
+  assert.equal(kb.match('tax free 要帶護照嗎')[0]?.title, '日本退稅新制');              // 英文關鍵字
+});
+
+await test('小卡：每天備份一份、留 14 天', async () => {
+  const { say } = await kbBot();
+  await say('UADMIN', `小帥 加到小卡 ${KB_RAW}`); await say('UADMIN', '好');
+  const dir = process.env.XIAOSHUAI_KB_BACKUPS;
+  const { writeFileSync: wf, utimesSync, existsSync: ex, readFileSync: rf } = await import('node:fs');
+  wf(pjoin(dir, 'kb-2026-01-01.json'), '[]');
+  const old = (Date.now() - 20 * 86400_000) / 1000;
+  utimesSync(pjoin(dir, 'kb-2026-01-01.json'), old, old);
+  const f = kb.backupDaily(Date.now() + 86400_000); // 隔天
+  assert.ok(ex(f));
+  assert.equal(JSON.parse(rf(f, 'utf8'))[0].title, '日本退稅新制');
+  assert.ok(!ex(pjoin(dir, 'kb-2026-01-01.json')));
 });
 
 console.log(`\n${pass} 項全部通過`);
