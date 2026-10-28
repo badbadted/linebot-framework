@@ -650,18 +650,25 @@ await test('照片下載：太大改抓預覽、格式不對不收', async () =>
   assert.equal(await media.loadImage({ getContent: async () => ({ buffer: Buffer.from('x'), contentType: 'text/html' }) }, '1'), null);
 });
 
-await test('貼圖：只收清單裡的心情、同一群大約 5 次回話一張', () => {
+await test('貼圖：只收清單裡的心情；合適就貼，但不連續、不太常', () => {
   assert.equal(parseReply('{"reply":"讚","sticker":"開心"}', 'mention').sticker, '開心');
   assert.equal(parseReply('{"reply":"讚","sticker":"亂寫"}', 'mention').sticker, null);
-  const got = [];
-  for (let i = 1; i <= 12; i++) got.push(media.stickerMessage('GS', '開心') ? i : 0);
-  assert.deepEqual(got.filter(Boolean), [5, 10]);              // 第 5、10 次回話才貼
-  assert.deepEqual(media.stickerMessage('GT', '開心'), null);   // 別的群各自算
-  // 沒給心情也算次數；第 5 次剛好沒心情就延到下一次有心情的
-  for (let i = 0; i < 4; i++) media.stickerMessage('GU', null);
-  assert.equal(media.stickerMessage('GU', null), null);
-  assert.deepEqual(media.stickerMessage('GU', 'OK'), { type: 'sticker', packageId: '11537', stickerId: '52002740' });
-  assert.equal(media.stickerMessage('GU', 'x'), null);
+  let t = NOON;
+  assert.equal(media.canSticker('GS', t), true);                 // 還沒貼過：可以
+  assert.ok(media.stickerMessage('GS', '開心', t));               // AI 覺得合適 → 馬上貼
+  assert.equal(media.canSticker('GS', t), false);
+  assert.equal(media.stickerMessage('GS', '開心', t + 60_000), null);      // 下一句：不連續貼
+  assert.equal(media.stickerMessage('GS', null, t + 2 * 60_000), null);
+  assert.equal(media.stickerMessage('GS', '開心', t + 3 * 60_000), null);  // 才隔 2 句
+  assert.equal(media.stickerMessage('GS', '開心', t + 4 * 60_000), null);  // 隔 3 句了，但才 4 分鐘
+  assert.ok(media.stickerMessage('GS', '開心', t + 11 * 60_000));          // 隔 4 句、11 分鐘 → 貼
+  assert.equal(media.stickerMessage('GT', null, t), null);                // 沒給心情不貼
+  assert.ok(media.stickerMessage('GT', 'OK', t));                         // 別的群各自算
+  assert.equal(media.stickerMessage('GU', 'x', t), null);                 // 不在清單
+  // 能不能貼有寫進 prompt
+  assert.match(buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], stickerOk: false }), /【這次能不能貼圖】不能/);
+  assert.match(buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], stickerOk: true }), /【這次能不能貼圖】可以/);
+  assert.ok(!buildPrompt({ mode: 'idle', nowTs: NOON, memories: [], transcript: [] }).includes('能不能貼圖'));
 });
 
 await test('實際狀況：貼行程表照片後說「小帥 幫我補行程 新增到2/9」', () => {
@@ -833,16 +840,17 @@ await test('有人叫小帥時：查好的答案跟這次的回答一起送', as
   assert.deepEqual(heldAnswers('GH'), []);
 });
 
-await test('貼圖次數存 DB：bot 重開不歸零', async () => {
+await test('貼圖狀態存 DB：bot 重開不歸零（舊表自動加欄位）', async () => {
   const Database = (await import('better-sqlite3')).default;
   const raw = new Database(':memory:');
   const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  db.exec('CREATE TABLE sticker_state (chat_id TEXT PRIMARY KEY, since INTEGER NOT NULL DEFAULT 0)'); // 舊版的表
+  db.run("INSERT INTO sticker_state VALUES ('GP', 4)");
   media.initStickers(db);
-  for (let i = 0; i < 3; i++) assert.equal(media.stickerMessage('GP', '開心'), null);
+  assert.ok(media.stickerMessage('GP', '開心', NOON));          // 舊資料：回了 4 句、沒時間紀錄 → 可以
   media.initStickers(db); // 重開
-  assert.equal(media.stickerMessage('GP', '開心'), null);   // 第 4 次
-  assert.ok(media.stickerMessage('GP', '開心'));            // 第 5 次：貼
-  assert.equal(db.get("SELECT since FROM sticker_state WHERE chat_id = 'GP'").since, 0);
+  assert.equal(media.canSticker('GP', NOON + 60_000), false);
+  assert.deepEqual(db.get("SELECT since, last_at FROM sticker_state WHERE chat_id = 'GP'"), { since: 0, last_at: NOON });
 });
 
 // ── 附圖（Commons） ───────────────────────────────

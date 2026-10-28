@@ -4,8 +4,8 @@
  * 照片：群組貼照片時只記「［照片］」與訊息 ID，不花 AI；
  *   只有被點名或接話、而且「用回覆功能回那張照片」、「貼照片的人 5 分鐘內自己叫小帥」或「5 分鐘內有人講到圖片／這張…」才下載那一張給 AI 看。
  *   照片是群組成員自己貼的，跟他打字同等看待：可以照著提行程修改（一樣要有人回好），但那輪不寫記憶。
- * 貼圖：只能用 LINE 開放給機器人的官方貼圖（packageId 11537 熊大兔兔），AI 每次回話依心情給一個；
- *   實際貼不貼由程式決定：同一群距離上一張至少回了 5 次才貼（使用者 2026-10-28 定：大約 5 次 1 張）。
+ * 貼圖：只能用 LINE 開放給機器人的官方貼圖（packageId 11537 熊大兔兔），AI 覺得這句真的貼切才給一個；
+ *   程式只擋連續與太頻繁：上一張之後至少再回 3 句、而且隔 10 分鐘（使用者 2026-10-28 定：合適就貼，但不要連續、太常）。
  */
 
 const IMAGE_WINDOW_MS = 5 * 60_000;
@@ -75,30 +75,45 @@ export const STICKERS = {
   生氣: '52002772',
 };
 export const STICKER_KEYS = Object.keys(STICKERS).join('、');
-export const STICKER_EVERY = 5;
-// 上一張貼圖之後回了幾次：存 DB（2026-10-28：只放記憶體時，bot 一天重開好幾次，次數一直歸零，始終沒貼過）
+// 2026-10-28 改：不再固定「5 次一張」，AI 覺得這句真的貼切才給；程式只擋連續與太頻繁
+export const GAP_REPLIES = 3;          // 上一張之後至少再回幾句（不連續）
+export const GAP_MS = 10 * 60_000;     // 同一群／私訊至少隔多久
+// 上一張之後回了幾句、上一張的時間：存 DB（只放記憶體時 bot 一天重開好幾次，次數一直歸零）
 let db = null;
-const sinceSticker = new Map(); // 沒有 DB 時（測試）的備用
+const memState = new Map(); // 沒有 DB 時（測試）的備用
 
 export function initStickers(database) {
   db = database;
   db.exec('CREATE TABLE IF NOT EXISTS sticker_state (chat_id TEXT PRIMARY KEY, since INTEGER NOT NULL DEFAULT 0)');
+  if (!db.all('PRAGMA table_info(sticker_state)').some(c => c.name === 'last_at')) db.exec('ALTER TABLE sticker_state ADD COLUMN last_at INTEGER NOT NULL DEFAULT 0');
 }
-const getSince = (chatId) => (db ? db.get('SELECT since FROM sticker_state WHERE chat_id = ?', chatId)?.since : sinceSticker.get(chatId)) || 0;
-const setSince = (chatId, n) => (db
-  ? db.run('INSERT INTO sticker_state (chat_id, since) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET since = excluded.since', chatId, n)
-  : sinceSticker.set(chatId, n));
+// 沒有紀錄（還沒貼過）＝可以貼
+function getState(chatId) {
+  const r = db ? db.get('SELECT since, last_at FROM sticker_state WHERE chat_id = ?', chatId) : memState.get(chatId);
+  return r ? { since: r.since, lastAt: r.last_at ?? r.lastAt ?? 0 } : { since: GAP_REPLIES, lastAt: 0 };
+}
+function setState(chatId, since, lastAt) {
+  if (!db) { memState.set(chatId, { since, lastAt }); return; }
+  db.run(`INSERT INTO sticker_state (chat_id, since, last_at) VALUES (?, ?, ?)
+    ON CONFLICT(chat_id) DO UPDATE SET since = excluded.since, last_at = excluded.last_at`, chatId, since, lastAt);
+}
+
+/** 這次能不能貼（給 AI 的 prompt 用：不能貼就別給、也別說要貼） */
+export function canSticker(chatId, now = Date.now()) {
+  const st = getState(chatId);
+  return st.since >= GAP_REPLIES && now - st.lastAt >= GAP_MS;
+}
 
 /**
- * 每次小帥回話都呼叫一次：算次數，AI 有給心情、而且距離上一張已經回滿 5 次才回貼圖訊息，其他回 null
+ * 每次小帥回話都呼叫一次：AI 有給心情、而且沒連續、離上一張夠久才回貼圖訊息，其他回 null
  */
-export function stickerMessage(chatId, mood) {
-  const n = getSince(chatId) + 1;
+export function stickerMessage(chatId, mood, now = Date.now()) {
   const id = STICKERS[String(mood || '').trim()];
-  if (id && n >= STICKER_EVERY) {
-    setSince(chatId, 0);
+  const st = getState(chatId);
+  if (id && canSticker(chatId, now)) {
+    setState(chatId, 0, now);
     return { type: 'sticker', packageId: '11537', stickerId: id };
   }
-  setSince(chatId, n);
+  setState(chatId, st.since + 1, st.lastAt);
   return null;
 }
