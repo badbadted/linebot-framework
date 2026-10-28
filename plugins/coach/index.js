@@ -1,26 +1,26 @@
 /**
- * Coach Plugin — 小帥健身教練（只給管理員本人，私訊用）
+ * Coach Plugin — 小帥的健身技能（只給管理員本人）＋訓練提醒排程
  *
- * 私訊 bot 講健身相關的話（或小帥剛找過你 10 分鐘內回話）→ 小帥用教練身分回，其他照舊交給 Luna。
- * 訓練日 早上推今天課表、晚上沒回報就問練了沒；每週一早上提醒空腹量體重。
+ * 2026-10-28 起只有一個小帥：私訊對話一律由 xiaoshuai 回，講到健身時它向這裡拿【健身資料】放進 prompt，
+ * AI 給的設定、訓練紀錄、體重交回 applyFitness() 寫進資料（本 plugin 不再自己跟人對話、不再有另一份人設）。
+ * 訓練日 早上推今天課表、晚上沒回報就問練了沒；每週一早上提醒空腹量體重（推播由程式產生，不花 AI）。
  * 課表、加重、組數、營養目標、體重趨勢都由 program.js 算（AI 只負責聽懂你說什麼、把數字交給程式）。
  *
  * /教練            設定、本週課表、營養目標
  * /教練 紀錄        最近的訓練與體重
  * /教練 暫停｜恢復   停／開提醒
  *
- * 需求 Provider：db（SQLite）＋ llm（luna，需有 generate）
+ * 需求 Provider：db（SQLite）
  */
 
 import * as P from './program.js';
-import { parseLlmJson } from '../../src/utils/llm-json.js';
 
-const WINDOW_MS = 10 * 60_000;   // 小帥講完話後多久內，私訊不必提到健身也算在跟教練說
-const HISTORY_TURNS = 10;
-const COACH_RE = /教練|小帥|健身|重訓|訓練|課表|練了|練完|有練|沒練|去練|深蹲|臥推|划船|硬舉|肩推|下拉|腿推|體重|增重|增肌|蛋白質|碳水|休息日|\d+\s*(kg|公斤)/i;
+const WINDOW_MS = 10 * 60_000;   // 講過健身（或推過提醒）後多久內，不必再提到健身也帶健身資料
+export const FITNESS_RE = /教練|健身|重訓|訓練|課表|練了|練完|有練|沒練|去練|深蹲|臥推|划船|硬舉|肩推|下拉|腿推|體重|增重|增肌|蛋白質|碳水|休息日|\d+\s*(kg|公斤)/i;
 
-let db, lineApi, llm, scheduler, isAdmin;
-const lastCoachAt = new Map(); // userId → 小帥上次跟他說話的時間
+let db, lineApi, scheduler, isAdmin;
+const lastFitnessAt = new Map(); // userId → 上次聊健身／推提醒的時間
+let pushListener = null;         // 小帥：推了提醒就記進私訊對話，下一句接得上
 
 // ── 資料 ───────────────────────────────────────────
 
@@ -85,12 +85,6 @@ function lastLogs(uid) {
 }
 const weightsOf = (uid) => db.all('SELECT date, kg FROM weights WHERE user_id = ? ORDER BY date', uid);
 
-function addChat(uid, role, text) {
-  db.run('INSERT INTO chat (user_id, role, text, at) VALUES (?, ?, ?, ?)', uid, role, String(text).slice(0, 600), Date.now());
-  db.run('DELETE FROM chat WHERE user_id = ? AND id NOT IN (SELECT id FROM chat WHERE user_id = ? ORDER BY id DESC LIMIT ?)', uid, uid, HISTORY_TURNS * 2);
-}
-const history = (uid) => db.all('SELECT role, text FROM chat WHERE user_id = ? ORDER BY id', uid);
-
 function todayPlanFor(uid, p, now = Date.now()) {
   return P.todayPlan(p, doneInPhase(uid, p.phase || 'full3'), lastLogs(uid), now);
 }
@@ -100,8 +94,8 @@ function todayPlanFor(uid, p, now = Date.now()) {
 async function push(uid, text) {
   try {
     await lineApi.push(uid, text);
-    lastCoachAt.set(uid, Date.now());
-    addChat(uid, 'coach', text);
+    lastFitnessAt.set(uid, Date.now());
+    try { pushListener?.(uid, text); } catch (err) { console.warn(`[coach] 記推播失敗：${err.message}`); }
   } catch (err) { console.error(`[coach] push 失敗：${err.message}`); }
 }
 
@@ -145,11 +139,19 @@ async function weighJob(uid) {
   await push(uid, '週一早安 ⚖️ 起床上完廁所、還沒吃東西前量一下體重，跟我說幾公斤。');
 }
 
-// ── 對話 ───────────────────────────────────────────
+// ── 給小帥用的健身技能 ──────────────────────────────
 
-const PERSONA = `你是「小帥」，使用者私人的健身教練，用 LINE 私訊跟他聊。個性溫暖、認真、可靠，會鼓勵、也會提醒該做的事。
-說話：台灣口語、全中文，像教練打字；平常 1～3 句，解釋觀念時最多約 200 字；不用 Markdown，不用表格。
-你的訓練觀念（照這套帶他，他是極瘦、想增重增肌的上班族新手）：
+/** 推了提醒要通知誰（小帥把它記成自己說過的話） */
+export const setPushListener = (fn) => { pushListener = fn; };
+export const ready = () => !!db;
+
+/** 這句要不要帶健身資料：講到健身，或 10 分鐘內聊過健身／推過提醒 */
+export function aboutFitness(uid, text, now = Date.now()) {
+  if (!db || !uid) return false;
+  return FITNESS_RE.test(String(text || '')) || now - (lastFitnessAt.get(uid) || 0) < WINDOW_MS;
+}
+
+export const FITNESS_GUIDE = `你也是他（管理員）私人的健身教練。訓練觀念（照這套帶他，他是極瘦、想增重增肌的上班族新手）：
 - 超量恢復：同一部位練完要 48～72 小時恢復，之後有短暫高峰，要在高峰再練。所以新手不分化、一週三練全身，中間隔一天；不要一週一部位的五分化、四分化，也不要一週只練三天的三分化。
 - 動作做減法：新手只練深蹲、臥推、划船三個大動作，先練好神經適應、快速上強度。深蹲最重要，臥推、划船次之。
 - 強度：10～15RM、每動作 3～6 組；極瘦的人先不要碰 8 下以內的大重量，免得受傷。
@@ -157,20 +159,35 @@ const PERSONA = `你是「小帥」，使用者私人的健身教練，用 LINE 
 - 飲食：每天蛋白質每公斤 1.8 克、碳水每公斤 6 克，脂肪正常吃；前一兩個月用食物秤記，避免「感覺很飽其實不夠」。少量多餐一天五六餐，每 3 小時吃一次、七八分飽，加餐可以帶香蕉、麵包、保久乳、茶葉蛋；吃不下就從兩餐中間多一根香蕉開始，兩週後再加。早餐一定要吃。
 - 每週一早上空腹量體重；連一兩週沒漲就是吃不夠，要加主食。
 - 把健身當長期的興趣，保留生活餘裕，比硬撐重要。
-界線：
-- 課表、建議重量、組數、營養目標、體重判斷都由系統算好給你（下面【系統資料】），照著講，不要自己改數字或編紀錄。
+健身的界線：
+- 課表、建議重量、組數、營養目標、體重判斷都由系統算好（下面【健身資料】），照著講，不要自己改數字或編紀錄。
 - 有痛（關節、下背、胸口）或頭暈，就叫他停下來、休息，持續不舒服要看醫生；不給醫療診斷，不推薦藥物、補充劑劑量。
-- 講出來的話要負責：答應的事要做到，不確定就說不確定；說錯了被指出就直接承認更正，不硬拗。
-- 不知道的不要編；訓練和營養的說法要有根據，不講沒把握的偏方或數字。
-輸出格式：只輸出一個 JSON 物件，前後不要有其他文字：
-{"reply":"要說的話"}
-需要時再加這些欄位（只放他這次真的講到的，沒講不要填）：
+- 健身的事可以講長一點：解釋觀念時最多約 200 字。
+他講到健身的這些事時，JSON 再加這些欄位（只放他這次真的講到的，沒講不要填）：
 - "profile": {"weight_kg":數字,"height_cm":數字,"train_days":[星期數字，日=0、一=1…六=6],"remind_time":"HH:mm","checkin_time":"HH:mm","weigh_time":"HH:mm","phase":"full3 或 split4（他說要換課表才填）"}
 - "log": [{"exercise":"深蹲／臥推／槓鈴划船／站姿肩推／羅馬尼亞硬舉／上斜啞鈴臥推／滑輪下拉／腿推","sets":[[公斤,次數],…],"date":"YYYY-MM-DD，不是今天練的才填"}]（例如「深蹲 40 12 12 11」＝[[40,12],[40,12],[40,11]]）
 - "weigh_in": 數字（他回報今天量的體重）
 - "session": "done"（說練完了但沒給數字）或 "skip"（今天沒練、要休息）
-reply 不用重複列課表或紀錄，系統會把記下的內容和下次建議附在後面；你就鼓勵、回答問題、提醒重點。
-他這句如果明顯跟健身、飲食、睡眠作息都無關（例如問天氣、開冷氣、查行程），只輸出 {"not_mine": true}，會交給家裡的管家回。`;
+reply 不用重複列課表或紀錄，系統會把記下的內容和下次建議附在後面；你就鼓勵、回答問題、提醒重點。`;
+
+/** 給小帥 prompt 的健身段落（指引＋這個人的設定、今天課表、體重） */
+export function fitnessSection(uid, now = Date.now()) {
+  if (!db) return '';
+  lastFitnessAt.set(uid, now);
+  return `\n\n【健身教練】\n${FITNESS_GUIDE}\n\n【健身資料】（系統算好的，照著講）\n${systemData(uid, getProfile(uid), now)}`;
+}
+
+/** AI 回的 JSON 物件裡的健身欄位；都沒有回 null */
+export function parseFitness(o) {
+  if (!o || typeof o !== 'object') return null;
+  const f = {
+    profile: o.profile && typeof o.profile === 'object' && !Array.isArray(o.profile) ? o.profile : null,
+    log: Array.isArray(o.log) ? o.log : [],
+    weighIn: Number.isFinite(+o.weigh_in) && o.weigh_in !== null && o.weigh_in !== '' && typeof o.weigh_in !== 'boolean' ? +o.weigh_in : null,
+    session: ['done', 'skip'].includes(o.session) ? o.session : null,
+  };
+  return f.profile || f.log.length || f.weighIn !== null || f.session ? f : null;
+}
 
 function systemData(uid, p, now = Date.now()) {
   const { date, dow } = P.taipeiDay(now);
@@ -185,28 +202,11 @@ function systemData(uid, p, now = Date.now()) {
     if (st) lines.push(`今天狀態：${st === 'done' ? '已練完' : '說今天不練'}`);
     lines.push(`這個階段已完成 ${doneInPhase(uid, p.phase || 'full3')} 次訓練`);
   } else {
-    lines.push('〔他的設定〕還沒有（第一次聊，先打招呼、說明你會怎麼帶他）');
+    lines.push('〔他的設定〕還沒有（第一次聊健身，說明你會怎麼帶他）');
   }
   const w = weightsOf(uid).slice(-4);
   if (w.length) lines.push(`〔最近體重〕${w.map(x => `${x.date.slice(5)} ${x.kg}`).join('、')}`);
   return lines.join('\n');
-}
-
-export function parseCoach(raw) {
-  const { obj: o, text } = parseLlmJson(raw);
-  if (o) {
-    return {
-      reply: typeof o.reply === 'string' ? o.reply.trim() : '',
-      profile: o.profile && typeof o.profile === 'object' && !Array.isArray(o.profile) ? o.profile : null,
-      log: Array.isArray(o.log) ? o.log : [],
-      weighIn: Number.isFinite(+o.weigh_in) && o.weigh_in !== null && o.weigh_in !== '' ? +o.weigh_in : null,
-      session: ['done', 'skip'].includes(o.session) ? o.session : null,
-      notMine: o.not_mine === true,
-    };
-  }
-  // 沒有完整 JSON（先講一段話才接 JSON、JSON 被截斷）：只用救回的 reply 或 JSON 前的話，不把 JSON 原文送出去
-  if (raw) console.warn(`[coach] AI 回覆不是完整 JSON（${String(raw).length} 字，結尾：${JSON.stringify(String(raw).slice(-40))}）`);
-  return { reply: text.slice(0, 1000), profile: null, log: [], weighIn: null, session: null };
 }
 
 /** AI 給的一筆訓練 → { ex, sets, date } 或錯誤 */
@@ -225,8 +225,14 @@ export function cleanLog(item, today) {
   return { ex, sets, date };
 }
 
-/** 把 AI 聽懂的內容寫進資料；回傳要接在 reply 後面的文字 */
-function apply(uid, parsed, now = Date.now()) {
+/**
+ * 把 AI 聽懂的內容寫進資料；回傳要接在 reply 後面的文字
+ * @param parsed parseFitness() 的結果（null＝這句沒有新資料，只補問還缺的設定）
+ */
+export function applyFitness(uid, parsed, now = Date.now()) {
+  if (!db) return '';
+  parsed = parsed || { profile: null, log: [], weighIn: null, session: null };
+  lastFitnessAt.set(uid, now);
   const { date: today } = P.taipeiDay(now);
   const out = [];
   let p = getProfile(uid);
@@ -275,24 +281,6 @@ function apply(uid, parsed, now = Date.now()) {
     registerSchedules(uid);
   }
   return out.length ? `\n\n${out.join('\n\n')}` : '';
-}
-
-async function converse(uid, text, replyToken, { allowHandoff = false } = {}) {
-  const p = getProfile(uid);
-  // 歷史放進同一則訊息當逐字稿（不拆成多輪：之前的回覆是純文字，拆開會讓 AI 跟著不回 JSON）
-  const chat = history(uid).map(h => `${h.role === 'me' ? '他' : '小帥（你）'}：${h.text}`).join('\n') || '（沒有）';
-  const content = `【系統資料】\n${systemData(uid, p)}\n\n【最近對話】（越下面越新）\n${chat}\n\n【他剛說】\n${text.slice(0, 500)}`;
-  const res = await llm.generate({ withMeta: true, system: PERSONA, messages: [{ role: 'user', content }], model: 'sonnet', effort: 'medium', maxTokens: 2500, timeoutMs: 45_000 });
-  const parsed = parseCoach(res.text);
-  // 不是健身的事 → 不接手，交回 Luna（同一個 replyToken 還能用）
-  if (allowHandoff && parsed.notMine && !parsed.profile && !parsed.log.length && parsed.weighIn === null && !parsed.session) return false;
-  const extra = apply(uid, parsed);
-  const reply = (parsed.reply + extra).trim() || '我在，跟我說說今天練得怎樣？';
-  addChat(uid, 'me', text);
-  addChat(uid, 'coach', reply);
-  lastCoachAt.set(uid, Date.now());
-  try { await lineApi.reply(replyToken, reply); }
-  catch (err) { console.warn(`[coach] reply 失敗：${err.message}`); }
 }
 
 // ── 指令 ───────────────────────────────────────────
@@ -347,9 +335,9 @@ export default {
   scope: 'private',
   ungated: true,
 
-  helpText: `🏋️ 小帥健身教練（私訊，管理員限定）
+  helpText: `🏋️ 小帥的健身教練（私訊，管理員限定）
 
-直接私訊跟小帥講健身的事：練完回報「深蹲 40 12 12 11」、量完體重說「62.5 公斤」、問動作或吃什麼都可以。
+直接私訊小帥講健身的事：練完回報「深蹲 40 12 12 11」、量完體重說「62.5 公斤」、問動作或吃什麼都可以。
 訓練日早上推課表、晚上沒回報會問；每週一提醒量體重。
 
 /教練 — 設定、本週課表、營養目標
@@ -366,22 +354,12 @@ export default {
     },
   ],
 
-  /** 私訊沒命中指令的文字：管理員講健身的事（或剛跟小帥聊過）才接手，其他交回 Luna */
-  async onPrivateText({ userId, text, replyToken }) {
-    if (!db || !llm?.generate || !isAdmin(userId)) return false;
-    const recent = Date.now() - (lastCoachAt.get(userId) || 0) < WINDOW_MS;
-    if (!recent && !COACH_RE.test(text || '')) return false;
-    // 明確講到健身一定接；只是剛聊過的話，AI 判斷不是健身的事就交回 Luna
-    return (await converse(userId, text, replyToken, { allowHandoff: !COACH_RE.test(text || '') })) !== false;
-  },
-
   async init(ctx) {
-    db = ctx.db;
     lineApi = ctx.lineApi;
-    llm = ctx.providers?.llm;
     scheduler = ctx.scheduler;
     isAdmin = ctx.isAdmin;
-    if (!db) { console.warn('[coach] 沒有 db provider，停用'); return; }
+    if (!ctx.db) { console.warn('[coach] 沒有 db provider，停用'); return; }
+    db = ctx.db;
     initDb();
     for (const r of db.all('SELECT user_id FROM profile')) registerSchedules(r.user_id);
     console.log(`[coach] ready（${db.all('SELECT user_id FROM profile').length} 人有設定）`);

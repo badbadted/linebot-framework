@@ -112,9 +112,11 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
       const src = event.source?.groupId ? `group:${event.source.groupId.slice(0, 8)}`
         : event.source?.roomId ? `room:${event.source.roomId.slice(0, 8)}`
         : (evUserId || '').slice(0, 8);
-      // 群組裡分享位置：轉成一句文字給 plugin 記進對話（如小帥答「附近有什麼」），不觸發回覆
+      // 群組或私訊裡分享位置：轉成一句文字給 plugin 記進對話（如小帥答「附近有什麼」），不觸發回覆
+      // 私訊（source.type 為 user）也一樣轉給 plugin，chatId 用 userId（小帥私訊；plugin 自己判斷要不要記）
+      const chatOrDm = event.source?.groupId || event.source?.roomId || (event.source?.type === 'user' ? evUserId : null);
       if (event.type === 'message' && event.message?.type === 'location' && onGroupText) {
-        const chat = event.source?.groupId || event.source?.roomId;
+        const chat = chatOrDm;
         const m = event.message;
         if (chat) {
           // 地址只留到鄉鎮區、路名為止：去掉開頭郵遞區號，從第一個數字（巷弄門牌）起整段不送
@@ -134,10 +136,10 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
           continue;
         }
       }
-      // 群組裡的貼圖、照片：轉成一句文字給 plugin 記進對話，不觸發回覆
+      // 群組或私訊裡的貼圖、照片：轉成一句文字給 plugin 記進對話，不觸發回覆
       // 貼圖用 LINE 附的關鍵字（不看圖、不花 AI）；照片只記「［照片］」，真的有人問才由 plugin 去下載來看
       if (event.type === 'message' && ['sticker', 'image'].includes(event.message?.type) && onGroupText) {
-        const chat = event.source?.groupId || event.source?.roomId;
+        const chat = chatOrDm;
         if (chat) {
           const m = event.message;
           const clean = (s) => String(s || '').replace(/[\r\n［］【】<>]/g, ' ').trim().slice(0, 20);

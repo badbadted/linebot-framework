@@ -13,6 +13,7 @@ import * as nj from '../plugins/xiaoshuai/njevent.js';
 import * as shot from '../plugins/xiaoshuai/shot.js';
 import * as media from '../plugins/xiaoshuai/media.js';
 import * as photo from '../plugins/xiaoshuai/photo.js';
+import coach from '../plugins/coach/index.js';
 import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as pjoin } from 'node:path';
@@ -262,13 +263,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -1034,6 +1035,83 @@ await test('parseReply：JSON 壞掉時不把原文送出去', () => {
   assert.equal(b.sticker, '開心');
   assert.equal(parseReply('{"reply":"斷掉', 'idle').reply, ''); // 插話模式壞掉就不說
   assert.ok(!parseReply('先這樣 {"remember":["x"', 'followup').reply.includes('{'));
+});
+
+// ── 私訊：同一個小帥，記憶跟群組分開 ─────────────────
+await test('parseReply：截圖那次（先講話、再接截斷的 JSON）不漏出原文', () => {
+  const LEAK = '好，那我來決定：訓練日下午 5:30 提醒你。\n\n{"reply":"好，那我來決定：訓練日下午 5:30 提醒你。\\n\\n另外我要更正一件事：今天週三就是訓練日。重量先抓「能做 12 下、';
+  const a = parseReply(LEAK, 'mention');
+  assert.ok(!a.reply.includes('{') && !a.reply.includes('"reply"'), a.reply);
+  assert.ok(a.reply.startsWith('好，那我來決定'));
+  assert.match(a.reply, /\n\n另外我要更正一件事/); // 從截斷的 JSON 救回，換行跳脫也還原
+  assert.equal(parseReply('{"reply":"","to_luna":true}', 'mention').toLuna, true);
+  assert.equal(parseReply('{"reply":"記了","weigh_in":61}', 'mention').fitness.weighIn, 61);
+});
+
+async function dmBot(answer) {
+  const Database = (await import('better-sqlite3')).default;
+  const mk = () => { const raw = new Database(':memory:'); return { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) }; };
+  const db = mk();
+  const replies = [];
+  const prompts = [];
+  const contents = [];
+  const lineApi = {
+    reply: async (_t, m) => { replies.push(m); return {}; }, push: async () => { throw new Error('不該推播'); },
+    getGroupMemberProfile: async () => ({ displayName: '阿庭' }), getProfile: async () => ({ displayName: 'TED' }),
+    getContent: async (id) => { contents.push(id); return { contentType: 'image/jpeg', buffer: Buffer.from('jpg') }; },
+  };
+  const ctx = { db, lineApi, isAdmin: (u) => u === 'UADMIN',
+    providers: { llm: { generate: async ({ messages }) => { prompts.push(messages[0].content); return { text: typeof answer === 'function' ? answer(messages[0].content) : answer }; } } } };
+  await coach.init({ db: mk(), lineApi, scheduler: { add: () => {} }, isAdmin: ctx.isAdmin });
+  await xiaoshuai.init(ctx);
+  return { db, replies, prompts, contents };
+}
+
+await test('私訊：只有管理員；家裡設備直接交給 Luna（不花小帥 AI）', async () => {
+  const { replies, prompts } = await dmBot('{"reply":"在喔"}');
+  assert.equal(await xiaoshuai.onPrivateText({ userId: 'UOTHER', text: '小帥 你好', replyToken: 'rt' }), false);
+  assert.equal(await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '幫我開冷氣', replyToken: 'rt' }), false);
+  assert.equal(await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '客廳開燈', replyToken: 'rt' }), false);
+  assert.equal(prompts.length, 0);
+  assert.equal(replies.length, 0);
+});
+
+await test('私訊：同一個小帥回、記憶跟群組分開、不受講話時段限制', async () => {
+  const { db, replies, prompts } = await dmBot('{"reply":"東京鐵塔晚上會點燈喔","remember":["TED 下個月去東京"]}');
+  db.run("INSERT INTO memories (chat_id, content) VALUES ('GGROUP', '群組的祕密：阿庭不吃牛')");
+  assert.equal(await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '東京鐵塔晚上好看嗎', replyToken: 'rt', event: {} }), true);
+  assert.deepEqual(replies[0].map(m => m.text), ['東京鐵塔晚上會點燈喔']);
+  assert.match(prompts[0], /【私訊這邊的記憶】/);
+  assert.match(prompts[0], /【這是私訊】/);
+  assert.match(prompts[0], /【他剛說】\nTED：東京鐵塔晚上好看嗎/);
+  assert.ok(!prompts[0].includes('阿庭不吃牛'));
+  assert.ok(!prompts[0].includes('【健身教練】')); // 沒講健身不帶
+  assert.deepEqual(db.all("SELECT content FROM memories WHERE chat_id = 'UADMIN'").map(r => r.content), ['TED 下個月去東京']);
+  // 下一句看得到剛剛的對話
+  await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '那幾點點燈', replyToken: 'rt2', event: {} });
+  assert.match(prompts[1], /小帥（你）：東京鐵塔晚上會點燈喔/);
+});
+
+await test('私訊：AI 判斷是家裡的事 → 不回，回覆留給 Luna', async () => {
+  const { replies } = await dmBot('{"reply":"","to_luna":true}');
+  assert.equal(await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '家裡現在幾度', replyToken: 'rt', event: {} }), false);
+  assert.equal(replies.length, 0);
+});
+
+await test('私訊：講到健身帶課表資料，訓練紀錄寫進健身資料', async () => {
+  const { replies, prompts } = await dmBot('{"reply":"練得好","log":[{"exercise":"深蹲","sets":[[40,15],[40,15],[40,15]]}]}');
+  await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '深蹲 40 15 15 15', replyToken: 'rt', event: {} });
+  assert.match(prompts[0], /【健身教練】[\s\S]*【健身資料】/);
+  assert.match(replies[0][0].text, /^練得好[\s\S]*深蹲 40×15、40×15、40×15 → 下次 45 公斤/);
+});
+
+await test('私訊：傳照片再問，小帥看得到那張', async () => {
+  const { contents, prompts } = await dmBot('{"reply":"這是味噌拉麵"}');
+  xiaoshuai.onGroupText({ chatId: 'UADMIN', userId: 'UADMIN', text: '［照片］', event: { message: { type: 'image', id: 'IMG1' } } });
+  xiaoshuai.onGroupText({ chatId: 'UOTHER', userId: 'UOTHER', text: '［照片］', event: { message: { type: 'image', id: 'IMG2' } } }); // 非管理員不記
+  await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '這是什麼', replyToken: 'rt', event: {} });
+  assert.deepEqual(contents, ['IMG1']);
+  assert.match(prompts[0], /【附上的照片】/);
 });
 
 console.log(`\n${pass} 項全部通過`);

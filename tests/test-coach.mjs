@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import * as P from '../plugins/coach/program.js';
-import coach, { parseCoach, cleanLog } from '../plugins/coach/index.js';
+import coach, { parseFitness, applyFitness, aboutFitness, fitnessSection, setPushListener, cleanLog } from '../plugins/coach/index.js';
 import { extractJson, salvageString, proseBefore } from '../src/utils/llm-json.js';
 
 let pass = 0;
@@ -69,89 +69,62 @@ await test('設定驗證、缺項、連兩天練全身警告、cron', () => {
   assert.equal(P.cronAt('07:30', [1, 3, 5]), '30 7 * * 1,3,5');
 });
 
-await test('parseCoach／cleanLog', () => {
-  const o = parseCoach('{"reply":"讚","log":[{"exercise":"深蹲","sets":[[40,12],[40,12]]}],"weigh_in":60.5,"session":"done"}');
+await test('parseFitness／cleanLog', () => {
+  const o = parseFitness({ reply: '讚', log: [{ exercise: '深蹲', sets: [[40, 12], [40, 12]] }], weigh_in: 60.5, session: 'done' });
   assert.equal(o.weighIn, 60.5);
   assert.equal(o.session, 'done');
-  assert.equal(parseCoach('{"reply":"嗨"}').weighIn, null);
-  assert.equal(parseCoach('哈囉').reply, '哈囉');
+  assert.equal(o.log.length, 1);
+  assert.equal(parseFitness({ reply: '嗨' }), null); // 沒有健身欄位
+  assert.equal(parseFitness({ weigh_in: true }), null);
+  assert.equal(parseFitness(null), null);
   assert.deepEqual(cleanLog({ exercise: '划船', sets: [[30, 12], { kg: 30, reps: 11 }, [30, 0], ['x', 5]] }, '2026-10-26').sets, [{ kg: 30, reps: 12 }, { kg: 30, reps: 11 }]);
   assert.match(cleanLog({ exercise: '捲腹', sets: [[0, 20]] }, '2026-10-26').error, /不認得/);
   assert.equal(cleanLog({ exercise: '深蹲', sets: [[40, 10]], date: '2026-10-24' }, '2026-10-26').date, '2026-10-24');
   assert.equal(cleanLog({ exercise: '深蹲', sets: [[40, 10]], date: '2026-09-01' }, '2026-10-26').date, '2026-10-26');
 });
 
-await test('私訊接手：只接管理員、健身相關或剛聊過；設定齊了才排提醒、記訓練與體重', async () => {
+await test('健身技能：設定齊了才排提醒、記訓練與體重、提醒推播通知小帥', async () => {
   const raw = new Database(':memory:');
   const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
-  const replies = [];
   const jobs = new Map();
-  let next = '{"reply":"嗨"}';
-  const prompts = [];
+  const pushed = [];
   await coach.init({
     db,
-    lineApi: { reply: async (_t, text) => replies.push(text), push: async () => {} },
-    providers: { llm: { generate: async ({ messages }) => { prompts.push(messages[0].content); return { text: next }; } } },
-    scheduler: { add: (name, cron) => jobs.set(name, cron) },
+    lineApi: { reply: async () => {}, push: async (uid, text) => pushed.push(text) },
+    scheduler: { add: (name, cron, fn) => jobs.set(name, { cron, fn }) },
     isAdmin: (u) => u === 'UADMIN',
   });
-  assert.equal(await coach.onPrivateText({ userId: 'UOTHER', text: '小帥 我要健身', replyToken: 't' }), false);
-  assert.equal(await coach.onPrivateText({ userId: 'UADMIN', text: '明天天氣如何', replyToken: 't' }), false);
+  assert.equal(coach.onPrivateText, undefined); // 不再自己接私訊（私訊一律是小帥）
+  assert.equal(aboutFitness('UADMIN', '明天天氣如何'), false);
+  assert.equal(aboutFitness('UADMIN', '小帥 我要開始健身'), true);
 
-  next = '{"reply":"好，我們開始","profile":{"weight_kg":58,"train_days":[1,3,5],"remind_time":"07:30"}}';
-  assert.equal(await coach.onPrivateText({ userId: 'UADMIN', text: '小帥 我要開始健身，58 公斤，一三五去練，七點半提醒', replyToken: 't' }), true);
-  assert.match(replies.at(-1), /還需要知道：晚上幾點問你練了沒/);
+  let out = applyFitness('UADMIN', parseFitness({ profile: { weight_kg: 58, train_days: [1, 3, 5], remind_time: '07:30' } }));
+  assert.match(out, /還需要知道：晚上幾點問你練了沒/);
   assert.equal(jobs.size, 0);
+  // 剛聊過健身 → 不提健身也帶資料
+  assert.equal(aboutFitness('UADMIN', '晚上九點'), true);
+  out = applyFitness('UADMIN', parseFitness({ profile: { checkin_time: '21:00' } }));
+  assert.match(out, /設定好了/);
+  assert.match(out, /蛋白質 104 克、碳水 348 克/);
+  assert.equal([...jobs.values()].map(j => j.cron).join('|'), '30 7 * * 1,3,5|0 21 * * 1,3,5|0 7 * * 1');
 
-  // 剛聊過，不提健身也算在跟教練說
-  next = '{"reply":"收到","profile":{"checkin_time":"21:00"}}';
-  assert.equal(await coach.onPrivateText({ userId: 'UADMIN', text: '晚上九點', replyToken: 't' }), true);
-  assert.match(replies.at(-1), /設定好了/);
-  assert.match(replies.at(-1), /蛋白質 104 克、碳水 348 克/);
-  assert.equal([...jobs.values()].join('|'), '30 7 * * 1,3,5|0 21 * * 1,3,5|0 7 * * 1');
-
-  next = '{"reply":"練得好","log":[{"exercise":"深蹲","sets":[[40,15],[40,15],[40,15]]},{"exercise":"臥推","sets":[[30,12],[30,11],[30,10]]}]}';
-  await coach.onPrivateText({ userId: 'UADMIN', text: '深蹲 40 15 15 15 臥推 30 12 11 10', replyToken: 't' });
-  assert.match(replies.at(-1), /深蹲 40×15、40×15、40×15 → 下次 45 公斤/);
-  assert.match(replies.at(-1), /臥推 30×12、30×11、30×10 → 下次 30 公斤/);
+  out = applyFitness('UADMIN', parseFitness({ log: [{ exercise: '深蹲', sets: [[40, 15], [40, 15], [40, 15]] }, { exercise: '臥推', sets: [[30, 12], [30, 11], [30, 10]] }] }));
+  assert.match(out, /深蹲 40×15、40×15、40×15 → 下次 45 公斤/);
+  assert.match(out, /臥推 30×12、30×11、30×10 → 下次 30 公斤/);
   assert.equal(db.get("SELECT COUNT(*) n FROM sessions WHERE status = 'done'").n, 1);
-
-  next = '{"reply":"記了","weigh_in":58.6}';
-  await coach.onPrivateText({ userId: 'UADMIN', text: '58.6 公斤', replyToken: 't' });
-  assert.match(replies.at(-1), /記下 58.6 公斤/);
-  // 系統資料與最近對話有帶進 prompt
-  assert.match(prompts.at(-1), /【最近對話】[\s\S]*深蹲 40 15 15 15/);
-  assert.match(prompts.at(-1), /這個階段已完成 1 次訓練/);
-
-  // 剛聊過但問的是別的事 → AI 說不是健身 → 交回 Luna（回 false、不回覆）
-  const n = replies.length;
-  next = '{"not_mine": true}';
-  assert.equal(await coach.onPrivateText({ userId: 'UADMIN', text: '明天會下雨嗎', replyToken: 't' }), false);
-  assert.equal(replies.length, n);
-  // 明確講到健身就不交出去
-  assert.equal(await coach.onPrivateText({ userId: 'UADMIN', text: '今天練了嗎', replyToken: 't' }), true);
-});
-
-await test('AI 回覆 JSON 壞掉時不把原文送出去', () => {
-  const LEAK = '好，那我來決定：訓練日下午 5:30 提醒你。\n\n{"reply":"好，那我來決定：訓練日下午 5:30 提醒你。\\n\\n另外我要更正一件事：今天週三就是訓練日。重量先抓「能做 12 下、';
-  const a = parseCoach(LEAK);
-  assert.ok(!a.reply.includes('{'), a.reply);
-  assert.ok(!a.reply.includes('"reply"'));
-  assert.ok(a.reply.startsWith('好，那我來決定'));
-  assert.ok(a.reply.includes('另外我要更正一件事')); // 從截斷的 JSON 救回，換行跳脫也還原
-  assert.ok(a.reply.includes('\n\n'));
-  // 先講話再接完整 JSON：只用 JSON 的 reply，前面那段不重複
-  const b = parseCoach('好喔我記下了\n```json\n{"reply":"記下了","weigh_in":61}\n```');
-  assert.equal(b.reply, '記下了');
-  assert.equal(b.weighIn, 61);
-  // 字串裡有括號、JSON 後面還有字
-  const c = parseCoach('{"reply":"組數 {3} 組 } 沒問題"} 以上');
-  assert.equal(c.reply, '組數 {3} 組 } 沒問題');
-  // 連 reply 都沒有的殘缺 JSON → 只留 JSON 前的話（沒有就空，由系統補一句）
-  assert.equal(parseCoach('{"log":[{"exercise":"深蹲"').reply, '');
-  assert.equal(parseCoach('先這樣 {"log":[').reply, '先這樣');
-  // 長回覆不再在 300 字截斷
-  assert.equal(parseCoach('好'.repeat(600)).reply.length, 600);
+  out = applyFitness('UADMIN', parseFitness({ weigh_in: 58.6 }));
+  assert.match(out, /記下 58.6 公斤/);
+  // 給小帥的 prompt 段落有指引與系統資料
+  const sec = fitnessSection('UADMIN');
+  assert.match(sec, /【健身教練】[\s\S]*"log"/);
+  assert.match(sec, /這個階段已完成 1 次訓練/);
+  // 推提醒時通知小帥（記成小帥說過的話）
+  const heard = [];
+  setPushListener((uid, text) => heard.push([uid, text]));
+  await jobs.get(`coach-weigh-${'UADMIN'.slice(-6)}`).fn();
+  assert.equal(pushed.length, 1);
+  assert.deepEqual(heard, [['UADMIN', pushed[0]]]);
+  setPushListener(null);
 });
 
 await test('llm-json 工具', () => {
