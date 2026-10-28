@@ -682,7 +682,7 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true, lon
   // 健身：只在管理員私訊、講到健身（或剛聊過）才帶課表與紀錄（個人資料，不進群組）
   const fitness = dm && coach.ready() && coach.aboutFitness(chatId, trigger?.text) ? coach.fitnessSection(chatId) : '';
   // 小卡：問題命中標題或關鍵字才帶原文全文（TED 親自給的，視為可信，不算上網）
-  const kbRows = replying ? kb.match(trigger?.text) : [];
+  const kbRows = replying ? kb.match(trigger?.text, kb.recentTitles(chatId)) : [];
   const res = await llm.generate({
     withMeta: true,
     system: PERSONA,
@@ -1025,6 +1025,7 @@ export function cardMessages(parsed) {
 function handleKb(chatId, parsed) {
   if (!parsed.kb || !parsed.kbRows?.length) return '';
   const row = parsed.kbRows.find(r => r.title === parsed.kb) || parsed.kbRows[0];
+  kb.markUsed(chatId, row.title);
   if (parsed.kbCards) {
     const fl = kb.kbFlex(row);
     if (fl) parsed.images = [...(parsed.images || []), fl].slice(0, 4);

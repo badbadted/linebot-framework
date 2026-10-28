@@ -1397,6 +1397,13 @@ await test('小卡：命中關鍵字才帶入；問整體附卡片＋「根據�
   assert.match(last[0].text, /👇\n\n📇 根據小卡（\d{1,2}\/\d{1,2} 整理），以國稅廳與機場現場公告為準$/);
   assert.match(last[1].altText, /^日本退稅新制\n・🆚 新制差在哪/);
   assert.equal(kb.match('紅燈怎麼辦')[0]?.title, '日本退稅新制');                        // 關鍵字命中
+  // 接著問細節：剛用過這張小卡，問題的詞出現在原文裡也算；沒用過、或原文沒有的不算
+  assert.deepEqual(kb.match('人工櫃檯在哪', []), []);
+  assert.equal(kb.match('人工櫃檯在哪', ['日本退稅新制'])[0]?.title, '日本退稅新制');
+  assert.deepEqual(kb.match('今天天氣如何', ['日本退稅新制']), []);
+  kb.markUsed('GX', '日本退稅新制', 0);
+  assert.deepEqual(kb.recentTitles('GX', 60_000), ['日本退稅新制']);
+  assert.deepEqual(kb.recentTitles('GX', kb.RECENT_MS + 1), []);
   assert.equal(kb.match('tax free 要帶護照嗎')[0]?.title, '日本退稅新制');              // 英文關鍵字
 });
 
