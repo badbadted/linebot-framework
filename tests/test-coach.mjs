@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import * as P from '../plugins/coach/program.js';
 import coach, { parseCoach, cleanLog } from '../plugins/coach/index.js';
+import { extractJson, salvageString, proseBefore } from '../src/utils/llm-json.js';
 
 let pass = 0;
 async function test(name, fn) {
@@ -129,6 +130,39 @@ await test('私訊接手：只接管理員、健身相關或剛聊過；設定�
   assert.equal(replies.length, n);
   // 明確講到健身就不交出去
   assert.equal(await coach.onPrivateText({ userId: 'UADMIN', text: '今天練了嗎', replyToken: 't' }), true);
+});
+
+await test('AI 回覆 JSON 壞掉時不把原文送出去', () => {
+  const LEAK = '好，那我來決定：訓練日下午 5:30 提醒你。\n\n{"reply":"好，那我來決定：訓練日下午 5:30 提醒你。\\n\\n另外我要更正一件事：今天週三就是訓練日。重量先抓「能做 12 下、';
+  const a = parseCoach(LEAK);
+  assert.ok(!a.reply.includes('{'), a.reply);
+  assert.ok(!a.reply.includes('"reply"'));
+  assert.ok(a.reply.startsWith('好，那我來決定'));
+  assert.ok(a.reply.includes('另外我要更正一件事')); // 從截斷的 JSON 救回，換行跳脫也還原
+  assert.ok(a.reply.includes('\n\n'));
+  // 先講話再接完整 JSON：只用 JSON 的 reply，前面那段不重複
+  const b = parseCoach('好喔我記下了\n```json\n{"reply":"記下了","weigh_in":61}\n```');
+  assert.equal(b.reply, '記下了');
+  assert.equal(b.weighIn, 61);
+  // 字串裡有括號、JSON 後面還有字
+  const c = parseCoach('{"reply":"組數 {3} 組 } 沒問題"} 以上');
+  assert.equal(c.reply, '組數 {3} 組 } 沒問題');
+  // 連 reply 都沒有的殘缺 JSON → 只留 JSON 前的話（沒有就空，由系統補一句）
+  assert.equal(parseCoach('{"log":[{"exercise":"深蹲"').reply, '');
+  assert.equal(parseCoach('先這樣 {"log":[').reply, '先這樣');
+  // 長回覆不再在 300 字截斷
+  assert.equal(parseCoach('好'.repeat(600)).reply.length, 600);
+});
+
+await test('llm-json 工具', () => {
+  assert.deepEqual(extractJson('前言 {"a":{"b":1}} 後記 {"c":2}'), { a: { b: 1 } });
+  assert.equal(extractJson('{壞掉 {"ok":true}').ok, true);
+  assert.equal(extractJson('沒有 JSON'), null);
+  assert.equal(extractJson('[1,2]'), null);
+  assert.equal(salvageString('{"reply":"引號\\"與\\u5c0f帥\\n下一行'), '引號"與小帥\n下一行');
+  assert.equal(salvageString('{"reply":"斷在跳脫\\'), '斷在跳脫');
+  assert.equal(salvageString('{"x":1}'), '');
+  assert.equal(proseBefore('嗨\n```json\n{"reply":"x"'), '嗨');
 });
 
 console.log(`\n${pass} 項全部通過`);

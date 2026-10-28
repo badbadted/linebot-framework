@@ -29,6 +29,7 @@ import * as nj from './njevent.js';
 import * as shot from './shot.js';
 import * as media from './media.js';
 import * as photo from './photo.js';
+import { parseLlmJson } from '../../src/utils/llm-json.js';
 
 const MEMORY_MAX = 30;      // 每群最多記幾條
 const MEMORY_PER_REPLY = 2; // 每次最多新增幾條
@@ -489,31 +490,27 @@ ${learningInfo}` : ''}${njSection}${imageSection(imageNote)}${ownSection(own)}${
 
 /** AI 回的文字 → { reply, remember }；壞掉的 JSON 盡量救回來 */
 export function parseReply(raw, mode) {
-  const s = String(raw || '').trim();
-  const i = s.indexOf('{');
-  const j = s.lastIndexOf('}');
-  if (i >= 0 && j > i) {
-    try {
-      const o = JSON.parse(s.slice(i, j + 1));
-      return {
-        reply: typeof o.reply === 'string' ? o.reply.trim() : '',
-        remember: Array.isArray(o.remember) ? o.remember : [],
-        toMe: o.to_me === true,
-        tripEdit: Array.isArray(o.trip_edit?.ops) && o.trip_edit.ops.length ? o.trip_edit.ops : null,
-        tripConfirm: typeof o.trip_confirm === 'boolean' ? o.trip_confirm : null,
-        tripShot: typeof o.trip_shot === 'string' && shot.sectionOf(o.trip_shot) ? o.trip_shot : null,
-        saveLink: o.save_link && typeof o.save_link === 'object' && typeof o.save_link.url === 'string' ? o.save_link : null,
-        listLinks: o.list_links && typeof o.list_links === 'object' ? o.list_links : null,
-        njEvent: o.nj_event && typeof o.nj_event === 'object' && !Array.isArray(o.nj_event) ? o.nj_event : null,
-        njConfirm: typeof o.nj_confirm === 'boolean' ? o.nj_confirm : null,
-        sticker: typeof o.sticker === 'string' && media.STICKERS[o.sticker] ? o.sticker : null,
-        photo: typeof o.photo === 'string' && o.photo.trim() ? o.photo.trim().slice(0, 80) : null,
-        shop: typeof o.shop === 'string' && o.shop.trim() ? o.shop.trim().slice(0, 60) : null,
-      };
-    } catch { /* 往下走 */ }
+  const { obj: o, text } = parseLlmJson(raw);
+  if (o) {
+    return {
+      reply: typeof o.reply === 'string' ? o.reply.trim() : '',
+      remember: Array.isArray(o.remember) ? o.remember : [],
+      toMe: o.to_me === true,
+      tripEdit: Array.isArray(o.trip_edit?.ops) && o.trip_edit.ops.length ? o.trip_edit.ops : null,
+      tripConfirm: typeof o.trip_confirm === 'boolean' ? o.trip_confirm : null,
+      tripShot: typeof o.trip_shot === 'string' && shot.sectionOf(o.trip_shot) ? o.trip_shot : null,
+      saveLink: o.save_link && typeof o.save_link === 'object' && typeof o.save_link.url === 'string' ? o.save_link : null,
+      listLinks: o.list_links && typeof o.list_links === 'object' ? o.list_links : null,
+      njEvent: o.nj_event && typeof o.nj_event === 'object' && !Array.isArray(o.nj_event) ? o.nj_event : null,
+      njConfirm: typeof o.nj_confirm === 'boolean' ? o.nj_confirm : null,
+      sticker: typeof o.sticker === 'string' && media.STICKERS[o.sticker] ? o.sticker : null,
+      photo: typeof o.photo === 'string' && o.photo.trim() ? o.photo.trim().slice(0, 80) : null,
+      shop: typeof o.shop === 'string' && o.shop.trim() ? o.shop.trim().slice(0, 60) : null,
+    };
   }
-  // 不是 JSON：被點名時直接把文字當回覆，其他情況當作不說話
-  const plain = (mode === 'mention' || mode === 'followup') && !s.startsWith('{') ? s.slice(0, 200) : '';
+  // 沒有完整 JSON：被點名時用救回的 reply（或 JSON 前的話）當回覆，絕不送 JSON 原文；其他情況當作不說話
+  const plain = mode === 'mention' || mode === 'followup' ? text.slice(0, 400) : '';
+  if (/\{\s*"/.test(String(raw || ''))) console.warn(`[xiaoshuai] AI 回覆的 JSON 不完整（${String(raw).length} 字，結尾：${JSON.stringify(String(raw).slice(-40))}）`);
   return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null };
 }
 

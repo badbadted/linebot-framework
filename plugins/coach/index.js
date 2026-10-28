@@ -13,6 +13,7 @@
  */
 
 import * as P from './program.js';
+import { parseLlmJson } from '../../src/utils/llm-json.js';
 
 const WINDOW_MS = 10 * 60_000;   // 小帥講完話後多久內，私訊不必提到健身也算在跟教練說
 const HISTORY_TURNS = 10;
@@ -192,22 +193,20 @@ function systemData(uid, p, now = Date.now()) {
 }
 
 export function parseCoach(raw) {
-  const s = String(raw || '').trim();
-  const i = s.indexOf('{'), j = s.lastIndexOf('}');
-  if (i >= 0 && j > i) {
-    try {
-      const o = JSON.parse(s.slice(i, j + 1));
-      return {
-        reply: typeof o.reply === 'string' ? o.reply.trim() : '',
-        profile: o.profile && typeof o.profile === 'object' && !Array.isArray(o.profile) ? o.profile : null,
-        log: Array.isArray(o.log) ? o.log : [],
-        weighIn: Number.isFinite(+o.weigh_in) && o.weigh_in !== null && o.weigh_in !== '' ? +o.weigh_in : null,
-        session: ['done', 'skip'].includes(o.session) ? o.session : null,
-        notMine: o.not_mine === true,
-      };
-    } catch { /* 往下 */ }
+  const { obj: o, text } = parseLlmJson(raw);
+  if (o) {
+    return {
+      reply: typeof o.reply === 'string' ? o.reply.trim() : '',
+      profile: o.profile && typeof o.profile === 'object' && !Array.isArray(o.profile) ? o.profile : null,
+      log: Array.isArray(o.log) ? o.log : [],
+      weighIn: Number.isFinite(+o.weigh_in) && o.weigh_in !== null && o.weigh_in !== '' ? +o.weigh_in : null,
+      session: ['done', 'skip'].includes(o.session) ? o.session : null,
+      notMine: o.not_mine === true,
+    };
   }
-  return { reply: s.startsWith('{') ? '' : s.slice(0, 300), profile: null, log: [], weighIn: null, session: null };
+  // 沒有完整 JSON（先講一段話才接 JSON、JSON 被截斷）：只用救回的 reply 或 JSON 前的話，不把 JSON 原文送出去
+  if (raw) console.warn(`[coach] AI 回覆不是完整 JSON（${String(raw).length} 字，結尾：${JSON.stringify(String(raw).slice(-40))}）`);
+  return { reply: text.slice(0, 1000), profile: null, log: [], weighIn: null, session: null };
 }
 
 /** AI 給的一筆訓練 → { ex, sets, date } 或錯誤 */

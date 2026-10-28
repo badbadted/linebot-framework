@@ -1025,4 +1025,15 @@ await test('附圖：特定店家沒圖 → 附 Google 地圖連結', async () =
   assert.equal(fc.calls.length, 0);
 });
 
+await test('parseReply：JSON 壞掉時不把原文送出去', () => {
+  const a = parseReply('好喔我查一下\n{"reply":"東京鐵塔高 333 公尺，晚上會點燈\\n很漂亮","sticker":"開', 'mention');
+  assert.equal(a.reply, '東京鐵塔高 333 公尺，晚上會點燈\n很漂亮');
+  assert.equal(a.sticker, null);
+  const b = parseReply('前面講一句 {"reply":"在喔","sticker":"開心"}', 'mention');
+  assert.equal(b.reply, '在喔');
+  assert.equal(b.sticker, '開心');
+  assert.equal(parseReply('{"reply":"斷掉', 'idle').reply, ''); // 插話模式壞掉就不說
+  assert.ok(!parseReply('先這樣 {"remember":["x"', 'followup').reply.includes('{'));
+});
+
 console.log(`\n${pass} 項全部通過`);
