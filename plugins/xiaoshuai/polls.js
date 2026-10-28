@@ -164,6 +164,7 @@ export function create(chatId, { kind, title, options = [], by, byName, closesAt
 export function vote(chatId, pollId, userId, name, idx, now = Date.now()) {
   const p = getPoll(pollId);
   if (!p || p.chat_id !== chatId || p.kind !== 'vote') return { error: '找不到這個投票' };
+  if (p.status === 'cancelled') return { error: '這個投票取消了' };
   if (!isOpen(p, now)) return { error: '投票已經截止了' };
   if (!Number.isInteger(idx) || idx < 0 || idx >= p.options.length) return { error: '沒有這個選項' };
   db.run(`INSERT INTO poll_votes (poll_id, user_id, name, choice, at) VALUES (?, ?, ?, ?, ?)
@@ -176,6 +177,13 @@ export function close(p, userId, admin, now = Date.now()) {
   if (!p) return { error: '找不到' };
   if (p.created_by !== userId && !admin) return { error: `只有開的人（${p.created_by_name || '開的人'}）或 TED 可以關` };
   db.run("UPDATE polls SET status = 'closed', closed_at = ?, result_posted = 1 WHERE id = ?", now, p.id);
+  return { ok: true, poll: getPoll(p.id) };
+}
+/** 取消（開的人或管理員）：作廢，時間到也不貼結果（2026-10-28 使用者定義） */
+export function cancel(p, userId, admin, now = Date.now()) {
+  if (!p) return { error: '找不到' };
+  if (p.created_by !== userId && !admin) return { error: `只有開的人（${p.created_by_name || '開的人'}）或 TED 可以取消` };
+  db.run("UPDATE polls SET status = 'cancelled', closed_at = ?, result_posted = 1 WHERE id = ?", now, p.id);
   return { ok: true, poll: getPoll(p.id) };
 }
 export function setDeadline(p, userId, admin, ts) {
@@ -359,7 +367,7 @@ export const cardOf = (p, now = Date.now()) => (p.kind === 'vote' ? resultFlex(p
 export function promptSection(chatId, text, now = Date.now()) {
   if (!db || !text) return '';
   const all = (db.all('SELECT * FROM polls WHERE chat_id = ? ORDER BY id DESC LIMIT 30', chatId) || []).map(rowOf);
-  const hits = all.filter(p => overlap(p.title, text) >= 2).slice(0, 2);
+  const hits = all.filter(p => p.status !== 'cancelled' && overlap(p.title, text) >= 2).slice(0, 2);
   if (!hits.length) return '';
   const lines = hits.map(p => {
     const state = isOpen(p, now) ? '進行中' : '已結束';

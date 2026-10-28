@@ -1523,7 +1523,7 @@ await test('連結：有預覽＋問到內容 → 下載主圖給小帥看；這
 
 // ── 投票與報名 ───────────────────────────────────
 const NAMES = { UADMIN: 'TED', U1: '葶', U2: '妞媽', U3: '多媽', U4: '恩媽' };
-async function pollBot({ answer = '{"reply":"在喔"}', propose = '{"options":["燒肉","拉麵"]}' } = {}) {
+async function pollBot({ answer = '{"reply":"在喔"}', propose = '{"options":["燒肉","拉麵"]}', intent = '{"action":"none"}' } = {}) {
   const Database = (await import('better-sqlite3')).default;
   const raw = new Database(':memory:');
   const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
@@ -1532,6 +1532,7 @@ async function pollBot({ answer = '{"reply":"在喔"}', propose = '{"options":["
     getGroupMemberProfile: async (_g, u) => ({ displayName: NAMES[u] || '某人' }), getProfile: async () => null };
   const ctx = { db, lineApi, isAdmin: (u) => u === 'UADMIN', providers: { llm: { generate: async ({ messages, system }) => {
     const c = messages[0].content;
+    if (!system && c.includes('判斷他是不是要處理投票')) return typeof intent === 'function' ? intent(c) : intent;
     if (!system && c.includes('要投票')) return propose;
     if (!system && c.includes('正在報名')) return '{"signup":true,"who":"我","adults":1,"kids":0,"going":true}';
     return { text: answer };
@@ -1732,6 +1733,44 @@ await test('對話裡標出「回覆誰」：回別人的話會寫明是在跟�
   assert.ok(p.includes('阿庭（回覆 葶）：9點'));
   assert.ok(p.includes('阿庭（回覆 你）：你看看'));
   assert.ok(p.includes('是在跟 葶 說話'));
+});
+
+await test('投票取消：作廢、時間到不貼結果、不能再投；只有開的人或 TED 能取消', async () => {
+  const { db, say, press, replies } = await pollBot();
+  await say('U1', '小帥 開投票 2/6 青森屋出發時間：8:45、9:30、10:15，明天中午截止');
+  const id = db.get('SELECT id FROM polls').id;
+  await press('U2', `poll:${id}:1`);
+  assert.match((await say('U2', '小帥 取消投票 青森屋'))[0].text, /只有開的人（葶）或 TED 可以取消/);
+  assert.match((await say('U1', '小帥 取消投票 青森屋'))[0].text, /「2\/6 青森屋出發時間」取消了，時間到也不會公布結果/);
+  assert.equal(db.get('SELECT status FROM polls').status, 'cancelled');
+  await press('U3', `poll:${id}:0`);                                   // 取消後按鈕不算
+  assert.equal(db.get('SELECT COUNT(*) n FROM poll_votes').n, 1);
+  db.run('UPDATE polls SET closes_at = ? WHERE id = ?', Date.now() - 1000, id);
+  const n = replies.length;
+  await say('U4', '大家晚安');                                          // 截止後下一個人講話：不貼結果
+  assert.equal(replies.length, n);
+  assert.equal(polls.promptSection('GPL', '青森屋出發時間幾點'), '');      // 取消的不給 AI 當資料
+});
+
+await test('投票：用一般的話開（先確認再開）、取消、改截止', async () => {
+  let reply = '{"action":"open_vote","title":"2/6 青森屋出發時間","options":["8:45","9:30","10:15"],"deadline":"明天晚上七點","target":""}';
+  const { db, say } = await pollBot({ intent: () => reply });
+  const r = await say('U1', '小帥 幫我們投一下 2/6 青森屋幾點出發，8:45、9:30、10:15，明天晚上七點截止');
+  assert.match(r[0].text, /要開這個投票嗎？\n📌 2\/6 青森屋出發時間\n選項：8:45、9:30、10:15\n⏰ 截止：.*19:00/);
+  assert.equal(db.get('SELECT COUNT(*) n FROM polls').n, 0);           // 還沒開
+  assert.equal(await say('U2', '好'), null);                            // 別人說好不算
+  const opened = await say('U1', '好');
+  assert.equal(opened[0].text, '開好了，按下面投 👇');
+  assert.equal(db.get('SELECT title FROM polls').title, '2/6 青森屋出發時間');
+  reply = '{"action":"deadline","title":"","options":[],"deadline":"後天中午","target":"青森屋"}';
+  assert.match((await say('U1', '小帥 青森屋那個投票截止延到後天中午'))[0].text, /截止時間改成 .*12:00/);
+  reply = '{"action":"cancel","title":"","options":[],"deadline":"","target":"青森屋"}';
+  assert.match((await say('U1', '小帥 剛剛那個投票不要了'))[0].text, /取消了/);
+  // 說「不要」就不開
+  reply = '{"action":"open_signup","title":"teamLab","options":[],"deadline":"","target":""}';
+  assert.match((await say('U1', '小帥 幫我統計一下 teamLab 報名'))[0].text, /要開這個報名嗎/);
+  assert.equal((await say('U1', '不要'))[0].text, '好，不開了');
+  assert.equal(db.get("SELECT COUNT(*) n FROM polls WHERE kind = 'signup'").n, 0);
 });
 
 console.log(`\n${pass} 項全部通過`);
