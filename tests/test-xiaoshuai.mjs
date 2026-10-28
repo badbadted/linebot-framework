@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { handlePhoto, socialUrlFor, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { addressOf, handlePhoto, socialUrlFor, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -449,7 +449,7 @@ await test('buildPrompt 帶記憶、對話與情況', () => {
   assert.match(p, /12\/25 去滑雪/);
   assert.match(p, /阿庭：小帥你會滑雪嗎/);
   assert.match(p, /小帥（你）：我只會滑手機/);
-  assert.match(p, /一定要回話/);
+  assert.match(p, /要回話。最重要的是回應/);
 });
 
 // 假 Firestore：users 以 doc id 為主鍵，events 記下 add 的內容
@@ -1691,6 +1691,47 @@ await test('公告：排進免費回覆（不推播），下一個人講話時�
   // 過了等待時間就不貼
   await xiaoshuai.onAnnounce({ chatId: 'GPL', text: '過期的公告', keepMs: 3600_000 });
   assert.equal(heldAnswers('GPL', 3, Date.now() + 2 * 3600_000).length, 0);
+});
+
+await test('判斷是不是在叫小帥：引用小帥的話給別人看、@別人、句中提到小帥，都先判斷', async () => {
+  const self = { message: { mention: { mentionees: [{ isSelf: true }] } } };
+  const other = { message: { mention: { mentionees: [{ isSelf: false }] } } };
+  assert.equal(addressOf('小帥 青森屋幾點出發', {}, null), 'direct');
+  assert.equal(addressOf('小帥不是說你 是說其他人', {}, null), 'direct');     // 開頭叫他：回，但提示允許不出聲
+  assert.equal(addressOf('@小帥 幫我查', self, null), 'direct');
+  assert.equal(addressOf('你看看 明明就有 沒人回我欸', {}, '那題還在等你確認'), 'soft'); // 引用小帥的話給別人看
+  assert.equal(addressOf('@葶 ', other, '欸我被點名了嗎'), 'soft');
+  assert.equal(addressOf('@葶 小帥說要 9 點', other, null), 'soft');          // 在跟葶講，順便提到小帥
+  assert.equal(addressOf('問小帥啊', {}, null), 'soft');
+  assert.equal(addressOf('晚點出門', {}, null), null);
+});
+
+await test('不確定是不是叫他：視窗沒開也判斷一次；判斷不是 → 不插嘴、不開視窗', async () => {
+  const h = harness({ reply: true });
+  const item = h.brain.observe('G', { userId: 'U1', name: '阿庭', text: '你看看 明明就有' });
+  h.brain.handle('G', { replyToken: 't1', isMention: false, judge: true, trigger: item });
+  await h.advance(10_000);
+  assert.equal(h.fired.length, 1);
+  assert.equal(h.fired[0].mode, 'window');
+  assert.equal(h.fired[0].allowChimeIn, false);
+  assert.equal(h.fired[0].replied, false);
+  assert.equal(h.brain.status('G').windowLeftMs, 0);
+  // 判斷是在跟他說話（asMention）→ 回話並開視窗
+  const h2 = harness({ reply: () => ({ asMention: true }) });
+  const it2 = h2.brain.observe('G', { userId: 'U1', name: '阿庭', text: '這題你還沒回' });
+  h2.brain.handle('G', { replyToken: 't2', isMention: false, judge: true, trigger: it2 });
+  await h2.advance(10_000);
+  assert.equal(h2.fired[0].replied, true);
+  assert.ok(h2.brain.status('G').windowLeftMs > 0);
+});
+
+await test('對話裡標出「回覆誰」：回別人的話會寫明是在跟那個人說話', async () => {
+  const p = buildPrompt({ mode: 'window', nowTs: NOON, memories: [],
+    transcript: [{ name: '葶', text: '青森屋幾點出發' }, { name: '阿庭', text: '9點', replyTo: '葶', replyText: '青森屋幾點出發' }, { name: '阿庭', text: '你看看', replyTo: '小帥', replyText: '那題還在等你' }],
+    trigger: { name: '阿庭', text: '9點', replyTo: '葶', replyText: '青森屋幾點出發' } });
+  assert.ok(p.includes('阿庭（回覆 葶）：9點'));
+  assert.ok(p.includes('阿庭（回覆 你）：你看看'));
+  assert.ok(p.includes('是在跟 葶 說話'));
 });
 
 console.log(`\n${pass} 項全部通過`);

@@ -103,9 +103,9 @@ remember：只記「已經定案、之後會用到」的事，就算這次不說
 - 統計人數、收名單、投票：請他們用「小帥 開報名 標題」（之後直接打「我家 2大1小」）或「小帥 開投票 標題：選項A、選項B，截止時間」，系統會記在資料庫；這類人數不要寫進 remember。有人問人數或投票結果時，照【這群的投票／報名紀錄】回答（比記憶裡的新）。`;
 
 const SITUATION = {
-  mention: '有人在叫你，一定要回話，reply 不可以是空字串。最重要的是回應【叫你的那句】；前面的對話只是背景，不要跳去回別的話題。',
+  mention: '有人在叫你，要回話。最重要的是回應【叫你的那句】；前面的對話只是背景，不要跳去回別的話題。例外：那句是在說「不是在說你／沒事／不是叫你」這類，表示他其實不是要找你，就 reply 空字串，不用道歉也不用解釋。',
   idle: '大家聊了一陣子沒找你。如果你能幫上忙、或有一句貼心的話，就自然地插一句；沒什麼好說就 reply 空字串。寧可不說，也不要硬聊。',
-  window: '你剛剛有參與聊天。先判斷【最新那則訊息】是不是在跟你說話：回應你剛說的話、問你問題、接著你參與的話題講下去並等你回應，都算；在跟別人說話、聊跟你無關的事、或只是在笑，都不算。這次的 JSON 要多一個欄位 "to_me"（true／false）。to_me 是 true 時 reply 可以留空（會另外請你回）。to_me 是 false 時，預設 reply 空字串，不要搶話。',
+  window: '你剛剛有參與聊天。先判斷【最新那則訊息】是不是在跟你說話：回應你剛說的話、問你問題、接著你參與的話題講下去並等你回應，都算；在跟別人說話、聊跟你無關的事、或只是在笑，都不算。用「回覆」引用你說過的話，不一定是在跟你說話：常常是把你那句拿給別人看（例如「你看看」「明明就有」「沒人回」），或是在 @ 別人，這些都不算；講到「小帥」但是在跟別人聊你（例如「小帥不是說你」「問小帥啊」），也不算。這次的 JSON 要多一個欄位 "to_me"（true／false）。to_me 是 true 時 reply 可以留空（會另外請你回）。to_me 是 false 時，預設 reply 空字串，不要搶話。',
   followup: '這句是在接你的話（延續你們剛剛聊的），一定要回，reply 不可以是空字串。重點是回應【接你話的那句】，前面的對話只是背景。',
 };
 
@@ -754,10 +754,12 @@ export function buildPrompt({ mode, transcript, memories, trigger = null, allowC
   });
   const mem = memories.length ? memories.map(m => `- ${m.content}`).join('\n') : '（還沒有）';
   const chat = transcript.length
-    ? transcript.map(t => `${t.self ? '小帥（你）' : (t.name || '某人')}：${t.text.slice(0, 300)}`).join('\n')
+    ? transcript.map(t => `${t.self ? '小帥（你）' : (t.name || '某人')}${t.replyTo ? `（回覆 ${t.replyTo === '小帥' ? '你' : t.replyTo}）` : ''}：${t.text.slice(0, 300)}`).join('\n')
     : '（沒有）';
   const label = dm ? '他剛說' : mode === 'mention' ? '叫你的那句' : mode === 'followup' ? '接你話的那句' : '最新那則訊息';
-  const quoted = trigger?.quoted ? `\n（這句是用「回覆」功能在回你說的：「${trigger.quoted.slice(0, 200)}」，接著那個話題回）` : '';
+  const quoted = !trigger?.quoted ? (trigger?.replyTo && trigger.replyTo !== '小帥' ? `\n（這句是用「回覆」功能在回 ${trigger.replyTo} 說的：「${trigger.replyText || ''}」，是在跟 ${trigger.replyTo} 說話）` : '')
+    : mode === 'window' ? `\n（這句用「回覆」功能引用了你說過的：「${trigger.quoted.slice(0, 200)}」；引用不一定是在跟你說話，可能是拿給別人看）`
+    : `\n（這句是用「回覆」功能在回你說的：「${trigger.quoted.slice(0, 200)}」，接著那個話題回）`;
   const focus = trigger?.text ? `\n\n【${label}】\n${trigger.name || '某人'}：${trigger.text.slice(0, 300)}${quoted}` : '';
   const noChime = mode === 'window' && !allowChimeIn ? '\n（你剛講過話：to_me 是 false 時，reply 一定要是空字串）' : '';
   const sticker = stickerOk === null ? '' : stickerOk ? '\n【這次能不能貼圖】可以（真的貼切才給）' : '\n【這次能不能貼圖】不能（剛貼過，這次不要給 sticker，也不要說要貼圖）';
@@ -1382,6 +1384,23 @@ function isMentioned(text, event) {
   return !!event?.message?.mention?.mentionees?.some(m => m.isSelf);
 }
 
+/**
+ * 這句是不是在叫小帥（2026-10-28：引用小帥的話拿給別人看、@別人、「小帥不是說你」都被當成叫他）
+ *   'direct'：@小帥、或開頭就叫「小帥」→ 一定回
+ *   'soft'：只是用回覆引用小帥說過的話、或句子中間提到小帥 → 先判斷是不是在跟他說話，不是就不出聲
+ *   null：都沒有
+ */
+export function addressOf(text, event, quoted) {
+  const mentions = event?.message?.mention?.mentionees || [];
+  if (mentions.some(m => m.isSelf)) return 'direct';
+  // 開頭的 @某人 拿掉再看（「@葶 小帥說…」是在跟葶講）
+  const body = String(text || '').normalize('NFKC').trim();
+  const othersFirst = /^@\S+/.test(body) && mentions.some(m => !m.isSelf);
+  if (!othersFirst && /^小帥(?![a-z0-9])/i.test(body)) return 'direct';
+  if (quoted || MENTION_RE.test(body)) return 'soft';
+  return null;
+}
+
 // ── 指令 ───────────────────────────────────────────
 
 function hhmm(min) {
@@ -1622,6 +1641,11 @@ export default {
     const imageId = event?.message?.type === 'image' ? event.message.id : null;
     const item = brain.observe(chatId, { userId, text, imageId });
     tagMsgId(item, event);
+    // 用「回覆」回某則：記下回的是誰的話（對話裡顯示「阿庭（回覆 葶）」，小帥才分得出在跟誰說話）
+    if (item && event?.message?.quotedMessageId) {
+      const q = quotedMessage(chatId, event);
+      if (q) { item.replyTo = q.bot ? '小帥' : (q.name || '某人'); item.replyText = String(q.text || '').slice(0, 80); }
+    }
     if (!dm) queueDuePolls(chatId);
     lastItem.set(chatId, item);
     if (item) resolveName(chatId, userId, item);
@@ -1689,7 +1713,9 @@ export default {
     if (quoted) trigger.quoted = quoted;
     // 用回覆功能回某則訊息（可能是照片）→ 記下那則的 ID，看照片時用
     if (event?.message?.quotedMessageId) trigger.quotedId = String(event.message.quotedMessageId);
-    const isMention = !!quoted || isMentioned(text, event);
+    const addr = addressOf(text, event, quoted);
+    const isMention = addr === 'direct';
+    const judge = addr === 'soft';
     if (enabled.has(chatId) && await kbIntercept({ chatId, userId, text, replyToken, event, mention: isMention, dm: false })) return true;
     if (enabled.has(chatId) && userId && await pollIntercept({ chatId, userId, text, replyToken, mention: isMention })) return true;
     // 時段外被叫：回一句休息中（reply 免費），同一群 30 分鐘內只回一次
@@ -1706,6 +1732,6 @@ export default {
     // 沒叫小帥、也不在跟小帥對話中 → 直接用這則回覆貼查好的答案（對話中的話留給小帥判斷，例如有人回「好」確認改行程）
     if (!isMention && enabled.has(chatId) && !brain.status(chatId).windowLeftMs && heldAnswers(chatId, 1).length
       && await deliverHeld(chatId, replyToken)) return true; // 這則的回覆用掉了
-    return brain.handle(chatId, { replyToken, isMention, trigger });
+    return brain.handle(chatId, { replyToken, isMention, judge, trigger });
   },
 };

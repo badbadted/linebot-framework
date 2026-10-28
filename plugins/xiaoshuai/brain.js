@@ -87,7 +87,8 @@ export function createBrain({
    * trigger：觸發這次的那則訊息（observe 回傳的物件）。等待中被新訊息合併時，
    * 點名那句會保留下來，AI 才知道真正要回的是哪一句
    */
-  function handle(chatId, { replyToken, isMention, trigger = null }) {
+  /** judge：不確定是不是在叫小帥（引用他的話、句中提到他）→ 視窗沒開也先判斷一次，不是在跟他說話就不出聲 */
+  function handle(chatId, { replyToken, isMention, judge = false, trigger = null }) {
     if (!isEnabled(chatId)) return false;
     const s = st(chatId);
     const t = now();
@@ -99,7 +100,7 @@ export function createBrain({
 
     let mode = null;
     if (isMention) mode = 'mention';
-    else if (windowOpen(s, t)) mode = 'window';
+    else if (windowOpen(s, t) || judge) mode = 'window';
     else if (s.unmentioned >= c.idleThreshold) mode = 'idle';
     else if (s.pending) mode = s.pending.mode; // 正在等著回：沿用原本的模式，改看最新這句
     if (!mode) return true;
@@ -112,6 +113,7 @@ export function createBrain({
     const keepPrevTrigger = prev && merged === prev.mode && prev.mode === 'mention' && !isMention;
     const job = {
       mode: merged, replyToken, receivedAt: t, firstAt: prev?.firstAt ?? t, timer: null,
+      judge: merged === 'window' && judge,
       trigger: keepPrevTrigger ? prev.trigger : trigger,
     };
     s.pending = job;
@@ -158,12 +160,13 @@ export function createBrain({
     }
     s.pending = null;
     if (job.mode === 'window') {
-      if (!windowOpen(s, now())) { skip(chatId, job); return; }
+      if (!job.judge && !windowOpen(s, now())) { skip(chatId, job); return; }
       s.windowJudges++;
     }
     s.busy = true;
     try {
-      const allowChimeIn = job.mode === 'window' ? canChimeIn(s, now()) : true;
+      // 不確定是不是叫他的那句：判斷不是在跟他說話，就不插嘴
+      const allowChimeIn = job.mode === 'window' ? !job.judge && canChimeIn(s, now()) : true;
       const r = await onFire(chatId, { mode: job.mode, replyToken: job.replyToken, trigger: job.trigger, transcript: s.buf.slice(), allowChimeIn });
       if (r?.replied) {
         const t = now();
