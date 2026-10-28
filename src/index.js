@@ -98,7 +98,7 @@ async function main() {
   const logger = createLogger(dataDir);
 
   // 載入 plugins（傳入所有 providers）
-  const pluginHooks = { groupText: [], unmatched: [], privateText: [], postback: [] };
+  const pluginHooks = { groupText: [], unmatched: [], privateText: [], postback: [], announce: [] };
   const loaded = await loadPlugins(config.plugins.dir, {
     router,
     scheduler,
@@ -644,6 +644,28 @@ async function main() {
       console.error(`[api/push] ${err.message}`);
       res.status(502).json({ error: err.message });
     }
+  });
+
+  // ── 公告 API（2026-10-28）：排進群組「下一個人講話時」的免費回覆，不推播、不扣訊息額度 ──
+  // 受 apiAuth 保護（同 /api/push）。body: { to: groupId, text, keepHours? }（預設等 72 小時，最多 168）
+  // 由開著的 plugin（小帥）接；沒有 plugin 接得了（這群沒開小帥）回 409，要發只能改用 /api/push
+  app.post('/api/announce', async (req, res) => {
+    const body = req.body || {};
+    const to = String(body.to || '');
+    const text = String(body.text || '').trim();
+    if (!/^[CR][0-9a-f]{32}$/i.test(to)) return res.status(400).json({ error: 'to 要是群組 ID（C 或 R 開頭）' });
+    if (!text) return res.status(400).json({ error: 'missing "text"' });
+    if (text.length > 5000) return res.status(400).json({ error: '超過 LINE 單則 5000 字' });
+    const keepMs = Math.min(168, Math.max(1, Number(body.keepHours) || 72)) * 3600_000;
+    const errors = [];
+    for (const h of pluginHooks.announce) {
+      try {
+        const r = await h.fn({ chatId: to, text, keepMs });
+        if (r?.ok) return res.json({ ok: true, to, mode: 'reply', plugin: h.plugin, keepHours: keepMs / 3600_000, queuedAt: new Date().toISOString() });
+        if (r?.error) errors.push(r.error);
+      } catch (err) { errors.push(err.message); }
+    }
+    res.status(409).json({ error: errors[0] || '沒有可以用免費回覆的 plugin' });
   });
 
   // LINE Profile 查詢（Dashboard 用）

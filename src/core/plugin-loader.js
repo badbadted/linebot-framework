@@ -23,6 +23,7 @@
  *     onUnmatched?: async (ctx) => boolean,    // 可選：群組裡沒命中指令的非 / 訊息；回 true = 已接手，不再交給 LLM fallback
  *     onPrivateText?: async (ctx) => boolean,  // 可選：私訊沒命中指令的非 / 訊息；回 true = 已接手（如健身教練），否則照舊交給 LLM
  *     onPostback?: async (ctx) => boolean,     // 可選：Flex 卡片 postback 按鈕（ctx: chatId, userId, data, replyToken）；回 true = 已接手
+ *     onAnnounce?: async (ctx) => { ok, error? }, // 可選：/api/announce 公告排進免費回覆（ctx: chatId, text, keepMs）
  *   }
  *
  * 前綴模式（prefix + command）：
@@ -169,6 +170,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
         if (plugin.onUnmatched) hooks.unmatched.push({ plugin: plugin.name, fn: plugin.onUnmatched });
         if (plugin.onPrivateText) hooks.privateText.push({ plugin: plugin.name, fn: plugin.onPrivateText });
         if (plugin.onPostback) hooks.postback?.push({ plugin: plugin.name, fn: plugin.onPostback });
+        if (plugin.onAnnounce) hooks.announce?.push({ plugin: plugin.name, fn: plugin.onAnnounce });
       }
 
       loaded.push(plugin.name);

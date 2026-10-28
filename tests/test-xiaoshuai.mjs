@@ -1674,4 +1674,23 @@ await test('結果保存：結束後問到標題，從資料庫帶最新數字�
   assert.ok(db.get("SELECT status FROM polls").status === 'closed');
 });
 
+await test('公告：排進免費回覆（不推播），下一個人講話時貼；等 3 天、沒開小帥的群不收', async () => {
+  const { db, say, replies } = await pollBot();
+  assert.deepEqual(await xiaoshuai.onAnnounce({ chatId: 'GNOPE', text: '公告' }), { ok: false, error: '這群沒開小帥，沒有免費回覆可以用' });
+  const r = await xiaoshuai.onAnnounce({ chatId: 'GPL', text: '📢 小帥 更新\n・新功能投票' });
+  assert.equal(r.ok, true);
+  assert.equal(r.mode, 'reply');
+  // 13 小時後（查好的答案已經過期的時間）公告還在
+  db.run('UPDATE held_answers SET at = at - ?', 13 * 3600_000);
+  assert.equal(heldAnswers('GPL').length, 1);
+  const n = replies.length;
+  const got = await say('U4', '晚上要不要先訂位');                     // 沒叫小帥的一般聊天
+  assert.equal(replies.length, n + 1);
+  assert.equal(got[0].text, '📢 小帥 更新\n・新功能投票');
+  assert.equal(heldAnswers('GPL').length, 0);                          // 只貼一次
+  // 過了等待時間就不貼
+  await xiaoshuai.onAnnounce({ chatId: 'GPL', text: '過期的公告', keepMs: 3600_000 });
+  assert.equal(heldAnswers('GPL', 3, Date.now() + 2 * 3600_000).length, 0);
+});
+
 console.log(`\n${pass} 項全部通過`);

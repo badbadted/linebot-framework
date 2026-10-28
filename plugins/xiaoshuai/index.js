@@ -176,6 +176,8 @@ function initDb() {
   }
   // 查太久補貼的答案也能帶卡片（2026-10-28）：msgs＝要接在文字後面的 Flex 訊息（JSON）
   if (!db.all('PRAGMA table_info(held_answers)').some(c => c.name === 'msgs')) db.exec('ALTER TABLE held_answers ADD COLUMN msgs TEXT');
+  // 公告（2026-10-28）：排進來等人講話時用免費回覆貼，等得比查好的答案久（expires_at；沒有就照 12 小時）
+  if (!db.all('PRAGMA table_info(held_answers)').some(c => c.name === 'expires_at')) db.exec('ALTER TABLE held_answers ADD COLUMN expires_at INTEGER');
   // 小卡（2026-10-28）：記下每則的 LINE 訊息 ID，用回覆功能回某則再說「加到小卡」時取那則的全文
   if (!db.all('PRAGMA table_info(chat_log)').some(c => c.name === 'msg_id')) db.exec('ALTER TABLE chat_log ADD COLUMN msg_id TEXT');
   for (const r of db.all('SELECT chat_id FROM groups WHERE enabled = 1')) enabled.add(r.chat_id);
@@ -914,15 +916,33 @@ function withSticker(chatId, parsed, reply) {
 }
 
 // ── 查太久的答案（2026-10-28）：背景查好先存著，等群裡下一個人講話，用那則的免費回覆貼出來（不用推播扣額度） ──
-function holdAnswer(chatId, text, msgs = []) {
-  db.run('INSERT INTO held_answers (chat_id, text, at, msgs) VALUES (?, ?, ?, ?)', chatId, text, Date.now(), msgs.length ? JSON.stringify(msgs) : null);
-  db.run('DELETE FROM held_answers WHERE at < ?', Date.now() - HOLD_KEEP_MS);
+function holdAnswer(chatId, text, msgs = [], { keepMs = null } = {}) {
+  const now = Date.now();
+  db.run('INSERT INTO held_answers (chat_id, text, at, msgs, expires_at) VALUES (?, ?, ?, ?, ?)', chatId, text, now, msgs.length ? JSON.stringify(msgs) : null, keepMs ? now + keepMs : null);
+  db.run(`DELETE FROM held_answers WHERE ${HELD_EXPIRED}`, now, now - HOLD_KEEP_MS);
   // 只留最新幾則
   db.run('DELETE FROM held_answers WHERE chat_id = ? AND id NOT IN (SELECT id FROM held_answers WHERE chat_id = ? ORDER BY id DESC LIMIT ?)', chatId, chatId, HOLD_MAX);
 }
+// 過期：有到期時間的看到期時間，沒有的照 12 小時
+const HELD_EXPIRED = '(expires_at IS NOT NULL AND expires_at <= ?) OR (expires_at IS NULL AND at <= ?)';
 export function heldAnswers(chatId, limit = HOLD_MAX, now = Date.now()) {
   if (!db) return [];
-  return db.all('SELECT id, text, msgs FROM held_answers WHERE chat_id = ? AND at > ? ORDER BY id LIMIT ?', chatId, now - HOLD_KEEP_MS, limit);
+  return db.all(`SELECT id, text, msgs FROM held_answers WHERE chat_id = ? AND NOT (${HELD_EXPIRED}) ORDER BY id LIMIT ?`, chatId, now, now - HOLD_KEEP_MS, limit);
+}
+
+/**
+ * 公告排進「下一個人講話時貼」（免費回覆，不推播）：這群要有開小帥才有人接得到；回 { queued, error }
+ * @param keepMs 等多久（預設 3 天，過了就不貼）
+ */
+export const ANNOUNCE_KEEP_MS = 3 * 86400_000;
+export function queueAnnouncement(chatId, text, keepMs = ANNOUNCE_KEEP_MS) {
+  if (!db) return { queued: false, error: '小帥沒有資料庫' };
+  if (!enabled.has(chatId)) return { queued: false, error: '這群沒開小帥，沒有免費回覆可以用' };
+  const t = String(text || '').trim().slice(0, 5000);
+  if (!t) return { queued: false, error: '公告是空的' };
+  holdAnswer(chatId, t, [], { keepMs });
+  console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 公告排進免費回覆（${Math.round(keepMs / 3600_000)} 小時內有人講話就貼）：${t.slice(0, 40)}`);
+  return { queued: true };
 }
 /** 一則存著的答案要送的訊息：文字＋卡片 */
 function heldMessages(row) {
@@ -1633,6 +1653,12 @@ export default {
     dmQueue.set(userId, job.catch(() => {}));
     const r = await job;
     return !r?.handoff;
+  },
+
+  /** 框架的 /api/announce：公告排進免費回覆；這群沒開小帥回 false（交給呼叫端決定要不要推播） */
+  async onAnnounce({ chatId, text, keepMs }) {
+    const r = queueAnnouncement(chatId, text, keepMs || ANNOUNCE_KEEP_MS);
+    return r.queued ? { ok: true, mode: 'reply', keepMs: keepMs || ANNOUNCE_KEEP_MS } : { ok: false, error: r.error };
   },
 
   /** Flex 卡片的 postback：投票按鈕「poll:<id>:<選項>」、看結果「poll:<id>:r」 */
