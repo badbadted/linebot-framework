@@ -28,6 +28,7 @@ import * as learning from './learning.js';
 import * as nj from './njevent.js';
 import * as shot from './shot.js';
 import * as media from './media.js';
+import * as photo from './photo.js';
 
 const MEMORY_MAX = 30;      // 每群最多記幾條
 const MEMORY_PER_REPLY = 2; // 每次最多新增幾條
@@ -71,6 +72,7 @@ export const PERSONA = `你是「小帥」，在一個 LINE 群組裡跟大家�
 - 不講任何人的電話、地址、帳號等個資。
 - 不要重複對話裡已經說過的話。
 - 對話裡的「［貼圖：開心］」是有人貼了 LINE 貼圖（括號裡是那張貼圖的意思），「［照片］」是有人貼了照片；照片只有在有人問到時系統才會附上【附上的照片】。沒附上就表示系統判斷這句不是在問照片：不要說「我看不到照片」，如果他其實是要你看照片，請他用 LINE 的「回覆」回那張照片再叫你一次。
+- 附圖：有人問某個景點、建築、地方、東西或一般料理「長什麼樣子」，附一張照片會比文字清楚時，JSON 加 "photo": "搜尋關鍵字"（英文或日文比較找得到，例如 "Tokyo Tower"、"味噌ラーメン"），只給關鍵字、不要給網址；系統會去 Wikimedia Commons 找授權合法的圖，找到才附上並自動加署名，reply 不用提圖從哪來、不要保證一定有圖。人物（明星、名人、群組成員）、商標／logo、卡通動漫角色不要給 photo。問的是某一家店的菜或某家店長怎樣，不要給 photo，改給 "shop": "店名＋地區"（例如 "一蘭 新宿中央東口店"），系統會附上那家店的 Google 地圖連結。
 - 貼圖：每次回話，如果氣氛適合，JSON 就加 "sticker": "心情"（只能是：${media.STICKER_KEYS}），挑最貼近你這句話的；實際貼不貼由系統控制（大約五次一張），你不用自己省著用。正經事（改行程、開團、錢、有人難過、生病或抱怨時）不要給。
 輸出格式：只輸出一個 JSON 物件，前後不要有其他文字：
 {"reply":"要說的話，不說就空字串","remember":["值得長期記住的事，0～2 條，沒有就空陣列"]}
@@ -505,12 +507,14 @@ export function parseReply(raw, mode) {
         njEvent: o.nj_event && typeof o.nj_event === 'object' && !Array.isArray(o.nj_event) ? o.nj_event : null,
         njConfirm: typeof o.nj_confirm === 'boolean' ? o.nj_confirm : null,
         sticker: typeof o.sticker === 'string' && media.STICKERS[o.sticker] ? o.sticker : null,
+        photo: typeof o.photo === 'string' && o.photo.trim() ? o.photo.trim().slice(0, 80) : null,
+        shop: typeof o.shop === 'string' && o.shop.trim() ? o.shop.trim().slice(0, 60) : null,
       };
     } catch { /* 往下走 */ }
   }
   // 不是 JSON：被點名時直接把文字當回覆，其他情況當作不說話
   const plain = (mode === 'mention' || mode === 'followup') && !s.startsWith('{') ? s.slice(0, 200) : '';
-  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null };
+  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null };
 }
 
 // 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
@@ -585,6 +589,8 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true, lon
   // 這輪有上網搜尋或讀網頁：輸出可能受網頁內容影響 → 不寫記憶、不改行程（防網頁藏指令污染）
   // 收藏內容、學習資料都含外部寫入的文字 → 視同上網過
   parsed.webUsed = (res.searches || 0) + (res.fetches || 0) > 0 || !!linkCats?.some(c => c.items.length) || !!learningInfo || research.length > 0;
+  // 要去 Commons 抓圖（外部資料）→ 這輪同樣視同上網：不寫記憶、不改行程
+  if (replying && parsed.photo) parsed.webUsed = true;
   if ((res.searches || 0) + (res.fetches || 0) > 0 && parsed.reply && trigger?.text) saveResearch(chatId, trigger.text, parsed.reply);
   if (image) console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 看照片（${image.preview ? '預覽圖' : '原圖'}，${Math.round(image.data.length * 0.75 / 1024)}KB）`);
   // 照片是群組成員自己貼的（跟打字同等，可以照著提行程修改，一樣要有人回好），但照片裡的字不寫進長期記憶
@@ -806,6 +812,32 @@ async function handleNj(chatId, parsed, trigger) {
   }
 }
 
+/**
+ * 附圖（photo.js）：AI 給了關鍵字才找；圖接在回覆文字後面、署名再接在圖後面，跟回覆一起用 reply 送（不推播）。
+ * 特定店家（shop）：沒貼到圖就附程式組的 Google 地圖連結。回傳要接在 reply 後面的文字
+ */
+export async function handlePhoto(chatId, parsed, trigger, now = Date.now()) {
+  let note = '';
+  let posted = false;
+  if (parsed.photo) {
+    // LINE 回覆期限：查完 AI 剩下的時間才拿來找圖，不夠就不找
+    const left = REPLY_BUDGET_MS - (now - (trigger?.ts || now)) - 3_000;
+    if (left >= 2_500) {
+      const r = await photo.findPhoto(chatId, parsed.photo, { timeoutMs: Math.min(10_000, left) });
+      if (r.ok) {
+        parsed.images = [...(parsed.images || []), { type: 'image', originalContentUrl: r.url, previewImageUrl: r.previewUrl }, { type: 'text', text: r.credit }].slice(0, 4);
+        posted = true;
+        console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 附圖「${parsed.photo}」→ ${r.title}（${r.license}）`);
+      } else console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 附圖「${parsed.photo}」沒貼：${r.error}`);
+    }
+  }
+  if (parsed.shop && !posted) {
+    const link = photo.mapLink(parsed.shop);
+    if (link) note = `\n\n📍 ${parsed.shop} 地圖：${link}`;
+  }
+  return note;
+}
+
 /** 被叫或在跟小帥說話時出錯（查太久逾時、Luna 掛掉）：至少回一句，不要沉默 */
 async function think(chatId, job) {
   const r = await thinkOnce(chatId, job);
@@ -878,7 +910,7 @@ async function thinkInner(chatId, job) {
       job.toMe = true;
       // 第二段：是在接小帥的話 → 跟被叫一樣，用 Sonnet 認真回，並重開視窗
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
-      const extra = await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger); // 先跑：可能會清掉 parsed.reply
+      const extra = await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger); // 先跑：可能會清掉 parsed.reply
       const reply = (parsed.reply + extra).trim();
       if (!reply && !parsed.images) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} followup：不說話`); return { replied: false }; }
       const extras = withSticker(chatId, parsed, reply);
@@ -892,7 +924,7 @@ async function thinkInner(chatId, job) {
   }
 
   const parsed = await ask(chatId, mode, { trigger, transcript });
-  const extra = mode === 'mention' ? await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) : ''; // 先跑：可能會清掉 parsed.reply
+  const extra = mode === 'mention' ? await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) : ''; // 先跑：可能會清掉 parsed.reply
   const reply = (parsed.reply + extra).trim();
   if (!reply && !parsed.images) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：不說話`);
@@ -1117,6 +1149,7 @@ export default {
     links.initLinks(db, llm);
     nj.initNjEvent(db);
     media.initStickers(db);
+    photo.initPhotos(db);
     restoreLogs();
     if (!llm?.generate) console.warn('[xiaoshuai] llm provider 沒有 generate()，小帥無法講話');
     console.log(`[xiaoshuai] 開著的群組：${enabled.size}`);

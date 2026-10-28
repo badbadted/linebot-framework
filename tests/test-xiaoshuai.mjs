@@ -12,6 +12,10 @@ import * as learning from '../plugins/xiaoshuai/learning.js';
 import * as nj from '../plugins/xiaoshuai/njevent.js';
 import * as shot from '../plugins/xiaoshuai/shot.js';
 import * as media from '../plugins/xiaoshuai/media.js';
+import * as photo from '../plugins/xiaoshuai/photo.js';
+import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as pjoin } from 'node:path';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
@@ -258,13 +262,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -838,6 +842,187 @@ await test('貼圖次數存 DB：bot 重開不歸零', async () => {
   assert.equal(media.stickerMessage('GP', '開心'), null);   // 第 4 次
   assert.ok(media.stickerMessage('GP', '開心'));            // 第 5 次：貼
   assert.equal(db.get("SELECT since FROM sticker_state WHERE chat_id = 'GP'").since, 0);
+});
+
+// ── 附圖（Commons） ───────────────────────────────
+const lic = (short, code = '', extra = {}) => ({ LicenseShortName: { value: short }, License: { value: code }, ...Object.fromEntries(Object.entries(extra).map(([k, v]) => [k, { value: v }])) });
+
+await test('附圖授權：白名單 PD／CC0／CC BY／CC BY-SA 任何版本', () => {
+  for (const [s, c] of [['CC BY-SA 4.0', 'cc-by-sa-4.0'], ['CC BY 2.0', 'cc-by-2.0'], ['CC BY-SA 3.0 de', 'cc-by-sa-3.0-de'], ['CC0', 'cc0'], ['Public domain', 'pd'], ['Public domain', 'pd-old-70'], ['CC BY 4.0', ''], ['', 'cc-by-sa-2.5']]) {
+    assert.equal(photo.checkLicense(lic(s, c)).ok, true, `${s}/${c}`);
+  }
+  assert.equal(photo.checkLicense(lic('CC0', 'cc0')).kind, 'pd');
+  assert.equal(photo.checkLicense(lic('CC BY 2.0', 'cc-by-2.0')).kind, 'cc');
+});
+
+await test('附圖授權：黑名單 NC／ND／fair use／非自由／缺欄／認不得', () => {
+  for (const m of [
+    lic('CC BY-NC 2.0', 'cc-by-nc-2.0'), lic('CC BY-NC-SA 4.0', 'cc-by-nc-sa-4.0'), lic('CC BY-ND 2.0', 'cc-by-nd-2.0'),
+    lic('CC BY 2.0', 'cc-by-2.0', { UsageTerms: 'Creative Commons Attribution-NonCommercial' }),
+    lic('Fair use', 'fair use'), lic('CC BY-SA 4.0', 'cc-by-sa-4.0', { NonFree: 'true' }),
+    lic('', ''), {}, null, lic('GFDL', 'gfdl'), lic('Copyrighted', 'copyrighted'), lic('All rights reserved', ''),
+    lic('Public domain', 'pd-textlogo'), lic('Public domain', 'pd-flag'),
+  ]) assert.equal(photo.checkLicense(m).ok, false, JSON.stringify(m));
+});
+
+await test('附圖：Artist 去 HTML、解實體、限長', () => {
+  assert.equal(photo.cleanArtist('<a href="//commons.wikimedia.org/wiki/User:X" title="User:X">Andy Li</a>'), 'Andy Li');
+  assert.equal(photo.cleanArtist('<span>Tom &amp; Jerry&#39;s &lt;b&gt;</span>\n  <script>alert(1)</script>'), "Tom & Jerry's b");
+  assert.equal(photo.cleanArtist('<img src=x onerror=1>'), '');
+  const long = photo.cleanArtist('A'.repeat(100));
+  assert.equal(Array.from(long).length, 40);
+  assert.ok(long.endsWith('…'));
+  assert.equal(photo.attribution({ artist: 'Andy Li', license: 'CC0', kind: 'pd', page: 'https://commons.wikimedia.org/wiki/File:A.jpg' }), '📷 Andy Li／CC0／https://commons.wikimedia.org/wiki/File:A.jpg');
+});
+
+await test('附圖：只准 https 的 upload.wikimedia.org（thumb 換成 upload）', () => {
+  assert.equal(photo.imageUrl('https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/A.jpg/960px-A.jpg?utm_source=x'), 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/A.jpg/960px-A.jpg');
+  assert.equal(photo.imageUrl('https://thumb.wikimedia.org/wikipedia/commons/thumb/d/d4/A.jpg/960px-A.jpg'), 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/A.jpg/960px-A.jpg');
+  for (const u of ['http://upload.wikimedia.org/wikipedia/commons/a.jpg', 'https://evil.com/wikipedia/commons/a.jpg', 'https://upload.wikimedia.org.evil.com/wikipedia/commons/a.jpg',
+    'https://upload.wikimedia.org:8443/wikipedia/commons/a.jpg', 'https://u:p@upload.wikimedia.org/wikipedia/commons/a.jpg', 'https://upload.wikimedia.org/wikipedia/en/a.jpg', 'file:///etc/passwd', '不是網址']) {
+    assert.equal(photo.imageUrl(u), null, u);
+  }
+});
+
+await test('附圖：人物／商標／卡通擋掉', () => {
+  assert.equal(photo.blockedSubject({ query: 'Tokyo Tower' }), false);
+  assert.equal(photo.blockedSubject({ query: '味噌ラーメン', title: 'File:Miso_ramen.jpg', categories: 'Miso ramen|CC-Zero' }), false);
+  for (const x of [{ query: 'Pikachu cartoon' }, { query: 'Starbucks logo' }, { title: 'File:Portrait_of_someone.jpg' }, { categories: 'Living people|Actors' },
+    { restrictions: 'personality' }, { restrictions: 'trademarked' }, { query: 'ハローキティ キャラクター' }, { title: 'File:Girl_eating_ramen.jpg' }]) {
+    assert.equal(photo.blockedSubject(x), true, JSON.stringify(x));
+  }
+});
+
+const page = (index, title, meta, mime = 'image/jpeg') => ({ index, title, imageinfo: [{ mime, thumburl: `https://thumb.wikimedia.org/wikipedia/commons/thumb/a/ab/${index}.jpg/960px-${index}.jpg?utm=1`, descriptionurl: `https://commons.wikimedia.org/wiki/File:${index}.jpg`, extmetadata: meta }] });
+const okMeta = { ...lic('CC BY-SA 4.0', 'cc-by-sa-4.0'), Artist: { value: '<a href="#">Taro</a>' }, Categories: { value: 'Tokyo Tower' } };
+
+await test('附圖：照排名挑第一張合格的（跳過 NC、人物、沒作者的 CC、非 JPEG/PNG）', () => {
+  const pages = [
+    page(5, 'File:Ok.jpg', okMeta),
+    page(1, 'File:Nc.jpg', { ...okMeta, ...lic('CC BY-NC 2.0', 'cc-by-nc-2.0') }),
+    page(2, 'File:Tower.jpg', { ...okMeta, Categories: { value: 'Living people' } }),
+    page(3, 'File:NoArtist.jpg', { ...lic('CC BY 2.0', 'cc-by-2.0') }),
+    page(4, 'File:Anim.gif', okMeta, 'image/gif'),
+  ];
+  const c = photo.pickCandidate(pages, 'Tokyo Tower');
+  assert.equal(c.title, 'File:Ok.jpg');
+  assert.equal(c.artist, 'Taro');
+  assert.equal(c.thumb, 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/5.jpg/960px-5.jpg');
+  assert.ok(photo.pickCandidate([pages[1]], 'x').none);
+});
+
+const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(500)]);
+function fakeCommons({ pages = [page(1, 'File:Ok.jpg', okMeta)], img = JPEG, type = 'image/jpeg' } = {}) {
+  const calls = [];
+  const f = async (url, opts) => {
+    calls.push(String(url));
+    assert.equal(opts.redirect, 'error');
+    const u = new URL(url);
+    if (u.hostname === 'commons.wikimedia.org') return { ok: true, status: 200, json: async () => ({ query: { pages } }) };
+    if (u.hostname === 'upload.wikimedia.org') return { ok: true, status: 200, headers: { get: (k) => (k === 'content-type' ? type : String(img.length)) }, arrayBuffer: async () => img };
+    throw new Error(`不該連到 ${u.hostname}`);
+  };
+  return { f, calls };
+}
+
+await test('附圖：下載存檔、組 LINE 網址；格式不對不存', async () => {
+  const dir = mkdtempSync(pjoin(tmpdir(), 'xs-photo-'));
+  const fc = fakeCommons();
+  photo.configure({ fetch: fc.f, dir });
+  const r = await photo.findPhoto('GPH1', 'Tokyo Tower');
+  assert.equal(r.ok, true);
+  assert.match(r.url, /^https:\/\/bot\.pushbike-training\.app\/public\/shots\/[0-9a-f]{32}\.jpg$/);
+  assert.equal(r.previewUrl, r.url);
+  assert.equal(r.credit, '📷 Taro／CC BY-SA 4.0／https://commons.wikimedia.org/wiki/File:1.jpg');
+  assert.equal(lsDir(dir).length, 1);
+  assert.ok(fc.calls[1].startsWith('https://upload.wikimedia.org/'));
+  // 宣稱 JPEG 但內容是 HTML → 不貼
+  photo.configure({ fetch: fakeCommons({ img: Buffer.from('<html>hi</html>') }).f });
+  assert.equal((await photo.findPhoto('GPH1', 'Tokyo Tower')).ok, false);
+  photo.configure({ fetch: fakeCommons({ type: 'image/webp' }).f });
+  assert.equal((await photo.findPhoto('GPH1', 'Tokyo Tower')).ok, false);
+  assert.equal(lsDir(dir).length, 1);
+  // 關鍵字是人物／商標 → 連 Commons 都不查
+  const fc2 = fakeCommons();
+  photo.configure({ fetch: fc2.f });
+  assert.equal((await photo.findPhoto('GPH1', 'Hello Kitty logo')).ok, false);
+  assert.equal(fc2.calls.length, 0);
+});
+
+await test('附圖：每群每天上限，隔天重算、存 DB', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  photo.initPhotos(db);
+  photo.configure({ fetch: fakeCommons().f, dir: mkdtempSync(pjoin(tmpdir(), 'xs-photo-')) });
+  for (let i = 0; i < photo.PER_DAY; i++) assert.equal((await photo.findPhoto('GQ', 'Tokyo Tower', { now: NOON })).ok, true);
+  const fc = fakeCommons();
+  photo.configure({ fetch: fc.f });
+  const r = await photo.findPhoto('GQ', 'Tokyo Tower', { now: NOON });
+  assert.equal(r.ok, false);
+  assert.equal(fc.calls.length, 0);
+  assert.equal(photo.canPost('GQ2', NOON), true); // 別群不受影響
+  assert.equal(photo.canPost('GQ', NOON + 86400_000), true); // 隔天
+  photo.initPhotos(db); // 重開不歸零
+  assert.equal(photo.usedToday('GQ', NOON), photo.PER_DAY);
+});
+
+await test('附圖：parseReply 讀 photo／shop；沒給就是 null', () => {
+  const a = parseReply('{"reply":"東京鐵塔長這樣","photo":"Tokyo Tower"}', 'mention');
+  assert.equal(a.photo, 'Tokyo Tower');
+  const b = parseReply('{"reply":"在喔"}', 'mention');
+  assert.equal(b.photo, null);
+  assert.equal(b.shop, null);
+  assert.equal(parseReply('{"reply":"x","photo":123}', 'mention').photo, null);
+  assert.equal(photo.mapLink('一蘭 新宿中央東口店'), 'https://www.google.com/maps/search/?api=1&query=%E4%B8%80%E8%98%AD%20%E6%96%B0%E5%AE%BF%E4%B8%AD%E5%A4%AE%E6%9D%B1%E5%8F%A3%E5%BA%97');
+});
+
+async function photoBot(llmText) {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const ctx = { db, lineApi: { reply: async (_t, m) => { replies.push(m); return {}; }, push: async () => { throw new Error('不該推播'); }, getGroupMemberProfile: async () => ({ displayName: '阿庭' }) },
+    providers: { llm: { generate: async () => ({ text: llmText }) } }, isAdmin: () => true };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GPB', 1)");
+  await xiaoshuai.init(ctx);
+  return { db, replies };
+}
+const waitReply = async (replies) => { for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200)); };
+
+await test('附圖：AI 沒給 photo → 不查 Commons、不附圖', async () => {
+  const fc = fakeCommons();
+  photo.configure({ fetch: fc.f, dir: mkdtempSync(pjoin(tmpdir(), 'xs-photo-')) });
+  const { replies } = await photoBot('{"reply":"在喔"}');
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return; // 時段外跳過
+  await waitReply(replies);
+  assert.deepEqual(replies[0].map(m => m.type), ['text']);
+  assert.equal(fc.calls.length, 0);
+});
+
+await test('附圖：AI 給 photo → 回覆＋圖＋署名一起 reply；那輪不寫記憶', async () => {
+  const fc = fakeCommons();
+  photo.configure({ fetch: fc.f, dir: mkdtempSync(pjoin(tmpdir(), 'xs-photo-')) });
+  const { db, replies } = await photoBot('{"reply":"東京鐵塔是紅白色的鐵塔","photo":"Tokyo Tower","remember":["阿庭想去東京鐵塔"]}');
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 東京鐵塔長怎樣', replyToken: 'rt', event: {} }))) return;
+  await waitReply(replies);
+  const msgs = replies[0];
+  assert.deepEqual(msgs.map(m => m.type).slice(0, 3), ['text', 'image', 'text']);
+  assert.match(msgs[1].originalContentUrl, /\/public\/shots\/[0-9a-f]{32}\.jpg$/);
+  assert.match(msgs[2].text, /^📷 Taro／CC BY-SA 4\.0／https:\/\/commons\.wikimedia\.org\/wiki\/File:/);
+  assert.equal(db.all("SELECT * FROM memories WHERE chat_id = 'GPB'").length, 0);
+});
+
+await test('附圖：特定店家沒圖 → 附 Google 地圖連結', async () => {
+  const fc = fakeCommons();
+  photo.configure({ fetch: fc.f });
+  const { replies } = await photoBot('{"reply":"那家的拉麵湯頭很濃","shop":"一蘭 新宿中央東口店"}');
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 一蘭新宿那家長怎樣', replyToken: 'rt', event: {} }))) return;
+  await waitReply(replies);
+  assert.deepEqual(replies[0].map(m => m.type), ['text']);
+  assert.match(replies[0][0].text, /📍 一蘭 新宿中央東口店 地圖：https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=/);
+  assert.equal(fc.calls.length, 0);
 });
 
 console.log(`\n${pass} 項全部通過`);

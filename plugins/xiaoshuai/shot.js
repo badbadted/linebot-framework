@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
 export const SHOT_DIR = join(ROOT, 'public', 'shots');
-const PUBLIC_BASE = (process.env.BOT_PUBLIC_URL || 'https://bot.pushbike-training.app').replace(/\/$/, '');
+export const PUBLIC_BASE = (process.env.BOT_PUBLIC_URL || 'https://bot.pushbike-training.app').replace(/\/$/, '');
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const KEEP_MS = 3 * 24 * 3600_000;
 const IDLE_MS = 2 * 60_000;
@@ -47,11 +47,12 @@ async function getBrowser() {
   return browser;
 }
 
-function cleanup(now = Date.now()) {
-  if (!existsSync(SHOT_DIR)) return;
-  for (const f of readdirSync(SHOT_DIR)) {
-    if (!/^[0-9a-f]{32}(-p)?\.jpg$/.test(f)) continue;
-    const p = join(SHOT_DIR, f);
+/** 刪掉 3 天前的圖（行程截圖、photo.js 的 Commons 圖都存這裡） */
+export function cleanup(now = Date.now(), dir = SHOT_DIR) {
+  if (!existsSync(dir)) return;
+  for (const f of readdirSync(dir)) {
+    if (!/^[0-9a-f]{32}(-p)?\.(jpg|png)$/.test(f)) continue;
+    const p = join(dir, f);
     try { if (now - statSync(p).mtimeMs > KEEP_MS) unlinkSync(p); } catch { /* 刪不掉下次再試 */ }
   }
 }
