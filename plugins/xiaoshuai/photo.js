@@ -5,7 +5,7 @@
  * 圖一律從 Wikimedia Commons 找，授權由程式判斷（不信 AI）：
  *   - 只收 public domain、CC0、CC BY、CC BY-SA（任何版本）；NC、ND、fair use、非自由、授權欄缺或認不得 → 不貼
  *   - 人物照、商標／logo、卡通角色不貼（關鍵字、檔名、Commons 分類、Restrictions 欄都看）
- *   - 圖後面附一行署名：📷 作者／授權／Commons 檔案頁
+ *   - 組好署名（📷 作者／授權／Commons 檔案頁）回給呼叫端；小帥目前只寫進 log、不貼到聊天（2026-10-28 使用者定：私人用）
  * 只下載 upload.wikimedia.org 的 https 縮圖（Commons 回的 thumb.wikimedia.org 縮圖換成 upload 同路徑抓），
  * 只收 JPEG／PNG、限大小，存 public/shots（跟行程截圖同一個資料夾、同樣 3 天後刪），用 bot 對外網址給 LINE 抓。
  * Commons 回來的文字（檔名、作者、分類）只當資料：不給 AI 看，只由程式拿來判斷與組署名。

@@ -82,7 +82,7 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
 - 不講任何人的電話、地址、帳號等個資。
 - 不要重複對話裡已經說過的話。
 - 對話裡的「［貼圖：開心］」是有人貼了 LINE 貼圖（括號裡是那張貼圖的意思），「［照片］」是有人貼了照片；照片只有在有人問到時系統才會附上【附上的照片】。沒附上就表示系統判斷這句不是在問照片：不要說「我看不到照片」，如果他其實是要你看照片，請他用 LINE 的「回覆」回那張照片再叫你一次。
-- 附圖：有人明確要圖（「有圖嗎」「給我看」「長怎樣」「長什麼樣子」），或問景點、建築、地方、東西、料理時附一張照片會比文字清楚，JSON 就加 "photo": ["搜尋關鍵字", …]（最多 2 個，英文或日文比較找得到，例如 ["Tokyo Tower"]、["味噌ラーメン"]），只給關鍵字、不要給網址；系統會去 Wikimedia Commons 找授權合法的圖，照順序找到第一張就附上並自動加署名。問的是某一家店（例如豐洲市場的八千代），一樣要給 photo：第一個是店名＋地點（例如 "八千代 豊洲市場"），第二個是那家店招牌料理的一般名稱（例如 "アジフライ"），店家本身找不到時系統會用同類料理當參考圖並標明；另外給 "shop": "店名＋地區"，圖找不到時系統會改附地圖連結。要附圖時 reply 直接回答問題（他問吃什麼就講招牌菜），不要說查不到菜色、不要叫他自己點連結看照片，也不用提圖從哪來、不要保證一定有圖。人物（明星、名人、群組成員）、商標／logo、卡通動漫角色不要給 photo。
+- 附圖：有人明確要圖（「有圖嗎」「給我看」「長怎樣」「長什麼樣子」），或問景點、建築、地方、東西、料理時附一張照片會比文字清楚，JSON 就加 "photo": ["搜尋關鍵字", …]（最多 2 個，英文或日文比較找得到，例如 ["Tokyo Tower"]、["味噌ラーメン"]），只給關鍵字、不要給網址；系統會去 Wikimedia Commons 找授權合法的圖，照順序找到第一張就附上。問的是某一家店（例如豐洲市場的八千代），一樣要給 photo：第一個是店名＋地點（例如 "八千代 豊洲市場"），第二個是那家店招牌料理的一般名稱（例如 "アジフライ"），店家本身找不到時系統會用同類料理當參考圖並標明；另外給 "shop": "店名＋地區"，圖找不到時系統會改附地圖連結。要附圖時 reply 直接回答問題（他問吃什麼就講招牌菜），不要說查不到菜色、不要叫他自己點連結看照片，也不用提圖從哪來、不要保證一定有圖。人物（明星、名人、群組成員）、商標／logo、卡通動漫角色不要給 photo。
 - 貼圖：這句話配一張貼圖真的很貼切、會讓人會心一笑時，JSON 加 "sticker": "心情"（只能是：${media.STICKER_KEYS}），挑意思最貼近的；不貼切就不要給，不用每次都給。【這次能不能貼圖】寫不能時一定不要給，也不要說要貼圖。正經事（改行程、開團、錢、有人難過、生病或抱怨時）不要給。有人問你會不會貼圖：會，覺得合適就貼，但不會連續貼、也不會太常貼。
 輸出格式：只輸出一個 JSON 物件，前後不要有其他文字：
 {"reply":"要說的話，不說就空字串","remember":["值得長期記住的事，0～2 條，沒有就空陣列"]}
@@ -842,8 +842,9 @@ async function handleFitness(chatId, parsed, trigger) {
 }
 
 /**
- * 附圖（photo.js）：AI 給了關鍵字才找，照順序找到第一張就停；圖接在回覆文字後面、署名再接在圖後面，跟回覆一起用 reply 送（不推播）。
- * 特定店家：第一個關鍵字是店，第二個是同類料理；用到第二個時署名標「同類料理參考圖」，免得誤會是那家店的。
+ * 附圖（photo.js）：AI 給了關鍵字才找，照順序找到第一張就停；圖接在回覆文字後面，跟回覆一起用 reply 送（不推播）。
+ * 群組不顯示署名（使用者 2026-10-28 定：私人群組用，不用署名）；作者、授權、檔案頁照樣寫進 log，要查得到出處。
+ * 特定店家：第一個關鍵字是店，第二個是同類料理；用到第二個時回覆後面註明「同類料理參考圖」，免得誤會是那家店的。
  * 都找不到：有給 shop 就附程式組的 Google 地圖連結，並說一聲找不到合法授權的圖。回傳要接在 reply 後面的文字
  */
 export async function handlePhoto(chatId, parsed, trigger, now = Date.now()) {
@@ -857,10 +858,10 @@ export async function handlePhoto(chatId, parsed, trigger, now = Date.now()) {
     tried = true;
     const r = await photo.findPhoto(chatId, q, { timeoutMs: Math.min(10_000, left) });
     if (r.ok) {
-      const credit = i > 0 && parsed.shop ? r.credit.replace(/^📷 /, `📷 同類料理參考圖（不是${parsed.shop}的）：`) : r.credit;
-      parsed.images = [...(parsed.images || []), { type: 'image', originalContentUrl: r.url, previewImageUrl: r.previewUrl }, { type: 'text', text: credit }].slice(0, 4);
+      parsed.images = [...(parsed.images || []), { type: 'image', originalContentUrl: r.url, previewImageUrl: r.previewUrl }].slice(0, 4);
+      if (i > 0 && parsed.shop) note = `\n\n（圖是同類料理的參考圖，不是${parsed.shop}的）`;
       posted = true;
-      console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 附圖「${q}」→ ${r.title}（${r.license}）`);
+      console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 附圖「${q}」→ ${r.credit}`);
       break;
     }
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 附圖「${q}」沒貼：${r.error}`);

@@ -1011,16 +1011,16 @@ await test('附圖：AI 沒給 photo → 不查 Commons、不附圖', async () =
   assert.equal(fc.calls.length, 0);
 });
 
-await test('附圖：AI 給 photo → 回覆＋圖＋署名一起 reply；那輪不寫記憶', async () => {
+await test('附圖：AI 給 photo → 回覆＋圖一起 reply（不顯示署名）；那輪不寫記憶', async () => {
   const fc = fakeCommons();
   photo.configure({ fetch: fc.f, dir: mkdtempSync(pjoin(tmpdir(), 'xs-photo-')) });
   const { db, replies } = await photoBot('{"reply":"東京鐵塔是紅白色的鐵塔","photo":"Tokyo Tower","remember":["阿庭想去東京鐵塔"]}');
   if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 東京鐵塔長怎樣', replyToken: 'rt', event: {} }))) return;
   await waitReply(replies);
   const msgs = replies[0];
-  assert.deepEqual(msgs.map(m => m.type).slice(0, 3), ['text', 'image', 'text']);
+  assert.deepEqual(msgs.map(m => m.type).slice(0, 2), ['text', 'image']);
+  assert.ok(!msgs.some(m => m.type === 'text' && m.text.startsWith('📷'))); // 不顯示署名
   assert.match(msgs[1].originalContentUrl, /\/public\/shots\/[0-9a-f]{32}\.jpg$/);
-  assert.match(msgs[2].text, /^📷 Taro／CC BY-SA 4\.0／https:\/\/commons\.wikimedia\.org\/wiki\/File:/);
   assert.equal(db.all("SELECT * FROM memories WHERE chat_id = 'GPB'").length, 0);
 });
 
@@ -1135,9 +1135,8 @@ await test('附圖：特定店家先找店、找不到用同類料理並標明�
   } });
   const parsed = { photo: ['八千代 豊洲市場', 'アジフライ'], shop: '八千代 豐洲市場' };
   const note = await handlePhoto('GSHOP', parsed, { ts: Date.now() });
-  assert.equal(note, '');
-  assert.equal(parsed.images[0].type, 'image');
-  assert.match(parsed.images[1].text, /^📷 同類料理參考圖（不是八千代 豐洲市場的）：Taro／CC BY-SA 4\.0／/);
+  assert.equal(note, '\n\n（圖是同類料理的參考圖，不是八千代 豐洲市場的）');
+  assert.deepEqual(parsed.images.map(m => m.type), ['image']);
   // 都找不到 → 說一聲、附地圖
   photo.configure({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ query: { pages: [] } }) }) });
   const p2 = { photo: ['八千代 豊洲市場', 'アジフライ'], shop: '八千代 豐洲市場' };
