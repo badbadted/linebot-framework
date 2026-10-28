@@ -7,6 +7,7 @@
  */
 
 import { safeFetch } from '../../src/utils/safe-fetch.js';
+import { fetchPreview, previewHintFromHtml } from '../../src/utils/social-preview.js';
 
 let llm = null;
 
@@ -152,41 +153,11 @@ export async function resolveGoogleMapsUrl(shortUrl) {
 
 // ── Phase 1B: 外部 URL（IG、部落格）→ AI 搜尋辨識 ──
 
-// FB／IG 只對自家預覽爬蟲吐 OG meta；完整的 UA 字串才認得
-const PREVIEW_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
-const HINT_MAX = 1200;
-const SOCIAL_HOSTS = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com', 'instagram.com', 'www.instagram.com']);
-
-const decodeEntities = (s) => s.replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCodePoint(parseInt(c, 16)))
-  .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
-  .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
-
-/** 從網頁 HTML 取出預覽文字：og:title（FB 會放完整貼文說明）＋ og:description，重複的去掉 */
-export function previewHintFromHtml(html) {
-  const meta = (key) => html.match(new RegExp(`(?:property|name)="${key}"[^>]*content="([^"]*)"`))?.[1]
-    || html.match(new RegExp(`content="([^"]*)"[^>]*(?:property|name)="${key}"`))?.[1] || '';
-  const title = decodeEntities(meta('og:title') || html.match(/<title[^>]*>([^<]*)</)?.[1] || '').trim();
-  const desc = decodeEntities(meta('og:description') || meta('description')).trim();
-  if (/^(facebook|instagram|log in|登入)$/i.test(title) && !desc) return '';
-  // FB 的 og:description 是 og:title 後半段截斷版，被包含就不重複放
-  const parts = desc && title.includes(desc.replace(/\.{3}$/, '').slice(0, 40)) ? [title] : [title, desc];
-  return parts.filter(Boolean).join(' — ').slice(0, HINT_MAX);
-}
+// 網頁預覽（FB／IG 的 UA、去分享參數重抓、safeFetch）抽到共用模組，小帥讀連結也用同一份（2026-10-28）
+export { previewHintFromHtml };
 
 async function fetchPreviewHint(url) {
-  // 使用者給的網址一律走 safeFetch（不讓 bot 去讀家裡內網）
-  const get = async (u) => {
-    const res = await safeFetch(u, { headers: { 'User-Agent': PREVIEW_UA }, timeoutMs: FETCH_TIMEOUT_MS });
-    return { finalUrl: res.finalUrl, html: res.text };
-  };
-  const first = await get(url);
-  let hint = previewHintFromHtml(first.html);
-  // FB 分享短連結轉址後會帶一串參數，帶著參數常只拿到登入牆 → 去掉參數再抓一次（只限 FB／IG 本站）
-  const f = new URL(first.finalUrl);
-  if (!hint && f.search && SOCIAL_HOSTS.has(f.hostname)) {
-    hint = previewHintFromHtml((await get(`${f.origin}${f.pathname}`)).html);
-  }
-  return hint;
+  return (await fetchPreview(url, { timeoutMs: FETCH_TIMEOUT_MS })).hint;
 }
 
 export async function resolveExternalUrl(url) {

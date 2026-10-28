@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { handlePhoto, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { handlePhoto, socialUrlFor, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -15,6 +15,7 @@ import * as media from '../plugins/xiaoshuai/media.js';
 import * as photo from '../plugins/xiaoshuai/photo.js';
 import * as cards from '../plugins/xiaoshuai/cards.js';
 import * as kb from '../plugins/xiaoshuai/kb.js';
+import * as social from '../src/utils/social-preview.js';
 import coach, * as coachMod from '../plugins/coach/index.js';
 import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -265,13 +266,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -1419,6 +1420,104 @@ await test('小卡：每天備份一份、留 14 天', async () => {
   assert.ok(ex(f));
   assert.equal(JSON.parse(rf(f, 'utf8'))[0].title, '日本退稅新制');
   assert.ok(!ex(pjoin(dir, 'kb-2026-01-01.json')));
+});
+
+// ── FB／IG 連結 ──────────────────────────────────
+const OG = (title, desc = '', image = '') => `<html><head><meta property="og:title" content="${title}"><meta property="og:description" content="${desc}">${image ? `<meta property="og:image" content="${image}">` : ''}</head></html>`;
+const LOGIN = '<html><head><title>Facebook</title></head></html>';
+const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200)]);
+
+await test('連結預覽：拿不到時去掉分享參數重抓；只限 FB／IG', async () => {
+  const calls = [];
+  const fake = async (u) => { calls.push(u); return { finalUrl: u, text: u.includes('?') ? LOGIN : OG('阿裕牛肉湯｜台南必吃 📍仁德', '溫體牛', 'https://scontent.xx.fbcdn.net/v/a.jpg?x=1&amp;y=2') }; };
+  const p = await social.fetchPreview('https://www.facebook.com/share/p/abc/?mibextid=xyz', { fetch: fake });
+  assert.deepEqual(calls, ['https://www.facebook.com/share/p/abc/?mibextid=xyz', 'https://www.facebook.com/share/p/abc/']);
+  assert.match(p.hint, /阿裕牛肉湯/);
+  assert.equal(p.image, 'https://scontent.xx.fbcdn.net/v/a.jpg?x=1&y=2');
+  // 不是 FB／IG：不重抓
+  calls.length = 0;
+  await social.fetchPreview('https://blog.example.com/a?b=1', { fetch: async (u) => { calls.push(u); return { finalUrl: u, text: LOGIN }; } });
+  assert.equal(calls.length, 1);
+  assert.equal(social.stripShareParams('https://www.instagram.com/reel/xyz/?igsh=1'), 'https://www.instagram.com/reel/xyz/');
+  assert.equal(social.stripShareParams('https://www.instagram.com/reel/xyz/'), null);
+  assert.equal(social.socialKind('https://www.facebook.com/reel/1642040210799362'), 'Reels');
+  assert.equal(social.socialKind('https://www.facebook.com/someone/posts/123'), '貼文');
+  assert.equal(social.previewHintFromHtml(LOGIN), '');                                 // 妞揪的介面照舊
+});
+
+await test('連結主圖：只准 https 的 *.fbcdn.net／*.cdninstagram.com、不跟轉址、檔頭要是圖片', async () => {
+  for (const u of ['https://scontent.xx.fbcdn.net/a.jpg', 'https://scontent-tpe1-1.cdninstagram.com/b.jpg']) assert.equal(social.socialImageAllowed(u), true, u);
+  for (const u of ['http://scontent.xx.fbcdn.net/a.jpg', 'https://fbcdn.net.evil.com/a.jpg', 'https://evil.com/fbcdn.net/a.jpg', 'https://www.facebook.com/a.jpg', 'https://192.168.0.1/a.jpg', 'https://u:p@x.fbcdn.net/a.jpg', 'https://x.fbcdn.net:8443/a.jpg']) {
+    assert.equal(social.socialImageAllowed(u), false, u);
+  }
+  let opts = null;
+  const ok = await social.fetchSocialImage('https://scontent.xx.fbcdn.net/a.jpg', { fetch: async (_u, o) => { opts = o; return { status: 200, buffer: JPG }; } });
+  assert.equal(ok.mediaType, 'image/jpeg');
+  assert.equal(opts.maxRedirects, 0);
+  assert.equal(await social.fetchSocialImage('https://evil.com/a.jpg', { fetch: async () => { throw new Error('不該下載'); } }), null);
+  assert.equal(await social.fetchSocialImage('https://scontent.xx.fbcdn.net/a.jpg', { fetch: async () => ({ status: 200, buffer: Buffer.from('<html>') }) }), null);
+  assert.equal(await social.fetchSocialImage('https://scontent.xx.fbcdn.net/a.jpg', { fetch: async () => ({ status: 200, buffer: Buffer.alloc(social.IMAGE_MAX_BYTES + 1, 0xff) }) }), null);
+});
+
+await test('連結：問到才找這則網址（這句、回覆的那則、10 分鐘內貼的）', () => {
+  const now = Date.now();
+  const tr = [{ name: '阿庭', text: '看這個 https://www.facebook.com/reel/1642040210799362', ts: now - 60_000 }];
+  assert.equal(socialUrlFor('GL', { text: '小帥 https://www.instagram.com/p/abc/ 這是哪' }, []), 'https://www.instagram.com/p/abc/');
+  assert.equal(socialUrlFor('GL', { text: '小帥 這支在講什麼' }, tr, now), 'https://www.facebook.com/reel/1642040210799362');
+  assert.equal(socialUrlFor('GL', { text: '小帥 明天天氣' }, tr, now), null);                       // 沒在問連結
+  assert.equal(socialUrlFor('GL', { text: '小帥 這支在講什麼' }, tr, now + 20 * 60_000), null);    // 太久以前
+  assert.equal(socialUrlFor('GL', { text: '小帥 這個連結在講什麼' }, [{ text: 'https://example.com/a', ts: now }], now), null); // 不是 FB／IG 不走這條
+});
+
+async function linkBot(answer) {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const calls = [];
+  const lineApi = { reply: async (_t, m) => { replies.push(m); return {}; }, push: async () => { throw new Error('不該推播'); }, getProfile: async () => ({ displayName: 'TED' }), getGroupMemberProfile: async () => ({ displayName: 'TED' }) };
+  const ctx = { db, lineApi, isAdmin: (u) => u === 'UADMIN',
+    providers: { llm: { generate: async (o) => { calls.push(o); return { text: answer, searches: 1, fetches: 0, sources: [] }; } } } };
+  await xiaoshuai.init(ctx);
+  const dm = (text) => xiaoshuai.onPrivateText({ userId: 'UADMIN', text, replyToken: 'rt', event: { message: { type: 'text', id: String(Math.random()).slice(2, 12), text } } });
+  return { db, replies, calls, dm };
+}
+
+await test('連結：預覽空白 → 請 AI 拿連結上網搜尋；搜尋也找不到 → 明講打不開', async () => {
+  social.setFetch(async (u) => ({ finalUrl: u, text: LOGIN, buffer: Buffer.from(LOGIN) }));
+  try {
+    const { replies, calls } = await linkBot('{"reply":"應該是一家拉麵店","link_found":false,"cards":[{"title":"猜的","lines":["x"]}]}');
+    await xiaoshuai.onPrivateText.call(null, { userId: 'UADMIN', text: '小帥 這支在講什麼 https://www.facebook.com/reel/1642040210799362', replyToken: 'rt', event: { message: { type: 'text', id: '777' } } });
+    const p = calls.at(-1).messages[0].content;
+    assert.match(p, /【連結預覽】https:\/\/www\.facebook\.com\/reel\/1642040210799362：FB／IG 擋了預覽，打不開/);
+    assert.match(p, /帳號名稱是發文者，不是店名/);
+    assert.ok(calls.at(-1).webSearch);                                              // 有開上網搜尋
+    assert.deepEqual(replies.at(-1).map(m => m.type), ['text']);                      // 不貼猜的卡片
+    assert.equal(replies.at(-1)[0].text, '這支 Reels 我打不開，截個圖或說一下內容給我 🙏');
+  } finally { social.setFetch(null); }
+});
+
+await test('連結：有預覽＋問到內容 → 下載主圖給小帥看；這輪視同上網不寫記憶', async () => {
+  const fetched = [];
+  social.setFetch(async (u) => {
+    fetched.push(u);
+    if (u.includes('fbcdn.net')) return { status: 200, buffer: JPG };
+    return { finalUrl: u, text: OG('阿裕牛肉湯 📍台南仁德', '溫體牛肉湯', 'https://scontent.xx.fbcdn.net/v/a.jpg') };
+  });
+  try {
+    const { db, calls } = await linkBot('{"reply":"這是台南仁德的阿裕牛肉湯","remember":["阿裕牛肉湯在仁德"]}');
+    await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '小帥 這家是什麼店 https://www.facebook.com/someone/posts/123', replyToken: 'rt', event: { message: { type: 'text', id: '778' } } });
+    const o = calls.at(-1);
+    assert.match(o.messages[0].content, /【連結預覽】https:\/\/www\.facebook\.com\/someone\/posts\/123\n阿裕牛肉湯 📍台南仁德/);
+    assert.match(o.messages[0].content, /【附上的照片】FB／IG 連結那則貼文的主圖/);
+    assert.equal(o.image.mediaType, 'image/jpeg');
+    assert.deepEqual(fetched, ['https://www.facebook.com/someone/posts/123', 'https://scontent.xx.fbcdn.net/v/a.jpg']);
+    assert.equal(db.all("SELECT * FROM memories WHERE chat_id = 'UADMIN'").length, 0);   // 視同上網
+    // 只是問在講什麼（沒問到照片／店）→ 不下載主圖
+    fetched.length = 0;
+    await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '小帥 幫我看這個連結 https://www.facebook.com/someone/posts/124', replyToken: 'rt', event: { message: { type: 'text', id: '779' } } });
+    assert.deepEqual(fetched, ['https://www.facebook.com/someone/posts/124']);
+  } finally { social.setFetch(null); }
 });
 
 console.log(`\n${pass} 項全部通過`);

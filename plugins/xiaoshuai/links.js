@@ -5,12 +5,11 @@
  * 標題用 safeFetch 抓網頁預覽（防 SSRF），抓不到就用網域名稱。
  */
 
-import { safeFetch } from '../../src/utils/safe-fetch.js';
+import { fetchPreview as fetchSocialPreview } from '../../src/utils/social-preview.js';
 
 const MAX_PER_CHAT = 500;
 const LIST_MAX = 15;
 const URL_RE = /https?:\/\/[^\s<>"'，。、）)]+/gi;
-const PREVIEW_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
 
 let db = null;
 let llm = null; // 分類＋寫說明用（Luna generate）；沒有就只存原始預覽
@@ -46,24 +45,20 @@ export function normCategory(c) {
   return s || '其他';
 }
 
-const decode = (s) => s.replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCodePoint(parseInt(c, 16)))
-  .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
-  .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'");
-
 const DESC_MAX = 400;
-const meta = (html, key) => html.match(new RegExp(`(?:property|name)="${key}"[^>]*content="([^"]*)"`))?.[1]
-  || html.match(new RegExp(`content="([^"]*)"[^>]*(?:property|name)="${key}"`))?.[1] || '';
 
-/** 抓網頁預覽：標題（第一行）＋說明（FB／IG 的貼文說明在 og:title 裡，整段留下來給小帥之後回答內容） */
+/**
+ * 抓網頁預覽：標題（第一行）＋說明（FB／IG 的貼文說明在 og:title 裡，整段留下來給小帥之後回答內容）
+ * 抓取走共用的 social-preview（safeFetch、FB／IG 預覽 UA、拿不到時去掉分享參數再抓一次）
+ */
 async function fetchPreview(url) {
   let title = '';
   let desc = '';
   try {
-    const { text } = await safeFetch(url, { headers: { 'User-Agent': PREVIEW_UA }, timeoutMs: 5000, maxBytes: 600_000 });
+    const p = await fetchSocialPreview(url, { timeoutMs: 5000, maxBytes: 600_000 });
     // FB 的 og:title 前面是「13 萬次觀看 · 1 萬個心情 |」，去掉
-    const full = decode(meta(text, 'og:title') || text.match(/<title[^>]*>([^<]*)</)?.[1] || '')
-      .replace(/^[\d.,\s萬千]+次觀看[^|]*\|\s*/, '').trim();
-    const ogDesc = decode(meta(text, 'og:description') || meta(text, 'description')).trim();
+    const full = p.title.replace(/^[\d.,\s萬千]+次觀看[^|]*\|\s*/, '').trim();
+    const ogDesc = p.desc;
     title = clean(full.split('\n')[0], 60);
     if (/^(facebook|instagram|log in|登入)$/i.test(title)) title = '';
     // 說明取比較長的那段（FB：og:title 是完整貼文、og:description 是截斷版）

@@ -82,7 +82,10 @@ function requestOnce(u, { headers, signal, maxBytes }) {
         total += Math.min(c.length, room);
         if (total >= maxBytes) res.destroy(); // 夠了就斷線，不再收
       });
-      const done = () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') });
+      const done = () => {
+        const buffer = Buffer.concat(chunks);
+        resolve({ status: res.statusCode, text: buffer.toString('utf8'), buffer, contentType: String(res.headers['content-type'] || '').split(';')[0].trim().toLowerCase() });
+      };
       res.on('end', done);
       res.on('close', done);
       res.on('error', (e) => (total >= maxBytes ? done() : reject(e)));
@@ -93,7 +96,8 @@ function requestOnce(u, { headers, signal, maxBytes }) {
 }
 
 /**
- * @returns {Promise<{ finalUrl: string, status: number, text: string }>}
+ * @returns {Promise<{ finalUrl: string, status: number, text: string, buffer: Buffer, contentType: string }>}
+ *   buffer／contentType：原始內容與類型（下載圖片用；text 是同一份內容當 UTF-8 讀）
  */
 export async function safeFetch(url, { headers = {}, timeoutMs = 8000, maxBytes = 1_500_000, maxRedirects = 5 } = {}) {
   const ctrl = new AbortController();
@@ -104,7 +108,7 @@ export async function safeFetch(url, { headers = {}, timeoutMs = 8000, maxBytes 
       const u = checkUrl(current);
       const r = await requestOnce(u, { headers, signal: ctrl.signal, maxBytes });
       if (r.location) { current = new URL(r.location, u).toString(); continue; }
-      return { finalUrl: u.toString(), status: r.status, text: r.text };
+      return { finalUrl: u.toString(), status: r.status, text: r.text, buffer: r.buffer, contentType: r.contentType };
     }
     throw new Error('轉址次數太多');
   } finally {
