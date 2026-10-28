@@ -15,6 +15,7 @@ import * as media from '../plugins/xiaoshuai/media.js';
 import * as photo from '../plugins/xiaoshuai/photo.js';
 import * as cards from '../plugins/xiaoshuai/cards.js';
 import * as kb from '../plugins/xiaoshuai/kb.js';
+import * as polls from '../plugins/xiaoshuai/polls.js';
 import * as social from '../src/utils/social-preview.js';
 import coach, * as coachMod from '../plugins/coach/index.js';
 import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
@@ -1518,6 +1519,159 @@ await test('連結：有預覽＋問到內容 → 下載主圖給小帥看；這
     await xiaoshuai.onPrivateText({ userId: 'UADMIN', text: '小帥 幫我看這個連結 https://www.facebook.com/someone/posts/124', replyToken: 'rt', event: { message: { type: 'text', id: '779' } } });
     assert.deepEqual(fetched, ['https://www.facebook.com/someone/posts/124']);
   } finally { social.setFetch(null); }
+});
+
+// ── 投票與報名 ───────────────────────────────────
+const NAMES = { UADMIN: 'TED', U1: '葶', U2: '妞媽', U3: '多媽', U4: '恩媽' };
+async function pollBot({ answer = '{"reply":"在喔"}', propose = '{"options":["燒肉","拉麵"]}' } = {}) {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const lineApi = { reply: async (_t, m) => { replies.push(Array.isArray(m) ? m : [{ type: 'text', text: m }]); return {}; }, push: async () => { throw new Error('不該推播'); },
+    getGroupMemberProfile: async (_g, u) => ({ displayName: NAMES[u] || '某人' }), getProfile: async () => null };
+  const ctx = { db, lineApi, isAdmin: (u) => u === 'UADMIN', providers: { llm: { generate: async ({ messages, system }) => {
+    const c = messages[0].content;
+    if (!system && c.includes('要投票')) return propose;
+    if (!system && c.includes('正在報名')) return '{"signup":true,"who":"我","adults":1,"kids":0,"going":true}';
+    return { text: answer };
+  } } } };
+  await xiaoshuai.init(ctx);
+  for (const g of ['GPL', 'GOTHER']) db.run('INSERT INTO groups (chat_id, enabled) VALUES (?, 1)', g);
+  await xiaoshuai.init(ctx);
+  let seq = 5000;
+  const say = async (userId, text, chatId = 'GPL') => {
+    const id = String(++seq);
+    const event = { message: { type: 'text', id, text } };
+    xiaoshuai.onGroupText({ chatId, userId, text, event });
+    const n = replies.length;
+    await xiaoshuai.onUnmatched({ chatId, userId, text, replyToken: `rt${id}`, event });
+    return replies.length > n ? replies.at(-1) : null;
+  };
+  const press = async (userId, data, chatId = 'GPL') => {
+    const n = replies.length;
+    const handled = await xiaoshuai.onPostback({ chatId, userId, data, replyToken: `pb${++seq}` });
+    return { handled, reply: replies.length > n ? replies.at(-1) : null };
+  };
+  return { db, replies, say, press };
+}
+
+await test('投票：解析截止時間、開投票指令、報名句', () => {
+  const n = Date.UTC(2026, 9, 28, 6, 0); // 台北 10/28（三）14:00
+  assert.equal(polls.fmtTime(polls.parseDeadline('明天中午', n)), '10/29（四）12:00');
+  assert.equal(polls.fmtTime(polls.parseDeadline('今晚 9 點', n)), '10/28（三）21:00');
+  assert.equal(polls.fmtTime(polls.parseDeadline('10/30 18:00', n)), '10/30（五）18:00');
+  assert.equal(polls.fmtTime(polls.parseDeadline('週五 12:00', n)), '10/30（五）12:00');
+  assert.equal(polls.parseDeadline('3 小時後', n), n + 3 * 3600_000);
+  assert.equal(polls.parseDeadline('亂寫', n), null);
+  assert.equal(polls.parseDeadline('今天早上 8 點', n), null); // 已經過了
+  assert.deepEqual(polls.parseVoteCommand('12/25 晚餐吃什麼：燒肉、拉麵、壽司，明天中午截止'), { title: '12/25 晚餐吃什麼', options: ['燒肉', '拉麵', '壽司'], deadlineText: '明天中午截止' });
+  assert.deepEqual(polls.parseVoteCommand('週末去哪').options, []);
+  assert.deepEqual(polls.parseSignup('我家 2大1小', '多媽'), { label: '多家', self: true, adults: 2, kids: 1, going: true });
+  assert.deepEqual(polls.parseSignup('恩家趕飛機不去了', '多媽'), { label: '恩家', self: false, adults: 0, kids: 0, going: false });
+  assert.equal(polls.parseSignup('品岑家兩大一小', '多媽').adults, 2);
+  assert.equal(polls.parseSignup('大家不去了嗎', '多媽'), null);
+  assert.equal(polls.parseSignup('今天好冷', '多媽'), null);
+});
+
+await test('投票：開投票→投票卡（postback 按鈕）→ 投票不回話、再按改票', async () => {
+  const { db, say, press } = await pollBot();
+  const r = await say('U1', '小帥 開投票 12/25 晚餐吃什麼：燒肉、拉麵、壽司，明天中午截止');
+  assert.equal(r[0].text, '開好了，按下面投 👇');
+  const card = r[1].contents;
+  assert.equal(card.header.backgroundColor, '#5b4bb7');
+  assert.match(JSON.stringify(card.header), /🗳️ 投票・葶開的/);
+  const btns = card.footer.contents.map(b => b.action);
+  const id = db.get('SELECT id FROM polls').id;
+  assert.deepEqual(btns[0], { type: 'postback', label: '燒肉', data: `poll:${id}:0`, displayText: '+1 燒肉' });
+  assert.deepEqual(btns.at(-1), { type: 'postback', label: '📊 看目前結果', data: `poll:${id}:r`, displayText: '📊 看目前結果' });
+  assert.equal((await press('U1', `poll:${id}:0`)).reply, null);       // 投票不回話
+  await press('U2', `poll:${id}:1`);
+  await press('U1', `poll:${id}:1`);                                     // 改票
+  assert.deepEqual(db.all('SELECT user_id, choice FROM poll_votes ORDER BY user_id'), [{ user_id: 'U1', choice: 1 }, { user_id: 'U2', choice: 1 }]);
+  const res = (await press('U3', `poll:${id}:r`)).reply[0].contents;
+  assert.match(JSON.stringify(res), /拉麵 👑/);
+  assert.match(JSON.stringify(res), /葶、妞媽|妞媽、葶/);
+  assert.match(JSON.stringify(res.header), /共 2 票/);
+});
+
+await test('投票：偽造的 postback（錯的 id、別群的投票、亂寫、已截止）一律不算', async () => {
+  const { db, say, press } = await pollBot();
+  await say('U1', '小帥 開投票 晚餐：燒肉、拉麵');
+  const id = db.get('SELECT id FROM polls').id;
+  assert.equal((await press('U1', 'poll:99999:0')).handled, true);
+  assert.equal((await press('U1', `poll:${id}:0`, 'GOTHER')).reply, null);   // 別群拿這群的投票 id
+  await press('U1', `poll:${id}:7`);                                         // 沒有這個選項
+  assert.equal((await press('U1', `poll:${id}:0;drop`)).handled, false);      // 格式不對：不是投票的 postback
+  assert.equal((await press('U1', 'xx')).handled, false);
+  db.run('UPDATE polls SET closes_at = ? WHERE id = ?', Date.now() - 1000, id);
+  await press('U1', `poll:${id}:0`);                                          // 已截止
+  assert.equal(db.get('SELECT COUNT(*) n FROM poll_votes').n, 0);
+});
+
+await test('投票：沒給選項由 AI 提議；只有開的人或 TED 能關；同時最多 3 個', async () => {
+  const { say } = await pollBot();
+  const r = await say('U1', '小帥 開投票 週末吃什麼');
+  assert.match(r[0].text, /選項我先幫你想了幾個/);
+  assert.deepEqual(r[1].contents.footer.contents.slice(0, 2).map(b => b.action.label), ['燒肉', '拉麵']);
+  assert.match((await say('U2', '小帥 關投票 週末吃什麼'))[0].text, /只有開的人（葶）或 TED 可以關/);
+  const closed = await say('U1', '小帥 關投票 週末吃什麼');
+  assert.match(closed[0].text, /「週末吃什麼」關了/);
+  assert.equal(closed[1].contents.header.backgroundColor, '#0f8a6a');            // 結束後綠色
+  await say('U1', '小帥 開投票 A：1、2'); await say('U1', '小帥 開投票 B：1、2'); await say('U1', '小帥 開報名 C');
+  assert.match((await say('U1', '小帥 開投票 D：1、2'))[0].text, /已經有 3 個投票／報名在進行/);
+  assert.match((await say('UADMIN', '小帥 關投票 A'))[0].text, /「A」關了/);       // TED 可以關別人開的
+});
+
+await test('報名：記一筆、同一家再講覆蓋、「不去」劃掉、代別人登記；問人數才貼卡', async () => {
+  const { db, say } = await pollBot();
+  const r = await say('U2', '小帥 開報名 12/29 teamLab 誰要去');
+  assert.equal(r[0].text, '報名開了，直接打「我家 2大1小」就好 👇');
+  assert.equal(r[1].contents.header.backgroundColor, '#c2620a');
+  assert.equal((await say('U3', '我家 2大1小'))[0].text, '收到，多家 2大1小');
+  assert.equal((await say('U3', '我家改 2大2小'))[0].text, '收到，多家 2大2小');       // 覆蓋
+  assert.equal((await say('U3', '恩家趕飛機不去了'))[0].text, '收到，恩家 不去（多媽登記）');
+  assert.equal((await say('U1', '我們 1大1小'))[0].text, '收到，葶家 1大1小');
+  assert.equal(await say('U1', '大家都要 6 點出發嗎'), null);                        // 不是報名
+  assert.equal(db.get('SELECT COUNT(*) n FROM poll_signups').n, 3);
+  const card = (await say('U4', '目前幾個人'))[0].contents;
+  const j = JSON.stringify(card);
+  assert.match(j, /"text":"3"[\s\S]*大人[\s\S]*"text":"3"[\s\S]*小孩[\s\S]*"text":"2"[\s\S]*"家"/); // 3 大 3 小、2 家（不去的不算）
+  assert.match(j, /恩家・多媽登記[\s\S]*line-through/);
+  // AI 判斷規則抓不到的
+  assert.match((await say('U4', '算我們家一個'))[0].text, /^收到，恩家 1大$/);
+});
+
+await test('報名：同時兩個在進行，分不出是哪個就反問', async () => {
+  const { say } = await pollBot();
+  await say('U2', '小帥 開報名 12/29 teamLab'); await say('U2', '小帥 開報名 1/30 滑雪團');
+  assert.match((await say('U3', '我家 2大1小'))[0].text, /你是報名哪一個？「12\/29 teamLab」、「1\/30 滑雪團」/);
+  assert.equal((await say('U3', '滑雪團 我家 2大1小'))[0].text, '收到，多家 2大1小');
+});
+
+await test('截止：不推播，下一個人講話時用免費回覆貼一次結果', async () => {
+  const { db, say, replies } = await pollBot();
+  await say('U1', '小帥 開投票 晚餐：燒肉、拉麵，3 小時後');
+  const id = db.get('SELECT id FROM polls').id;
+  db.run('UPDATE polls SET closes_at = ? WHERE id = ?', Date.now() - 1000, id);
+  const n = replies.length;
+  const r = await say('U4', '晚上要不要先訂位');
+  assert.equal(replies.length, n + 1);
+  assert.match(r[0].text, /⏰「晚餐」投票截止了，結果 👇/);
+  assert.equal(r[1].type, 'flex');
+  assert.equal(db.get('SELECT result_posted FROM polls').result_posted, 1);
+  assert.equal(await say('U4', '好喔'), null);                                    // 只貼一次
+});
+
+await test('結果保存：結束後問到標題，從資料庫帶最新數字進提示', async () => {
+  const { db, say } = await pollBot();
+  await say('U2', '小帥 開報名 12/29 teamLab');
+  await say('U3', '我家 2大1小');
+  await say('U2', '小帥 關報名');
+  const sec = polls.promptSection('GPL', 'teamLab 最後幾個人去');
+  assert.match(sec, /報名「12\/29 teamLab」（已結束）：共 2 大 1 小、1 家；多家 2大1小/);
+  assert.equal(polls.promptSection('GPL', '明天天氣如何'), '');
+  assert.ok(db.get("SELECT status FROM polls").status === 'closed');
 });
 
 console.log(`\n${pass} 項全部通過`);

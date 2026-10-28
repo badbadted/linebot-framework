@@ -98,7 +98,7 @@ async function main() {
   const logger = createLogger(dataDir);
 
   // 載入 plugins（傳入所有 providers）
-  const pluginHooks = { groupText: [], unmatched: [], privateText: [] };
+  const pluginHooks = { groupText: [], unmatched: [], privateText: [], postback: [] };
   const loaded = await loadPlugins(config.plugins.dir, {
     router,
     scheduler,
@@ -513,6 +513,11 @@ async function main() {
     onJoin: async ({ groupId }) => { await onBotJoin(groupId); },
     onLeave: async ({ groupId }) => { await onBotLeave(groupId); },
     onChatSeen: async ({ chatId }) => { await onChatSeen(chatId); },
+    onPostback: async (ctx) => {
+      for (const h of pluginHooks.postback) {
+        try { if (await h.fn(ctx)) return; } catch (err) { console.error(`[hook:${h.plugin}] postback error: ${err.message}`); }
+      }
+    },
     onGroupText: (ctx) => {
       for (const h of pluginHooks.groupText) {
         try { h.fn(ctx); } catch (err) { console.error(`[hook:${h.plugin}] groupText error: ${err.message}`); }

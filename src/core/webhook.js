@@ -8,7 +8,7 @@
 
 import { createHmac, timingSafeEqual } from 'crypto';
 
-export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, onChatSeen, onGroupText, logger }) {
+export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, onChatSeen, onGroupText, onPostback, logger }) {
   // 啟動期告警：未設 channelSecret 時 webhook 會對所有請求靜默 return，bot 變成「活著但永不回應」
   // 且沒有任何錯誤訊息可察覺。這裡在建構時（啟動一次）大聲提示，避免部署忘了設 secret 後默默失效。
   if (!channelSecret) {
@@ -104,6 +104,17 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
         if (onLeave && gid) {
           try { await onLeave({ groupId: gid }); }
           catch (err) { console.error(`[webhook] leave handler error: ${err.message}`); }
+        }
+        continue;
+      }
+
+      // 按了 Flex 卡片上的 postback 按鈕（例：小帥投票）：交給 plugin，data 的格式與權限由 plugin 自己驗
+      if (event.type === 'postback') {
+        const chat = event.source?.groupId || event.source?.roomId || evUserId;
+        console.log(`[webhook] postback ${String(chat || '').slice(0, 8)}... ${(evUserId || '').slice(0, 8)}: ${String(event.postback?.data || '').slice(0, 40)}`);
+        if (onPostback && chat && evUserId) {
+          try { await onPostback({ chatId: chat, userId: evUserId, sourceType: event.source?.type, data: String(event.postback?.data || ''), replyToken: event.replyToken, event }); }
+          catch (err) { console.error(`[webhook] postback handler error: ${err.message}`); }
         }
         continue;
       }
