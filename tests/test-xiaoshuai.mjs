@@ -793,4 +793,16 @@ await test('背景查完：推播答案、存進查過的資料，下次問會�
   assert.ok(p.includes('問「小帥 東京明天會下雪嗎」→ 東京明天降雪機率約兩成'));
 });
 
+await test('貼圖次數存 DB：bot 重開不歸零', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  media.initStickers(db);
+  for (let i = 0; i < 3; i++) assert.equal(media.stickerMessage('GP', '開心'), null);
+  media.initStickers(db); // 重開
+  assert.equal(media.stickerMessage('GP', '開心'), null);   // 第 4 次
+  assert.ok(media.stickerMessage('GP', '開心'));            // 第 5 次：貼
+  assert.equal(db.get("SELECT since FROM sticker_state WHERE chat_id = 'GP'").since, 0);
+});
+
 console.log(`\n${pass} 項全部通過`);

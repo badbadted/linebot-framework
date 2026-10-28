@@ -1062,6 +1062,7 @@ export default {
     initDb();
     links.initLinks(db, llm);
     nj.initNjEvent(db);
+    media.initStickers(db);
     restoreLogs();
     if (!llm?.generate) console.warn('[xiaoshuai] llm provider 沒有 generate()，小帥無法講話');
     console.log(`[xiaoshuai] 開著的群組：${enabled.size}`);

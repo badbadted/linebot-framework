@@ -76,18 +76,29 @@ export const STICKERS = {
 };
 export const STICKER_KEYS = Object.keys(STICKERS).join('、');
 export const STICKER_EVERY = 5;
-const sinceSticker = new Map(); // chatId → 上一張貼圖之後回了幾次（重開 bot 從頭算，第 5 次回話才可能貼）
+// 上一張貼圖之後回了幾次：存 DB（2026-10-28：只放記憶體時，bot 一天重開好幾次，次數一直歸零，始終沒貼過）
+let db = null;
+const sinceSticker = new Map(); // 沒有 DB 時（測試）的備用
+
+export function initStickers(database) {
+  db = database;
+  db.exec('CREATE TABLE IF NOT EXISTS sticker_state (chat_id TEXT PRIMARY KEY, since INTEGER NOT NULL DEFAULT 0)');
+}
+const getSince = (chatId) => (db ? db.get('SELECT since FROM sticker_state WHERE chat_id = ?', chatId)?.since : sinceSticker.get(chatId)) || 0;
+const setSince = (chatId, n) => (db
+  ? db.run('INSERT INTO sticker_state (chat_id, since) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET since = excluded.since', chatId, n)
+  : sinceSticker.set(chatId, n));
 
 /**
  * 每次小帥回話都呼叫一次：算次數，AI 有給心情、而且距離上一張已經回滿 5 次才回貼圖訊息，其他回 null
  */
 export function stickerMessage(chatId, mood) {
-  const n = (sinceSticker.get(chatId) || 0) + 1;
+  const n = getSince(chatId) + 1;
   const id = STICKERS[String(mood || '').trim()];
   if (id && n >= STICKER_EVERY) {
-    sinceSticker.set(chatId, 0);
+    setSince(chatId, 0);
     return { type: 'sticker', packageId: '11537', stickerId: id };
   }
-  sinceSticker.set(chatId, n);
+  setSince(chatId, n);
   return null;
 }
