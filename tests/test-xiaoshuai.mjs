@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { addMemories, isTally, ownHistory, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { addMemories, isTally, ownHistory, llmTimeout, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -737,6 +737,31 @@ await test('照片：小帥回過之後，同一人再講話不會每句都重�
   assert.equal(media.pickImage(tr, { userId: 'U9', text: '照這張改', ts: t0 + 60_000 }).imageId, '999');
   assert.equal(shot.sectionOf('D11').sel, '#d11');
   assert.equal(shot.sectionOf('D21'), null);
+});
+
+await test('查資料時間照剩下的算（LINE 回覆約一分鐘內有效）', () => {
+  const now = 1_000_000;
+  assert.equal(llmTimeout(now, now), 45_000);            // 剛收到：最多 45 秒
+  assert.equal(llmTimeout(now - 20_000, now), 31_000);   // 等了 20 秒：剩 55-20-4
+  assert.equal(llmTimeout(now - 50_000, now), 10_000);   // 快到了：至少給 10 秒
+  assert.equal(llmTimeout(undefined, now), 45_000);
+});
+
+await test('查太久逾時：被叫時至少回一句，不沉默', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const ctx = { db, lineApi: { reply: async (_t, m) => { replies.push(m); return {}; }, getGroupMemberProfile: async () => ({ displayName: '阿庭' }) },
+    providers: { llm: { generate: async () => { throw new Error('Luna llm timeout after 45000ms'); } } }, isAdmin: () => true };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GF', 1)");
+  await xiaoshuai.init(ctx);
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GF', text: '小帥 東京明天會下雪嗎', replyToken: 'rt', event: {} }))) return; // 時段外就略過
+  for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200)); // 小帥回前會等 2～6 秒
+  assert.ok(replies.length, '應該要回一句');
+  const text = typeof replies[0] === 'string' ? replies[0] : replies[0].map(m => m.text).join('');
+  assert.match(text, /查太久卡住了/);
 });
 
 console.log(`\n${pass} 項全部通過`);

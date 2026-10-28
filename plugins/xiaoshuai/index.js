@@ -481,6 +481,14 @@ async function tripContext(chatId, text) {
   return { name, url: trip.tripUrl(name), title: infos.find(i => i.name === name)?.title, outline, others, pending: pending?.name === name ? pending.changes : null };
 }
 
+// LINE 免費回覆（replyToken）收到訊息後大約一分鐘內有效：從收到那則開始算，總共留 55 秒，
+// 前面等待、判斷用掉多少，查資料就只給剩下的（最少 10 秒、最多 45 秒），確保來得及回
+const REPLY_BUDGET_MS = 55_000;
+export function llmTimeout(triggerTs, now = Date.now()) {
+  const left = REPLY_BUDGET_MS - (now - (triggerTs || now)) - 4_000;
+  return Math.max(10_000, Math.min(45_000, left));
+}
+
 async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
   const replying = mode === 'mention' || mode === 'followup';
   const tripCtx = replying ? await tripContext(chatId, trigger?.text) : null;
@@ -506,7 +514,7 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
     // 要真的回人（被叫、接著聊）→ Sonnet 聽懂再回；判斷要不要接、冷場插話 → Haiku 省錢
     // 被叫、接著聊時可以上網查（天氣、營業時間、附近餐廳…）、打開群組裡貼的網址
     ...(replying
-      ? { model: 'sonnet', effort: 'medium', webSearch: { maxUses: SEARCH_MAX_USES }, webFetch: { maxUses: FETCH_MAX_USES }, timeoutMs: 45_000 }
+      ? { model: 'sonnet', effort: 'medium', webSearch: { maxUses: SEARCH_MAX_USES }, webFetch: { maxUses: FETCH_MAX_USES }, timeoutMs: llmTimeout(trigger?.ts) }
       : {}),
   });
   const parsed = parseReply(res.text, mode);
@@ -696,11 +704,27 @@ async function handleNj(chatId, parsed, trigger) {
   }
 }
 
-async function think(chatId, { mode, replyToken, trigger, transcript, allowChimeIn }) {
+/** 被叫或在跟小帥說話時出錯（查太久逾時、Luna 掛掉）：至少回一句，不要沉默 */
+async function think(chatId, job) {
+  try {
+    return await thinkInner(chatId, job);
+  } catch (err) {
+    console.error(`[xiaoshuai] ${chatId.slice(0, 8)} ${job.mode} 失敗：${err.message}`);
+    if (job.mode === 'mention' || job.toMe) {
+      const msg = /timeout/i.test(err.message) ? '🙇 我查太久卡住了，再問我一次好嗎？' : '🙇 我剛剛當機了一下，再說一次好嗎？';
+      return (await send(chatId, job.mode, job.replyToken, msg)) ? { replied: true, text: msg } : { replied: false };
+    }
+    return { replied: false };
+  }
+}
+
+async function thinkInner(chatId, job) {
+  const { mode, replyToken, trigger, transcript, allowChimeIn } = job;
   if (mode === 'window') {
     // 第一段：Haiku 用語意判斷這句是不是在跟小帥說話
     const judged = await ask(chatId, 'window', { trigger, transcript, allowChimeIn });
     if (judged.toMe) {
+      job.toMe = true;
       // 第二段：是在接小帥的話 → 跟被叫一樣，用 Sonnet 認真回，並重開視窗
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
       const extra = await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger); // 先跑：可能會清掉 parsed.reply
