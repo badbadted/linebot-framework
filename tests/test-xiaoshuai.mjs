@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { addMemories, isTally, ownHistory, llmTimeout, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { addMemories, isTally, ownHistory, llmTimeout, recentResearch, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -747,12 +747,13 @@ await test('查資料時間照剩下的算（LINE 回覆約一分鐘內有效）
   assert.equal(llmTimeout(undefined, now), 45_000);
 });
 
-await test('查太久逾時：被叫時至少回一句，不沉默', async () => {
+await test('查太久逾時：先回一句、背景繼續查，查不出來也會說', async () => {
   const Database = (await import('better-sqlite3')).default;
   const raw = new Database(':memory:');
   const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
   const replies = [];
-  const ctx = { db, lineApi: { reply: async (_t, m) => { replies.push(m); return {}; }, getGroupMemberProfile: async () => ({ displayName: '阿庭' }) },
+  const pushes = [];
+  const ctx = { db, lineApi: { reply: async (_t, m) => { replies.push(m); return {}; }, push: async (_to, m) => { pushes.push(m); }, getGroupMemberProfile: async () => ({ displayName: '阿庭' }) },
     providers: { llm: { generate: async () => { throw new Error('Luna llm timeout after 45000ms'); } } }, isAdmin: () => true };
   await xiaoshuai.init(ctx);
   db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GF', 1)");
@@ -761,7 +762,34 @@ await test('查太久逾時：被叫時至少回一句，不沉默', async () =>
   for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200)); // 小帥回前會等 2～6 秒
   assert.ok(replies.length, '應該要回一句');
   const text = typeof replies[0] === 'string' ? replies[0] : replies[0].map(m => m.text).join('');
-  assert.match(text, /查太久卡住了/);
+  assert.match(text, /要查久一點，我繼續查/);              // 先回一句
+  for (let i = 0; i < 50 && !pushes.length; i++) await new Promise(r => setTimeout(r, 100));
+  assert.match(String(pushes[0]), /還是查不出來/);         // 背景也失敗 → 推播說一聲
+});
+
+await test('背景查完：推播答案、存進查過的資料，下次問會帶進提示', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [], pushes = [];
+  const generate = async ({ timeoutMs }) => {
+    if (timeoutMs >= 150_000) return { text: '{"reply":"東京明天降雪機率約兩成，氣象廳說以雨為主"}', searches: 3, fetches: 0 };
+    throw new Error('Luna llm timeout after 45000ms');
+  };
+  const ctx = { db, lineApi: { reply: async (_t, m) => { replies.push(m); return {}; }, push: async (_to, m) => { pushes.push(m); }, getGroupMemberProfile: async () => ({ displayName: '阿庭' }) },
+    providers: { llm: { generate } }, isAdmin: () => true };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GR', 1)");
+  await xiaoshuai.init(ctx);
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GR', text: '小帥 東京明天會下雪嗎', replyToken: 'rt', event: {} }))) return;
+  for (let i = 0; i < 100 && !pushes.length; i++) await new Promise(r => setTimeout(r, 100));
+  assert.match(String(pushes[0]), /剛剛問的「東京明天會下雪嗎」查好了：\n東京明天降雪機率約兩成/);
+  const r = recentResearch('GR');
+  assert.equal(r.length, 1);
+  assert.equal(r[0].question, '小帥 東京明天會下雪嗎');
+  const p = buildPrompt({ mode: 'mention', nowTs: Date.now(), memories: [], transcript: [], research: r });
+  assert.ok(p.includes('【這群最近查過的資料】'));
+  assert.ok(p.includes('問「小帥 東京明天會下雪嗎」→ 東京明天降雪機率約兩成'));
 });
 
 console.log(`\n${pass} 項全部通過`);
