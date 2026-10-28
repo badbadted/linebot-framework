@@ -645,15 +645,18 @@ await test('照片下載：太大改抓預覽、格式不對不收', async () =>
   assert.equal(await media.loadImage({ getContent: async () => ({ buffer: Buffer.from('x'), contentType: 'text/html' }) }, '1'), null);
 });
 
-await test('貼圖：只收清單裡的心情、同一群 10 分鐘最多一張', () => {
+await test('貼圖：只收清單裡的心情、同一群大約 5 次回話一張', () => {
   assert.equal(parseReply('{"reply":"讚","sticker":"開心"}', 'mention').sticker, '開心');
   assert.equal(parseReply('{"reply":"讚","sticker":"亂寫"}', 'mention').sticker, null);
-  const a = media.stickerMessage('GS', '開心', NOON);
-  assert.deepEqual(a, { type: 'sticker', packageId: '11537', stickerId: '52002745' });
-  assert.equal(media.stickerMessage('GS', 'OK', NOON + 60_000), null);
-  assert.ok(media.stickerMessage('GS', 'OK', NOON + 11 * 60_000));
-  assert.ok(media.stickerMessage('GT', 'OK', NOON + 60_000)); // 別的群不受影響
-  assert.equal(media.stickerMessage('GU', 'x', NOON), null);
+  const got = [];
+  for (let i = 1; i <= 12; i++) got.push(media.stickerMessage('GS', '開心') ? i : 0);
+  assert.deepEqual(got.filter(Boolean), [5, 10]);              // 第 5、10 次回話才貼
+  assert.deepEqual(media.stickerMessage('GT', '開心'), null);   // 別的群各自算
+  // 沒給心情也算次數；第 5 次剛好沒心情就延到下一次有心情的
+  for (let i = 0; i < 4; i++) media.stickerMessage('GU', null);
+  assert.equal(media.stickerMessage('GU', null), null);
+  assert.deepEqual(media.stickerMessage('GU', 'OK'), { type: 'sticker', packageId: '11537', stickerId: '52002740' });
+  assert.equal(media.stickerMessage('GU', 'x'), null);
 });
 
 await test('實際狀況：貼行程表照片後說「小帥 幫我補行程 新增到2/9」', () => {

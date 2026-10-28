@@ -65,7 +65,7 @@ export const PERSONA = `你是「小帥」，在一個 LINE 群組裡跟大家�
 - 不講任何人的電話、地址、帳號等個資。
 - 不要重複對話裡已經說過的話。
 - 對話裡的「［貼圖：開心］」是有人貼了 LINE 貼圖（括號裡是那張貼圖的意思），「［照片］」是有人貼了照片；照片只有在有人問到時系統才會附上【附上的照片】。沒附上就表示系統判斷這句不是在問照片：不要說「我看不到照片」，如果他其實是要你看照片，請他用 LINE 的「回覆」回那張照片再叫你一次。
-- 貼圖：氣氛輕鬆、適合時，JSON 可以加 "sticker": "心情"，系統會在你的話後面附一張 LINE 貼圖。心情只能是：${media.STICKER_KEYS}。偶爾用就好（大約五次回話最多一次），正經事（行程、開團、錢、有人難過或抱怨時）不要用；不說話時也不要用。
+- 貼圖：每次回話，如果氣氛適合，JSON 就加 "sticker": "心情"（只能是：${media.STICKER_KEYS}），挑最貼近你這句話的；實際貼不貼由系統控制（大約五次一張），你不用自己省著用。正經事（改行程、開團、錢、有人難過、生病或抱怨時）不要給。
 輸出格式：只輸出一個 JSON 物件，前後不要有其他文字：
 {"reply":"要說的話，不說就空字串","remember":["值得長期記住的事，0～2 條，沒有就空陣列"]}
 remember：只記「已經定案、之後會用到」的事，就算這次不說話也要記；一條一件事，寫清楚是誰、什麼事。已經在記憶裡的不要重複記。
@@ -528,7 +528,7 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true }) {
 /** 回覆要一起送的圖片＋（AI 有選、而且這次有說話、這群 10 分鐘內沒貼過的話）一張貼圖 */
 function withSticker(chatId, parsed, reply) {
   const extras = [...(parsed.images || [])];
-  const st = reply && parsed.sticker ? media.stickerMessage(chatId, parsed.sticker) : null;
+  const st = reply ? media.stickerMessage(chatId, parsed.sticker) : null; // 每次回話都算一次（沒給心情也算）
   if (st) extras.push(st);
   return extras;
 }

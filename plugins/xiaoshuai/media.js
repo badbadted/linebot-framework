@@ -4,7 +4,8 @@
  * 照片：群組貼照片時只記「［照片］」與訊息 ID，不花 AI；
  *   只有被點名或接話、而且「用回覆功能回那張照片」、「貼照片的人 5 分鐘內自己叫小帥」或「5 分鐘內有人講到圖片／這張…」才下載那一張給 AI 看。
  *   照片是群組成員自己貼的，跟他打字同等看待：可以照著提行程修改（一樣要有人回好），但那輪不寫記憶。
- * 貼圖：只能用 LINE 開放給機器人的官方貼圖（packageId 11537 熊大兔兔），依心情挑；同一群 10 分鐘內最多一張。
+ * 貼圖：只能用 LINE 開放給機器人的官方貼圖（packageId 11537 熊大兔兔），AI 每次回話依心情給一個；
+ *   實際貼不貼由程式決定：同一群距離上一張至少回了 5 次才貼（使用者 2026-10-28 定：大約 5 次 1 張）。
  */
 
 const IMAGE_WINDOW_MS = 5 * 60_000;
@@ -74,14 +75,19 @@ export const STICKERS = {
   生氣: '52002772',
 };
 export const STICKER_KEYS = Object.keys(STICKERS).join('、');
-const STICKER_COOLDOWN_MS = 10 * 60_000;
-const lastSticker = new Map(); // chatId → 時間
+export const STICKER_EVERY = 5;
+const sinceSticker = new Map(); // chatId → 上一張貼圖之後回了幾次（重開 bot 從頭算，第 5 次回話才可能貼）
 
-/** AI 選的心情 → LINE 貼圖訊息；不認得、或這群 10 分鐘內剛貼過就回 null */
-export function stickerMessage(chatId, mood, now = Date.now()) {
+/**
+ * 每次小帥回話都呼叫一次：算次數，AI 有給心情、而且距離上一張已經回滿 5 次才回貼圖訊息，其他回 null
+ */
+export function stickerMessage(chatId, mood) {
+  const n = (sinceSticker.get(chatId) || 0) + 1;
   const id = STICKERS[String(mood || '').trim()];
-  if (!id) return null;
-  if (now - (lastSticker.get(chatId) || 0) < STICKER_COOLDOWN_MS) return null;
-  lastSticker.set(chatId, now);
-  return { type: 'sticker', packageId: '11537', stickerId: id };
+  if (id && n >= STICKER_EVERY) {
+    sinceSticker.set(chatId, 0);
+    return { type: 'sticker', packageId: '11537', stickerId: id };
+  }
+  sinceSticker.set(chatId, n);
+  return null;
 }
