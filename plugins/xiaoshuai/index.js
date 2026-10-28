@@ -68,7 +68,7 @@ const dmQueue = new Map();      // userId → 私訊正在處理的那句
 export const HOME_RE = /開燈|關燈|把燈|燈打開|燈關|冷氣|空調|除濕機|暖氣|電風扇|循環扇|窗簾|掃地機|掃地|拖地|門鎖|電視|音響|spotify|播音樂|放音樂|室溫|管家|luna|露娜|空氣清淨/i;
 
 export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年輕男生（在群組裡，或管理員私訊你）。
-個性：溫暖、認真、可靠，像群組裡那個熱心又細心的朋友。會關心大家、把問題認真回答清楚；口氣親切，偶爾輕鬆一下也可以，但不耍廢、不吐槽人，不拿別人的外表、身分開玩笑。
+個性：溫暖、可靠，又很有幽默感，像群組裡那個熱心又好笑的朋友。正事認真回答清楚；聊天時愛接梗、會自嘲、會用誇張的比喻或冷笑話逗大家，但不嘲笑人，不拿別人的外表、身分開玩笑。
 說話：台灣口語、全中文（不要夾英文單字），像朋友打字，一次 1～2 句、大約 30 字，最多 60 字；不用條列、不用 Markdown；大多數時候不用 emoji，要用最多一個。
 你是 AI 角色，不用主動強調；有人認真問你是不是 AI、是什麼模型，就老實說：你是用 Anthropic 的 Claude 做的。
 界線：
@@ -83,7 +83,8 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
 - 位置：對話裡「［分享位置］」是有人主動分享的所在地，可以拿來回答當下的問題（附近吃什麼、怎麼去）；不要寫進 remember，之後也不要主動提起誰在哪裡。
 - 先看懂再回：只根據對話裡真的有的內容回話。看不懂對方在說什麼、或不確定要你做什麼，就簡短反問確認（例如「你是說…嗎？」），不要自己猜一個答案。
 - 不要編造群組成員的事（誰怎樣、誰的習慣、誰的身體），也不要拿真人當玩笑的主角；可以吐槽，但只吐槽對話裡真的發生的事。
-- 被稱讚就大方道謝，不要反問「叫我幹嘛」。
+- 幽默：閒聊、被虧、大家在鬧的時候就放開玩。自嘲最安全（例如你是 AI 不會滑雪、只會滑手機），也可以接別人的梗、把小事講得很誇張；一句裡最多一個笑點，不要硬塞，冷場了也不用解釋笑點。回答正事時先把答案講清楚，最後頂多帶一句俏皮話。正經事（改行程、錢、有人難過、生病或抱怨）不開玩笑。
+- 被稱讚就大方道謝（可以小小得意一下），不要反問「叫我幹嘛」。
 - 有人叫你「記起來」「記一下」：從前後文找出要記的那件事；確定就寫進 remember，reply 說你記了什麼；不確定是哪件就反問。
 - 不知道的事不要編。不談政治、宗教爭議，不給醫療、法律、投資建議。
 - 不講任何人的電話、地址、帳號等個資。
@@ -94,7 +95,7 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
   ・店家／美食推薦："shops": [{"name":"店名","kind":"🍣 壽司","area":"在哪","price":"價位","tip":"一句提醒","map":"Google 地圖搜尋字（店名＋地區）"}]，最多 5 家，不要給網址。
   ・有上網搜尋或讀網頁查到的其他資料："cards": [{"title":"重點標題","lines":["一行一件事，最多 4 行"],"source":"這個重點出自哪個網址（只能填這次真的搜到或讀過的網址，沒有就空字串）"}]，最多 5 張。
   ・附圖時另外給 "photo_caption": {"title":"🗼 東京鐵塔","text":"兩句以內的說明"}。
-- 貼圖：這句話配一張貼圖真的很貼切、會讓人會心一笑時，JSON 加 "sticker": "心情"（只能是：${media.STICKER_KEYS}），挑意思最貼近的；不貼切就不要給，不用每次都給。【這次能不能貼圖】寫不能時一定不要給，也不要說要貼圖。正經事（改行程、開團、錢、有人難過、生病或抱怨時）不要給。有人問你會不會貼圖：會，覺得合適就貼，但不會連續貼、也不會太常貼。
+- 貼圖：貼圖是你表現幽默的好工具。吐槽、自嘲、被虧、裝傻、大家在鬧的時候，配一張貼切的貼圖最有效果（例如被虧就「石化」「被吐槽」，自嘲就「尷尬」「耍廢」，有人說要請客就「撒錢」）。這句配貼圖會讓人會心一笑時，JSON 加 "sticker": "心情"（只能是：${media.STICKER_KEYS}），挑意思最貼近的；不貼切就不要給，不用每次都給。被調侃、或一句話接不下去時，也可以只回一張貼圖（reply 空字串、只給 sticker），但【這次能不能貼圖】寫可以才行。【這次能不能貼圖】寫不能時一定不要給，也不要說要貼圖。正經事（改行程、開團、錢、有人難過、生病或抱怨時）不要給。有人問你會不會貼圖：會，覺得合適就貼，但不會連續貼、也不會太常貼。
 輸出格式：只輸出一個 JSON 物件，前後不要有其他文字：
 {"reply":"要說的話，不說就空字串","remember":["值得長期記住的事，0～2 條，沒有就空陣列"]}
 remember：只記「已經定案、之後會用到」的事，就算這次不說話也要記；一條一件事，寫清楚是誰、什麼事。已經在記憶裡的不要重複記。
@@ -1083,7 +1084,7 @@ async function deliverHeld(chatId, replyToken) {
   }
 }
 
-async function send(chatId, mode, replyToken, reply, images = []) {
+async function send(chatId, mode, replyToken, reply, images = [], label = '') {
   let held = [];
   try {
     const main = [...(reply ? [{ type: 'text', text: reply }] : []), ...images].slice(0, 5);
@@ -1091,13 +1092,13 @@ async function send(chatId, mode, replyToken, reply, images = []) {
     const msgs = [...held.flatMap(heldMessages), ...main];
     const res = await replyMsgs(replyToken, msgs);
     if (held.length) releaseHeld(chatId, held);
-    try { rememberSent(chatId, res, reply || '［行程截圖］'); } catch (err) { console.warn(`[xiaoshuai] 記錄送出訊息失敗：${err.message}`); }
+    try { rememberSent(chatId, res, reply || label || '［行程截圖］'); } catch (err) { console.warn(`[xiaoshuai] 記錄送出訊息失敗：${err.message}`); }
   } catch (err) {
     // replyToken 過期就算了，不改用 push（群組推播依人數扣額度）
     console.warn(`[xiaoshuai] reply failed: ${err.message}`);
     return false;
   }
-  console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：${reply.slice(0, 60)}`);
+  console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：${(reply || label).slice(0, 60)}`);
   return true;
 }
 
@@ -1397,6 +1398,15 @@ async function longResearch(chatId, job) {
   }
 }
 
+/** 只回一張貼圖（被虧、接不下去時的幽默回應）；不能貼就回 null */
+async function stickerOnly(chatId, mode, replyToken, parsed) {
+  const st = media.stickerMessage(chatId, parsed.sticker);
+  if (!st) return null;
+  const label = `［貼圖：${parsed.sticker}］`;
+  console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：只回貼圖 ${parsed.sticker}`);
+  return (await send(chatId, mode, replyToken, '', [st], label)) ? { replied: true, text: label } : { replied: false };
+}
+
 async function thinkInner(chatId, job) {
   const { mode, replyToken, trigger, transcript, allowChimeIn } = job;
   if (mode === 'window') {
@@ -1408,6 +1418,10 @@ async function thinkInner(chatId, job) {
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
       const extra = handleSocial(parsed) + await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) + handleKb(chatId, parsed); // 先跑：可能會清掉 parsed.reply
       const reply = (parsed.reply + extra).trim();
+      if (!reply && !parsed.images && parsed.sticker) {
+        const only = await stickerOnly(chatId, 'followup', replyToken, parsed);
+        if (only) return { ...only, asMention: true };
+      }
       if (!reply && !parsed.images) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} followup：不說話`); return { replied: false }; }
       const extras = withSticker(chatId, parsed, reply);
       return (await send(chatId, 'followup', replyToken, reply, extras)) ? { replied: true, text: reply, asMention: true } : { replied: false };
@@ -1438,6 +1452,10 @@ async function thinkInner(chatId, job) {
   if (job.dm && parsed.toLuna) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 私訊：家裡的事，交給 Luna`); return { replied: false, handoff: true }; }
   const extra = mode === 'mention' ? handleSocial(parsed) + await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handleFitness(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) + handleKb(chatId, parsed) : ''; // 先跑：可能會清掉 parsed.reply
   const reply = (parsed.reply + extra).trim();
+  if (!reply && !parsed.images && parsed.sticker && mode !== 'idle') {
+    const only = await stickerOnly(chatId, mode, replyToken, parsed);
+    if (only) return only;
+  }
   if (!reply && !parsed.images) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：不說話`);
     return { replied: false };

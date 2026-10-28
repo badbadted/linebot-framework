@@ -1773,4 +1773,21 @@ await test('投票：用一般的話開（先確認再開）、取消、改截�
   assert.equal(db.get("SELECT COUNT(*) n FROM polls WHERE kind = 'signup'").n, 0);
 });
 
+await test('幽默：被虧時可以只回一張貼圖；不能貼時不硬送', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const ctx = { db, lineApi: { reply: async (_t, m) => { replies.push(m); return {}; }, push: async () => { throw new Error('不該推播'); }, getGroupMemberProfile: async () => ({ displayName: '阿庭' }) },
+    providers: { llm: { generate: async () => ({ text: '{"reply":"","sticker":"石化"}' }) } }, isAdmin: () => true };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GSTK', 1)");
+  await xiaoshuai.init(ctx);
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GSTK', text: '小帥你是不是只會滑手機', replyToken: 'rt', event: {} }))) return; // 時段外略過
+  for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200));
+  assert.deepEqual(replies[0], [{ type: 'sticker', packageId: '11537', stickerId: media.STICKERS['石化'] }]);
+  assert.equal(media.STICKERS['被吐槽'], '52002769');
+  assert.ok(Object.values(media.STICKERS).every(id => +id >= 52002734 && +id <= 52002773)); // 都在機器人可用的 11537 這包
+});
+
 console.log(`\n${pass} 項全部通過`);
