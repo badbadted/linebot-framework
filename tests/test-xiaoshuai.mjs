@@ -1219,7 +1219,7 @@ await test('店家卡：一家一張、料理類別顏色、只有程式組的�
   assert.ok(!JSON.stringify(m).includes('evil.example'));
   assert.deepEqual(bs[0].footer.contents.map(b => b.action.label), ['📍 Google 地圖']);
   assert.match(bs[0].footer.contents[0].action.uri, /^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=/);
-  assert.match(m.altText, /1\. 店0（豐洲）/);
+  assert.match(m.altText, /^1\. 店0（豐洲） 早點去\n2\. 店1（豐洲）/); // altText 一家一行
 });
 
 await test('查資料卡：「看來源」只收這輪真的搜到的網址；沒有清單就不放按鈕', () => {

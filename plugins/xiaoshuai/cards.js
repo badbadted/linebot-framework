@@ -95,7 +95,10 @@ export function bubble(o) {
 export function flex(bubbles, alt, max = MAX_OTHER) {
   const list = (bubbles || []).filter(Boolean).slice(0, max);
   if (!list.length) return null;
-  const altText = clean(alt, ALT_MAX) || '小帥整理的資料';
+  // altText 保留換行（通知預覽、舊版 LINE 一行一項比較好讀），每行各自清乾淨，總長限 400
+  const lines = String(alt ?? '').split('\n').map(l => clean(l, ALT_MAX)).filter(Boolean);
+  const joined = Array.from(lines.join('\n'));
+  const altText = (joined.length > ALT_MAX ? `${joined.slice(0, ALT_MAX - 1).join('')}…` : joined.join('')) || '小帥整理的資料';
   return { type: 'flex', altText, contents: list.length === 1 ? list[0] : { type: 'carousel', contents: list } };
 }
 
