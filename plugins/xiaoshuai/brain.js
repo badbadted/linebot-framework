@@ -44,6 +44,7 @@ export function createBrain({
   isEnabled,
   onFire,                     // async (chatId, { mode, replyToken, transcript }) => { replied: boolean, text?: string }
   onObserve = null,           // (chatId, item) => void：每記一則就通知（小帥存進 DB，bot 重開後還記得最近對話）
+  onSkip = null,              // (chatId, job) => void：排好的工作沒送出就放棄（這則的 replyToken 沒用到）
   now = () => Date.now(),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
@@ -135,9 +136,14 @@ export function createBrain({
     const fireAt = Math.max(t + delay, s.lastReplyAt + cooldown);
     if (fireAt - job.receivedAt > c.maxWaitMs) {
       if (s.pending === job) s.pending = null;
+      skip(chatId, job);
       return;
     }
     job.timer = setTimer(() => fire(chatId, job), fireAt - t);
+  }
+
+  function skip(chatId, job) {
+    try { onSkip?.(chatId, job); } catch (err) { console.error(`[xiaoshuai] onSkip error: ${err.message}`); }
   }
 
   async function fire(chatId, job) {
@@ -146,13 +152,13 @@ export function createBrain({
     if (!isEnabled(chatId) || !inHours()) { s.pending = null; return; }
     if (s.busy) {
       // 上一句還在想：1 秒後再看，超過 maxWait 就放棄
-      if (now() + 1000 - job.receivedAt > c.maxWaitMs) { s.pending = null; return; }
+      if (now() + 1000 - job.receivedAt > c.maxWaitMs) { s.pending = null; skip(chatId, job); return; }
       job.timer = setTimer(() => fire(chatId, job), 1000);
       return;
     }
     s.pending = null;
     if (job.mode === 'window') {
-      if (!windowOpen(s, now())) return;
+      if (!windowOpen(s, now())) { skip(chatId, job); return; }
       s.windowJudges++;
     }
     s.busy = true;

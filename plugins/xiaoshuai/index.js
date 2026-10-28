@@ -36,7 +36,9 @@ const FETCH_MAX_USES = 2;   // 被叫時每次最多打開幾個群組裡貼的�
 const LONG_SEARCH_USES = 4; // 背景慢慢查：多搜幾次
 const LONG_FETCH_USES = 3;
 const LONG_TIMEOUT_MS = 150_000;
-const LONG_PER_DAY = 10;    // 背景查完用推播回（依群組人數扣額度），每群每天最多幾次
+const LONG_PER_DAY = 10;    // 每群每天最多背景查幾次（控制 AI 花費）
+const HOLD_KEEP_MS = 12 * 3600_000; // 查好的答案等人講話時才貼，最多等 12 小時（查過的資料另外存 3 天，之後問還接得上）
+const HOLD_MAX = 3;                 // 每群最多積幾則還沒貼出去的
 const PENDING_TTL_MS = 15 * 60_000; // 行程修改等確認的有效時間
 const REST_NOTICE_MS = 30 * 60_000; // 時段外被叫：同一群多久內只回一次「休息中」
 const MENTION_RE = /小帥/;
@@ -100,6 +102,12 @@ function initDb() {
       created_at TEXT DEFAULT (datetime('now','+8 hours'))
     );
     CREATE INDEX IF NOT EXISTS idx_mem_chat ON memories(chat_id);
+    CREATE TABLE IF NOT EXISTS held_answers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS research (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id TEXT NOT NULL,
@@ -597,10 +605,48 @@ function withSticker(chatId, parsed, reply) {
   return extras;
 }
 
-async function send(chatId, mode, replyToken, reply, images = []) {
+// ── 查太久的答案（2026-10-28）：背景查好先存著，等群裡下一個人講話，用那則的免費回覆貼出來（不用推播扣額度） ──
+function holdAnswer(chatId, text) {
+  db.run('INSERT INTO held_answers (chat_id, text, at) VALUES (?, ?, ?)', chatId, text, Date.now());
+  db.run('DELETE FROM held_answers WHERE at < ?', Date.now() - HOLD_KEEP_MS);
+  // 只留最新幾則
+  db.run('DELETE FROM held_answers WHERE chat_id = ? AND id NOT IN (SELECT id FROM held_answers WHERE chat_id = ? ORDER BY id DESC LIMIT ?)', chatId, chatId, HOLD_MAX);
+}
+export function heldAnswers(chatId, limit = HOLD_MAX, now = Date.now()) {
+  if (!db) return [];
+  return db.all('SELECT id, text FROM held_answers WHERE chat_id = ? AND at > ? ORDER BY id LIMIT ?', chatId, now - HOLD_KEEP_MS, limit);
+}
+function releaseHeld(chatId, rows) {
+  for (const r of rows) {
+    db.run('DELETE FROM held_answers WHERE id = ?', r.id);
+    brain.observe(chatId, { name: '小帥', text: r.text, self: true }); // 真的貼出去了才算小帥說過
+  }
+}
+
+/** 群裡有人講話、小帥這次不用回：用這則的回覆把查好的答案貼出來 */
+async function deliverHeld(chatId, replyToken) {
+  const rows = heldAnswers(chatId);
+  if (!rows.length || !replyToken) return false;
   try {
-    const msgs = [...(reply ? [{ type: 'text', text: reply }] : []), ...images].slice(0, 5);
+    const res = await lineApi.reply(replyToken, rows.map(r => ({ type: 'text', text: r.text })));
+    releaseHeld(chatId, rows);
+    try { rememberSent(chatId, res, rows.map(r => r.text).join('\n')); } catch { /* 記不起來不影響 */ }
+    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 有人講話，貼出查好的答案 ${rows.length} 則`);
+    return true;
+  } catch (err) {
+    console.warn(`[xiaoshuai] 貼查好的答案失敗：${err.message}`); // 留著，下一個人講話再試
+    return false;
+  }
+}
+
+async function send(chatId, mode, replyToken, reply, images = []) {
+  let held = [];
+  try {
+    const main = [...(reply ? [{ type: 'text', text: reply }] : []), ...images].slice(0, 5);
+    held = heldAnswers(chatId, Math.min(HOLD_MAX, 5 - main.length)); // 一次最多 5 則，放不下的等下次
+    const msgs = [...held.map(r => ({ type: 'text', text: r.text })), ...main];
     const res = await lineApi.reply(replyToken, msgs);
+    if (held.length) releaseHeld(chatId, held);
     try { rememberSent(chatId, res, reply || '［行程截圖］'); } catch (err) { console.warn(`[xiaoshuai] 記錄送出訊息失敗：${err.message}`); }
   } catch (err) {
     // replyToken 過期就算了，不改用 push（群組推播依人數扣額度）
@@ -762,14 +808,21 @@ async function handleNj(chatId, parsed, trigger) {
 
 /** 被叫或在跟小帥說話時出錯（查太久逾時、Luna 掛掉）：至少回一句，不要沉默 */
 async function think(chatId, job) {
+  const r = await thinkOnce(chatId, job);
+  // 這次小帥沒開口：回覆還沒用掉，順便貼查好的答案
+  if (!r?.replied && heldAnswers(chatId, 1).length) await deliverHeld(chatId, job.replyToken);
+  return r;
+}
+
+async function thinkOnce(chatId, job) {
   try {
     return await thinkInner(chatId, job);
   } catch (err) {
     console.error(`[xiaoshuai] ${chatId.slice(0, 8)} ${job.mode} 失敗：${err.message}`);
     if (job.mode === 'mention' || job.toMe) {
-      // 查太久：先回一句（免費回覆），背景繼續查，查好用推播貼回來
+      // 查太久：先回一句「稍後」（免費回覆），背景繼續查，查好等下一個人講話時一起回（不用推播）
       if (/timeout/i.test(err.message) && canLongResearch(chatId)) {
-        const msg = '🔎 這個要查久一點，我繼續查，查好再貼上來（大約一兩分鐘）';
+        const msg = '🔎 這個要查久一點，我繼續查，稍後有人講話時我再貼上來';
         const ok = await send(chatId, job.mode, job.replyToken, msg);
         longResearch(chatId, job).catch(e => console.error(`[xiaoshuai] 背景查詢失敗：${e.message}`));
         return ok ? { replied: true, text: msg } : { replied: false };
@@ -782,7 +835,7 @@ async function think(chatId, job) {
 }
 
 const longRunning = new Set();          // 正在背景查的群（一群同時一件）
-const longCount = new Map();            // chatId → { day, n }：今天推播回了幾次
+const longCount = new Map();            // chatId → { day, n }：今天背景查了幾次
 
 function canLongResearch(chatId) {
   if (longRunning.has(chatId)) return false;
@@ -791,10 +844,10 @@ function canLongResearch(chatId) {
   return !(c && c.day === day && c.n >= LONG_PER_DAY);
 }
 
-/** 背景慢慢查：不改行程、不寫記憶，只把結果推播回群組並存進「查過的資料」 */
+/** 背景慢慢查：不改行程、不寫記憶；結果先存著（等人講話再貼），並存進「查過的資料」 */
 async function longResearch(chatId, job) {
   longRunning.add(chatId);
-  // 一開始就算一次（不管查成查不成都會推播一則），每天上限才擋得住
+  // 一開始就算一次（不管查成查不成都會留一則），每天上限才擋得住
   const day = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
   const c = longCount.get(chatId);
   longCount.set(chatId, { day, n: c && c.day === day ? c.n + 1 : 1 });
@@ -804,14 +857,13 @@ async function longResearch(chatId, job) {
     const answer = parsed.reply?.trim() || '我查了一輪還是找不到可靠的資料，抱歉 🙇';
     const who = job.trigger?.name ? `${job.trigger.name} ` : '';
     const q = String(job.trigger?.text || '').replace(/^小帥\s*/, '').slice(0, 30);
-    const text = `🔎 ${who}剛剛問的「${q}」查好了：\n${answer}`;
-    await lineApi.push(chatId, text);
-    brain.observe(chatId, { name: '小帥', text, self: true });
-    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 背景查完推播：${answer.slice(0, 60)}`);
+    const when = new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false });
+    holdAnswer(chatId, `🔎 ${who}剛剛問的「${q}」查好了（${when}）：\n${answer}`);
+    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 背景查完，等人講話再貼：${answer.slice(0, 60)}`);
   } catch (err) {
     // 背景也查不完：說一聲，不要讓人以為小帥還在查
     console.error(`[xiaoshuai] ${chatId.slice(0, 8)} 背景查詢失敗：${err.message}`);
-    try { await lineApi.push(chatId, '🙇 剛剛那個我查了很久還是查不出來，晚點再問我一次好嗎？'); } catch { /* 推播也失敗就算了 */ }
+    try { holdAnswer(chatId, '🙇 剛剛那個我查了很久還是查不出來，晚點再問我一次好嗎？'); } catch { /* 存不了就算了 */ }
   } finally {
     longRunning.delete(chatId);
   }
@@ -1057,7 +1109,9 @@ export default {
     lineApi = ctx.lineApi;
     llm = ctx.providers?.llm;
     isAdmin = ctx.isAdmin;
-    brain = createBrain({ isEnabled: (id) => enabled.has(id), onFire: think, onObserve: saveLog });
+    brain = createBrain({ isEnabled: (id) => enabled.has(id), onFire: think, onObserve: saveLog,
+      // 小帥這次沒輪到開口（冷場、還在想上一句）：回覆沒用到 → 拿來貼查好的答案
+      onSkip: (chatId, job) => { if (heldAnswers(chatId, 1).length) deliverHeld(chatId, job.replyToken).catch(() => {}); } });
     if (!db) { console.warn('[xiaoshuai] 沒有 db provider，小帥停用'); return; }
     initDb();
     links.initLinks(db, llm);
@@ -1074,6 +1128,10 @@ export default {
     const item = brain.observe(chatId, { userId, text, imageId });
     lastItem.set(chatId, item);
     if (item) resolveName(chatId, userId, item);
+    // 文字訊息等 onUnmatched 再決定（可能是指令或在叫小帥，回覆要留給那邊）
+    if (event?.message && event.message.type !== 'text' && event.replyToken) {
+      deliverHeld(chatId, event.replyToken).catch(() => {});
+    }
   },
 
   async onUnmatched({ chatId, text, replyToken, event }) {
@@ -1097,6 +1155,9 @@ export default {
       }
       return true;
     }
+    // 沒叫小帥、也不在跟小帥對話中 → 直接用這則回覆貼查好的答案（對話中的話留給小帥判斷，例如有人回「好」確認改行程）
+    if (!isMention && enabled.has(chatId) && !brain.status(chatId).windowLeftMs && heldAnswers(chatId, 1).length
+      && await deliverHeld(chatId, replyToken)) return true; // 這則的回覆用掉了
     return brain.handle(chatId, { replyToken, isMention, trigger });
   },
 };

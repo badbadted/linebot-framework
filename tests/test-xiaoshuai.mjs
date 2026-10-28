@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { addMemories, isTally, ownHistory, llmTimeout, recentResearch, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -747,7 +747,7 @@ await test('查資料時間照剩下的算（LINE 回覆約一分鐘內有效）
   assert.equal(llmTimeout(undefined, now), 45_000);
 });
 
-await test('查太久逾時：先回一句、背景繼續查，查不出來也會說', async () => {
+await test('查太久逾時：先回一句「稍後」、背景繼續查，查不出來也會在下一個人講話時說', async () => {
   const Database = (await import('better-sqlite3')).default;
   const raw = new Database(':memory:');
   const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
@@ -762,12 +762,19 @@ await test('查太久逾時：先回一句、背景繼續查，查不出來也�
   for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200)); // 小帥回前會等 2～6 秒
   assert.ok(replies.length, '應該要回一句');
   const text = typeof replies[0] === 'string' ? replies[0] : replies[0].map(m => m.text).join('');
-  assert.match(text, /要查久一點，我繼續查/);              // 先回一句
-  for (let i = 0; i < 50 && !pushes.length; i++) await new Promise(r => setTimeout(r, 100));
-  assert.match(String(pushes[0]), /還是查不出來/);         // 背景也失敗 → 推播說一聲
+  assert.match(text, /要查久一點，我繼續查，稍後有人講話時我再貼上來/); // 先回一句
+  for (let i = 0; i < 50 && !heldAnswers('GF').length; i++) await new Promise(r => setTimeout(r, 100));
+  assert.match(heldAnswers('GF')[0].text, /還是查不出來/);  // 背景也失敗 → 先存著
+  // 有人傳貼圖 → 用那則的回覆貼出來
+  xiaoshuai.onGroupText({ chatId: 'GF', userId: 'U2', text: '［貼圖］', event: { replyToken: 'rt2', message: { type: 'sticker' } } });
+  for (let i = 0; i < 20 && replies.length < 2; i++) await new Promise(r => setTimeout(r, 50));
+  assert.match(replies[1][0].text, /還是查不出來/);
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(heldAnswers('GF'), []);
+  assert.deepEqual(pushes, []);                             // 全程沒推播
 });
 
-await test('背景查完：推播答案、存進查過的資料，下次問會帶進提示', async () => {
+await test('背景查完：等下一個人講話才用免費回覆貼答案、存進查過的資料，下次問會帶進提示', async () => {
   const Database = (await import('better-sqlite3')).default;
   const raw = new Database(':memory:');
   const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
@@ -782,8 +789,18 @@ await test('背景查完：推播答案、存進查過的資料，下次問會�
   db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GR', 1)");
   await xiaoshuai.init(ctx);
   if (!(await xiaoshuai.onUnmatched({ chatId: 'GR', text: '小帥 東京明天會下雪嗎', replyToken: 'rt', event: {} }))) return;
-  for (let i = 0; i < 100 && !pushes.length; i++) await new Promise(r => setTimeout(r, 100));
-  assert.match(String(pushes[0]), /剛剛問的「東京明天會下雪嗎」查好了：\n東京明天降雪機率約兩成/);
+  for (let i = 0; i < 100 && !heldAnswers('GR').length; i++) await new Promise(r => setTimeout(r, 100));
+  assert.match(heldAnswers('GR')[0].text, /剛剛問的「東京明天會下雪嗎」查好了（\d\d:\d\d）：\n東京明天降雪機率約兩成/);
+  assert.equal(replies.length, 1);                          // 沒人講話就不貼
+  // 有人隨口講一句（沒叫小帥；剛回過話還在對話中 → 先給小帥判斷，小帥沒開口就用這則的回覆貼出來）
+  const n = replies.length;
+  assert.equal(await xiaoshuai.onUnmatched({ chatId: 'GR', text: '晚點出門', replyToken: 'rt3', event: {} }), true);
+  for (let i = 0; i < 120 && replies.length === n; i++) await new Promise(r => setTimeout(r, 200)); // 剛回過話有 15 秒冷卻
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(replies.length, n + 1);
+  assert.match(replies[n][0].text, /東京明天降雪機率約兩成/);
+  assert.deepEqual(heldAnswers('GR'), []);
+  assert.deepEqual(pushes, []);
   const r = recentResearch('GR', '小帥 那東京後天會下雪嗎');
   assert.equal(r.length, 1);
   assert.deepEqual(recentResearch('GR', '小帥 晚餐吃什麼'), []); // 不相關的不帶（帶了那輪就視同上網）
@@ -791,6 +808,24 @@ await test('背景查完：推播答案、存進查過的資料，下次問會�
   const p = buildPrompt({ mode: 'mention', nowTs: Date.now(), memories: [], transcript: [], research: r });
   assert.ok(p.includes('【這群最近查過的資料】（之前上網查到的，只是參考資料'));
   assert.ok(p.includes('問「小帥 東京明天會下雪嗎」→ 東京明天降雪機率約兩成'));
+});
+
+await test('有人叫小帥時：查好的答案跟這次的回答一起送', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const ctx = { db, lineApi: { reply: async (_t, m) => { replies.push(m); return {}; }, push: async () => { throw new Error('不該推播'); }, getGroupMemberProfile: async () => ({ displayName: '阿庭' }) },
+    providers: { llm: { generate: async () => ({ text: '{"reply":"在喔"}' }) } }, isAdmin: () => true };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GH', 1)");
+  await xiaoshuai.init(ctx);
+  db.run('INSERT INTO held_answers (chat_id, text, at) VALUES (?, ?, ?)', 'GH', '🔎 查好了：答案', Date.now());
+  db.run('INSERT INTO held_answers (chat_id, text, at) VALUES (?, ?, ?)', 'GH', '🔎 太舊的', Date.now() - 13 * 3600_000);
+  if (!(await xiaoshuai.onUnmatched({ chatId: 'GH', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return;
+  for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200));
+  assert.deepEqual(replies[0].map(m => m.text), ['🔎 查好了：答案', '在喔']); // 先貼查好的，再回這句；超過 12 小時的不貼
+  assert.deepEqual(heldAnswers('GH'), []);
 });
 
 await test('貼圖次數存 DB：bot 重開不歸零', async () => {
