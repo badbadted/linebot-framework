@@ -16,6 +16,7 @@ import * as photo from '../plugins/xiaoshuai/photo.js';
 import * as cards from '../plugins/xiaoshuai/cards.js';
 import * as kb from '../plugins/xiaoshuai/kb.js';
 import * as polls from '../plugins/xiaoshuai/polls.js';
+import * as share from '../plugins/xiaoshuai/share.js';
 import * as social from '../src/utils/social-preview.js';
 import coach, * as coachMod from '../plugins/coach/index.js';
 import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
@@ -1797,6 +1798,102 @@ await test('開團說法：錯字「牛揪」、「發活動」也認得；私�
   assert.equal(njm.aboutEvent('今天好冷'), false);
   const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], dm: true });
   assert.ok(p.includes('妞揪開團在私訊也可以開'));
+});
+
+// ── 分享妞揪活動到別的群 ─────────────────────────
+const NJ_EVENTS = {
+  ev1abcdef: { title: '大安森林公園野餐', startDate: '2099-11-08', startTime: '10:00', location: '大安森林公園', hostName: '妞媽', feeMode: 'free', maxParticipants: 20, currentParticipants: 5 },
+  ev2abcdef: { title: '陽明山親子健行', startDate: '2099-11-15', startTime: '09:00', location: '陽明山', hostName: '多媽', feeMode: 'perPerson', adultFee: 100, kidFee: 50 },
+};
+const fakeNjFs = async () => ({ collection: () => ({
+  doc: (id) => ({ get: async () => ({ exists: !!NJ_EVENTS[id], data: () => NJ_EVENTS[id] }) }),
+  where: () => ({ limit: () => ({ get: async () => ({ docs: Object.entries(NJ_EVENTS).map(([id, d]) => ({ id, data: () => d })) }) }) }),
+}) });
+const GROUPS = [{ id: 'GSRC', name: '2026.12.25-29耶誕滑雪' }, { id: 'C_NJ', name: '妞揪親子團' }, { id: 'C_SMALL', name: '旅遊討論記錄' }];
+
+async function shareBot() {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const pushes = [];
+  const lineApi = { reply: async (_t, m) => { replies.push(Array.isArray(m) ? m : [{ type: 'text', text: m }]); return {}; }, push: async (to, m) => { pushes.push({ to, m }); },
+    getGroupMemberProfile: async (_g, u) => ({ displayName: u === 'UADMIN' ? 'TED' : '阿庭' }), getProfile: async () => ({ displayName: 'TED' }) };
+  const ctx = { db, lineApi, isAdmin: (u) => u === 'UADMIN', providers: { llm: { generate: async () => ({ text: '{"reply":"在喔"}' }) } } };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GSRC', 1)");
+  await xiaoshuai.init(ctx);
+  share.initShare(db, { firestore: fakeNjFs, groups: async () => GROUPS, members: async (id) => (id === 'C_NJ' ? 25 : 2) });
+  let seq = 9000;
+  const dm = async (text) => { const n = replies.length; await xiaoshuai.onPrivateText({ userId: 'UADMIN', text, replyToken: `d${++seq}`, event: { message: { type: 'text', id: String(seq), text } } }); return replies.length > n ? replies.at(-1) : null; };
+  const group = async (userId, text) => { const id = String(++seq); const event = { message: { type: 'text', id, text } }; xiaoshuai.onGroupText({ chatId: 'GSRC', userId, text, event }); const n = replies.length; await xiaoshuai.onUnmatched({ chatId: 'GSRC', userId, text, replyToken: `g${id}`, event }); return replies.length > n ? replies.at(-1) : null; };
+  return { db, replies, pushes, dm, group };
+}
+
+await test('分享活動：只認妞揪網域的活動網址', () => {
+  assert.equal(share.eventIdFromUrl('https://niujiu.vercel.app/event/ev1abcdef'), 'ev1abcdef');
+  for (const u of ['https://evil.com/event/ev1abcdef', 'http://niujiu.vercel.app/event/ev1abcdef', 'https://niujiu.vercel.app.evil.com/event/ev1abcdef', 'https://niujiu.vercel.app/event/../admin', 'https://niujiu.vercel.app/admin/ev1abcdef']) {
+    assert.equal(share.eventIdFromUrl(u), null, u);
+  }
+  const [txt, card] = share.eventMessages({ id: 'ev1abcdef', ...NJ_EVENTS.ev1abcdef });
+  assert.equal(txt.text, '📣 新活動：大安森林公園野餐，要參加的點報名 👇');
+  assert.deepEqual(card.contents.footer.contents[0].action, { type: 'uri', label: '報名', uri: 'https://niujiu.vercel.app/event/ev1abcdef' });
+  assert.match(card.altText, /日期：11\/8（日） 10:00\n地點：大安森林公園\n主揪：妞媽[\s\S]*報名：https:\/\/niujiu\.vercel\.app\/event\/ev1abcdef/);
+  assert.equal(share.eventMessages({ id: '../x', title: 'a' })[1].contents.footer, undefined);   // 網址不合格就不放按鈕
+});
+
+await test('分享活動：非管理員擋下；沒說好不排；說好才排進目標群', async () => {
+  const { db, dm, group } = await shareBot();
+  assert.equal((await group('UOTHER', '小帥 把這個活動分享到妞揪群組'))[0].text, '這個要請 TED 來 🙏');
+  const r = await dm('小帥 把 https://niujiu.vercel.app/event/ev1abcdef 分享到妞揪群組');
+  assert.match(r[0].text, /^要把「大安森林公園野餐」貼到「妞揪親子團」嗎？\n預設不推播/);
+  assert.equal(r[1].type, 'flex');
+  assert.equal(heldAnswers('C_NJ').length, 0);                                     // 還沒說好
+  assert.match((await dm('取消'))[0].text, /不貼了/);
+  await dm('好');
+  assert.equal(heldAnswers('C_NJ').length, 0);                                     // 取消後說好也不排
+  await dm('小帥 把 https://niujiu.vercel.app/event/ev1abcdef 分享到妞揪群組');
+  assert.match((await dm('好'))[0].text, /排好了 👍「大安森林公園野餐」會在「妞揪親子團」下一個人講話時貼出/);
+  assert.equal(heldAnswers('C_NJ').length, 1);
+  assert.match((await dm('小帥 剛剛那團貼出去了沒'))[0].text, /：排著，等那群有人講話就會貼出/);
+  assert.equal(db.get('SELECT mode, status FROM share_jobs').status, 'queued');
+});
+
+await test('分享活動：沒開小帥的群，等框架說「這則沒人要回」才用它的回覆貼出；開了小帥的群不走這條', async () => {
+  const { replies, dm } = await shareBot();
+  await dm('小帥 把 https://niujiu.vercel.app/event/ev1abcdef 分享到妞揪親子團');
+  await dm('好');
+  const n = replies.length;
+  assert.equal(await xiaoshuai.onIdleReply({ chatId: 'GSRC', replyToken: 'x' }), false);    // 有開小帥的群：小帥自己的流程處理
+  assert.equal(await xiaoshuai.onIdleReply({ chatId: 'C_SMALL', replyToken: 'x' }), false); // 沒東西排著
+  assert.equal(replies.length, n);
+  assert.equal(await xiaoshuai.onIdleReply({ chatId: 'C_NJ', replyToken: 'idle1' }), true);
+  assert.deepEqual(replies.at(-1).map(m => m.type), ['text', 'flex']);
+  assert.equal(heldAnswers('C_NJ').length, 0);
+  assert.match((await dm('小帥 剛剛那團貼出去了沒'))[0].text, /：已貼出（/);
+});
+
+await test('分享活動：說「馬上發」先講會扣幾則，回「確定推播」才推播', async () => {
+  const { db, pushes, dm } = await shareBot();
+  await dm('小帥 把 https://niujiu.vercel.app/event/ev2abcdef 貼到妞揪親子團');
+  const r = await dm('馬上發');
+  assert.match(r[0].text, /推播到「妞揪親子團」會扣 25 則訊息額度/);
+  assert.equal(pushes.length, 0);
+  assert.match((await dm('確定推播'))[0].text, /推播出去了：「陽明山親子健行」→「妞揪親子團」（扣約 25 則）/);
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0].to, 'C_NJ');
+  assert.equal(db.get('SELECT mode, status FROM share_jobs').mode, 'push');
+  assert.equal(heldAnswers('C_NJ').length, 0);                                       // 推播就不另外排
+});
+
+await test('分享活動：認「剛剛那團」、名稱找不到或群組對不到就反問', async () => {
+  const { dm } = await shareBot();
+  share.rememberCreated('UADMIN', 'ev2abcdef', '陽明山親子健行');
+  assert.match((await dm('小帥 把剛剛那團分享到妞揪群組'))[0].text, /要把「陽明山親子健行」貼到「妞揪親子團」/);
+  await dm('取消');
+  assert.match((await dm('小帥 把野餐那團分享到妞揪群組'))[0].text, /要把「大安森林公園野餐」/);
+  await dm('取消');
+  assert.match((await dm('小帥 把野餐那團分享到不存在群組'))[0].text, /找不到「不存在」這個群組/);
 });
 
 console.log(`\n${pass} 項全部通過`);

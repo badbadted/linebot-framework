@@ -14,6 +14,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createRouter } from './core/router.js';
+import { idleAllowed, idleEvent, runIdleHooks } from './core/idle-reply.js';
 import { createLineAPI } from './core/line-api.js';
 import { createScheduler } from './core/scheduler.js';
 import { createWebhookHandler } from './core/webhook.js';
@@ -99,7 +100,7 @@ async function main() {
   const logger = createLogger(dataDir);
 
   // 載入 plugins（傳入所有 providers）
-  const pluginHooks = { groupText: [], unmatched: [], privateText: [], postback: [], announce: [] };
+  const pluginHooks = { groupText: [], unmatched: [], privateText: [], postback: [], announce: [], idleReply: [] };
   const loaded = await loadPlugins(config.plugins.dir, {
     router,
     scheduler,
@@ -523,6 +524,8 @@ async function main() {
       for (const h of pluginHooks.groupText) {
         try { h.fn(ctx); } catch (err) { console.error(`[hook:${h.plugin}] groupText error: ${err.message}`); }
       }
+      // 貼圖、照片、位置：沒有人會回，回覆可以拿來貼排著的東西
+      if (idleEvent(ctx.event)) runIdleHooks(pluginHooks.idleReply, { chatId: ctx.chatId, replyToken: ctx.event.replyToken }).catch(() => {});
     },
     onUnmatched: async ({ userId, groupId, roomId, sourceType, text, replyToken, event }) => {
       const isGroup = sourceType === 'group' || sourceType === 'room';
@@ -558,6 +561,12 @@ async function main() {
             if (await h.fn({ userId, text, replyToken, event })) return;
           } catch (err) { console.error(`[hook:${h.plugin}] privateText error: ${err.message}`); }
         }
+      }
+
+      // 群組：沒有指令、沒有 plugin 接手、那群也沒開 _llm → 這則的回覆沒人要用，給 plugin 貼排著的東西
+      if (isGroup && idleAllowed({ isGroup, text, groupPerms: groupPerms[groupId || roomId] || groupPerms['*'] || [] })) {
+        await runIdleHooks(pluginHooks.idleReply, { chatId: groupId || roomId, replyToken });
+        return;
       }
 
       if (!llm) {

@@ -38,6 +38,7 @@ import * as coach from '../coach/index.js';
 import * as cards from './cards.js';
 import * as kb from './kb.js';
 import * as polls from './polls.js';
+import * as share from './share.js';
 import * as social from '../../src/utils/social-preview.js';
 import { join as pathJoin, resolve as pathResolve } from 'node:path';
 
@@ -630,6 +631,70 @@ function queueDuePolls(chatId) {
   }
 }
 
+// ── 分享妞揪活動到別的群（2026-10-29，只有管理員）：認活動、認群、先確認；預設排進那群的免費回覆，明講才推播 ──
+const SHARE_RE = /(?:分享|轉貼|轉發|貼|轉|發|丟)\s*(?:到|去|給|進)\s*([^\s，,。！!？?]{2,20}?)(?:群組|群|那邊|那裡)?\s*(?:嗎|吧|好嗎|可以嗎|好不好)?\s*[?？。!！]*$/;
+const SHARE_STATUS_RE = /(?:貼|分享|發)(?:出去|過去|到)?了?(?:沒|嗎|了沒)|貼出去了沒|有沒有貼/;
+const PUSH_NOW_RE = /馬上發|馬上貼|現在發|現在貼|用推播|直接推播|推播吧/;
+const SHARE_CANCEL_RE = /^(小帥\s*[,，、]?\s*)?(取消|不要|不用|算了|不貼了|先不要)\s*[!！。.~～]*$/;
+
+/** 分享活動相關的話，回 true＝處理掉了（回覆已用掉） */
+async function shareIntercept({ chatId, userId, text, replyToken, mention, dm, transcript = [] }) {
+  const t = String(text || '').normalize('NFKC').trim();
+  const say = async (msgs) => {
+    try { await replyMsgs(replyToken, typeof msgs === 'string' ? [{ type: 'text', text: msgs }] : msgs); } catch (err) { console.warn(`[xiaoshuai-share] 回覆失敗：${err.message}`); }
+    return true;
+  };
+  const admin = !!userId && isAdmin(userId);
+  const p = admin ? share.pendingOf(chatId) : null;
+  // 等確認中：只認管理員
+  if (p) {
+    if (SHARE_CANCEL_RE.test(t)) { share.clearPending(chatId); return say('好，不貼了 👌'); }
+    if (p.stage === 'push' && /^確定推播\s*[!！。]*$/.test(t)) return doShare(chatId, userId, p, 'push', say);
+    if (PUSH_NOW_RE.test(t)) {
+      const n = await share.groupMembers(p.target.id);
+      share.setPending(chatId, { ...p, stage: 'push', count: n });
+      return say(`推播到「${p.target.name}」會扣 ${n ?? '（查不到人數，約群組人數）'} 則訊息額度（每個成員算一則）。\n確定要推播就回「確定推播」；不推播回「好」，我照原本排著等免費回覆。`);
+    }
+    if (isAffirm(t)) return doShare(chatId, userId, p, 'reply', say);
+  }
+  if (!(dm || mention)) return false;
+  if (SHARE_STATUS_RE.test(t) && /團|活動/.test(t) && !SHARE_RE.test(t)) return say(share.statusText(userId));
+  const m = SHARE_RE.exec(t.replace(/^小帥\s*[,，、]?\s*/, ''));
+  if (!m || !(/活動|團|這個|那個|妞揪|牛揪/.test(t) || /https?:\/\//.test(t))) return false;
+  if (!admin) return say('這個要請 TED 來 🙏');
+  const ev = await share.findEvent(chatId, t, transcript);
+  if (ev.ask) return say(ev.ask);
+  const tg = await share.findTarget(m[1], { exclude: chatId });
+  if (tg.ask) return say(tg.ask);
+  share.setPending(chatId, { stage: 'confirm', event: ev.event, target: tg.group });
+  const wantPush = PUSH_NOW_RE.test(t);
+  return say([
+    { type: 'text', text: `要把「${cards.clean(ev.event.title, 30)}」貼到「${tg.group.name}」嗎？\n預設不推播：排進那群，等那群有人講話時用免費回覆貼出（最多等 3 天）。回「好」就排${wantPush ? '；你說要馬上發，那會扣額度，回「馬上發」我先算給你看要扣幾則' : '；要馬上發（會扣額度）就說「馬上發」'}。` },
+    ...share.eventMessages(ev.event).slice(1),
+  ]);
+}
+
+/** 排進目標群的免費回覆（預設）或推播（明講、確認過扣幾則才會走到這） */
+async function doShare(chatId, userId, p, mode, say) {
+  share.clearPending(chatId);
+  const msgs = share.eventMessages(p.event);
+  if (mode === 'push') {
+    try {
+      await lineApi.push(p.target.id, msgs);
+    } catch (err) {
+      console.warn(`[xiaoshuai-share] 推播失敗：${err.message}`);
+      return say(`推播失敗了：${String(err.message).slice(0, 80)}`);
+    }
+    share.recordJob({ event: p.event, target: p.target, by: userId, mode: 'push' });
+    console.log(`[xiaoshuai-share] 推播「${p.event.title}」到 ${p.target.name}`);
+    return say(`📣 推播出去了：「${cards.clean(p.event.title, 30)}」→「${p.target.name}」${p.count ? `（扣約 ${p.count} 則）` : ''}`);
+  }
+  const heldId = holdAnswer(p.target.id, msgs[0].text, msgs.slice(1), { keepMs: share.SHARE_KEEP_MS });
+  share.recordJob({ event: p.event, target: p.target, by: userId, mode: 'reply', heldId });
+  console.log(`[xiaoshuai-share] 「${p.event.title}」排進 ${p.target.name} 的免費回覆（held #${heldId}）`);
+  return say(`排好了 👍「${cards.clean(p.event.title, 30)}」會在「${p.target.name}」下一個人講話時貼出（最多等 3 天，不扣額度）。\n想知道貼了沒，問我「剛剛那團貼出去了沒」。`);
+}
+
 const tripsOf = (chatId) => (db?.all('SELECT name FROM trip_binds WHERE chat_id = ? ORDER BY updated_at', chatId) || []).map(r => r.name);
 const bindTrip = (chatId, name) => db.run(
   `INSERT INTO trip_binds (chat_id, name) VALUES (?, ?)
@@ -1006,10 +1071,11 @@ function withSticker(chatId, parsed, reply) {
 // ── 查太久的答案（2026-10-28）：背景查好先存著，等群裡下一個人講話，用那則的免費回覆貼出來（不用推播扣額度） ──
 function holdAnswer(chatId, text, msgs = [], { keepMs = null } = {}) {
   const now = Date.now();
-  db.run('INSERT INTO held_answers (chat_id, text, at, msgs, expires_at) VALUES (?, ?, ?, ?, ?)', chatId, text, now, msgs.length ? JSON.stringify(msgs) : null, keepMs ? now + keepMs : null);
+  const r = db.run('INSERT INTO held_answers (chat_id, text, at, msgs, expires_at) VALUES (?, ?, ?, ?, ?)', chatId, text, now, msgs.length ? JSON.stringify(msgs) : null, keepMs ? now + keepMs : null);
   db.run(`DELETE FROM held_answers WHERE ${HELD_EXPIRED}`, now, now - HOLD_KEEP_MS);
   // 只留最新幾則
   db.run('DELETE FROM held_answers WHERE chat_id = ? AND id NOT IN (SELECT id FROM held_answers WHERE chat_id = ? ORDER BY id DESC LIMIT ?)', chatId, chatId, HOLD_MAX);
+  return r?.lastInsertRowid;
 }
 // 過期：有到期時間的看到期時間，沒有的照 12 小時
 const HELD_EXPIRED = '(expires_at IS NOT NULL AND expires_at <= ?) OR (expires_at IS NULL AND at <= ?)';
@@ -1053,8 +1119,10 @@ function heldFitting(chatId, room) {
 function releaseHeld(chatId, rows) {
   for (const r of rows) {
     db.run('DELETE FROM held_answers WHERE id = ?', r.id);
-    brain.observe(chatId, { name: '小帥', text: r.text, self: true }); // 真的貼出去了才算小帥說過
+    // 真的貼出去了才算小帥說過；沒開小帥的群（例：分享活動到妞揪親子團）不記對話
+    if (enabled.has(chatId) || chatId.startsWith('U')) brain.observe(chatId, { name: '小帥', text: r.text, self: true });
   }
+  share.markPosted(rows.map(r => r.id));
 }
 
 /** reply；含卡片而被 LINE 拒絕（格式錯）時，卡片換成純文字再送一次 */
@@ -1231,6 +1299,7 @@ async function handleNj(chatId, parsed, trigger) {
       const host = await nj.resolveHost(userId, trigger?.name);
       if (!host.ok) return `\n\n⚠️ ${host.error}`;
       const r = await nj.createEvent(draft, host.user);
+      share.rememberCreated(chatId, r.id, draft.title);
       nj.clearDraft(chatId, userId);
       console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 妞揪開團：${draft.title} → ${r.id}`);
       return `\n\n✅ 開好了！主揪是 ${host.user.displayName}\n${draft.title}\n報名在這裡：${r.url}`;
@@ -1725,6 +1794,11 @@ export default {
     initDb();
     links.initLinks(db, llm);
     nj.initNjEvent(db);
+    share.initShare(db, {
+      // bot 所在的群組：問框架自己的 /api/groups（本機免金鑰）
+      groups: async () => { try { return await (await fetch(`http://127.0.0.1:${process.env.PORT || 3100}/api/groups`)).json(); } catch { return []; } },
+      members: async (id) => (lineApi?.getGroupMemberCount ? lineApi.getGroupMemberCount(id) : null),
+    });
     media.initStickers(db);
     polls.initPolls(db);
     kb.initKb(db, { backups: process.env.XIAOSHUAI_KB_BACKUPS || pathJoin(pathResolve(import.meta.dirname, '..', '..'), 'data', 'backups', 'xiaoshuai-kb') });
@@ -1766,6 +1840,7 @@ export default {
     tagMsgId(item, event);
     if (item) await resolveName(userId, userId, item);
     if (await kbIntercept({ chatId: userId, userId, text, replyToken, event, dm: true })) return true;
+    if (await shareIntercept({ chatId: userId, userId, text, replyToken, dm: true, transcript: brain._state(userId).buf })) return true;
     const trigger = item || { text, userId, ts: Date.now() };
     const quoted = quotedSelf(event);
     if (quoted) trigger.quoted = quoted;
@@ -1780,6 +1855,12 @@ export default {
     dmQueue.set(userId, job.catch(() => {}));
     const r = await job;
     return !r?.handoff;
+  },
+
+  /** 框架的 onIdleReply（core/idle-reply.js）：沒開小帥的群裡確定沒人要回的訊息 → 貼排著的東西（例：分享過去的活動） */
+  async onIdleReply({ chatId, replyToken }) {
+    if (!db || !chatId || enabled.has(chatId) || !heldAnswers(chatId, 1).length) return false;
+    return deliverHeld(chatId, replyToken);
   },
 
   /** 框架的 /api/announce：公告排進免費回覆；這群沒開小帥回 false（交給呼叫端決定要不要推播） */
@@ -1820,6 +1901,7 @@ export default {
     const isMention = addr === 'direct';
     const judge = addr === 'soft';
     if (enabled.has(chatId) && await kbIntercept({ chatId, userId, text, replyToken, event, mention: isMention, dm: false })) return true;
+    if (enabled.has(chatId) && await shareIntercept({ chatId, userId, text, replyToken, mention: isMention, dm: false, transcript: brain._state(chatId).buf })) return true;
     if (enabled.has(chatId) && userId && await pollIntercept({ chatId, userId, text, replyToken, mention: isMention })) return true;
     // 時段外被叫：回一句休息中（reply 免費），同一群 30 分鐘內只回一次
     if (isMention && enabled.has(chatId) && !brain.inHours()) {

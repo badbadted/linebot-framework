@@ -101,6 +101,15 @@ export function createLineAPI(channelAccessToken) {
     return JSON.parse(await res.text());
   }
 
+  /** 群組人數（推播前算會扣幾則）；查不到回 null */
+  async function getGroupMemberCount(groupId) {
+    const kind = String(groupId).startsWith('R') ? 'room' : 'group';
+    const res = await fetch(`https://api.line.me/v2/bot/${kind}/${groupId}/members/count`, { headers });
+    if (!res.ok) { await res.text().catch(() => {}); return null; }
+    const j = JSON.parse(await res.text());
+    return Number.isFinite(j?.count) ? j.count : null;
+  }
+
   /**
    * 讓 bot 離開群組（C 開頭）或聊天室（R 開頭）
    */
@@ -142,5 +151,5 @@ export function createLineAPI(channelAccessToken) {
     return { limit: quota.type === 'limited' ? Number(quota.value) : null, used: Number(JSON.parse(cBody).totalUsage) || 0 };
   }
 
-  return { reply, validateReply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, leaveChat, getContent, getQuota };
+  return { reply, validateReply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, getGroupMemberCount, leaveChat, getContent, getQuota };
 }
