@@ -4,9 +4,9 @@
  * 「小帥 把這個活動分享到妞揪群組」「把剛剛那團貼到妞揪親子團」：
  *   1. 認活動：這句或最近對話裡的妞揪活動網址 → 這個聊天剛開好的團 → 照名稱在妞揪 Firestore 找；找不到或不只一個就反問
  *   2. 認目標群：bot 所在的群組（/api/groups）比對名稱；對到多個就列出來問
- *   3. 先問「要把『○○』貼到『△△』嗎？」，TED 回「好」才排
- *   4. 預設不推播：排進目標群的 held_answers，等那群下一則「沒有人要回」的訊息用它的免費回覆貼出（最多等 3 天）
- *      TED 明講「馬上發／用推播」才推播：先查群組人數、講清楚會扣幾則，再回「確定推播」才發
+ *   3. 一次問清楚兩種選法（2026-10-29 使用者簡化）：回「好」＝排進那群、等有人講話時免費貼出；
+ *      回「推」＝馬上推播（問的時候就寫出會扣幾則＝群組人數、本月剩幾則，都由程式查），回了就直接推，不再二次確認
+ *   4. 排的方式：目標群的 held_answers，等那群下一則「沒有人要回」的訊息用它的免費回覆貼出（最多等 3 天）
  * 卡片：活動名稱、日期時間、地點、主揪、費用、人數；「報名」按鈕只連妞揪自己的網域（程式組網址）。
  */
 
@@ -24,13 +24,15 @@ let db = null;
 let getFs = initFirestore;
 let listGroups = async () => [];
 let memberCount = async () => null;
+let quotaOf = async () => null;   // { limit, used }：本月推播額度
 const pending = new Map(); // chatId → { stage: 'confirm'|'push', event, target, count?, at }
 
-export function initShare(database, { firestore, groups, members } = {}) {
+export function initShare(database, { firestore, groups, members, quota } = {}) {
   db = database;
   if (firestore) getFs = firestore;
   if (groups) listGroups = groups;
   if (members) memberCount = members;
+  if (quota) quotaOf = quota;
   db.exec(`
     CREATE TABLE IF NOT EXISTS nj_recent (
       chat_id TEXT PRIMARY KEY,
@@ -187,6 +189,20 @@ export function pendingOf(chatId, now = Date.now()) {
 }
 export const clearPending = (chatId) => pending.delete(chatId);
 export const groupMembers = (id) => memberCount(id);
+/** 本月推播還剩幾則；查不到或不限量回 null */
+export async function quotaLeft() {
+  try {
+    const q = await quotaOf();
+    return q && Number.isFinite(q.limit) ? Math.max(0, q.limit - (q.used || 0)) : null;
+  } catch { return null; }
+}
+
+/** 問 TED 的那句：兩種選法一次講清楚（人數、剩餘額度由程式查） */
+export function askText(event, target, count, left) {
+  const cost = count == null ? '會依群組人數扣額度' : `會扣 ${count} 則`;
+  const rest = left == null ? '' : `，本月剩 ${left} 則`;
+  return `要把「${cards.clean(event.title, 30)}」貼到「${target.name}」嗎？\n回「好」＝等那群有人講話時免費貼出（最多等 3 天）\n回「推」＝馬上推播（${cost}${rest}）`;
+}
 
 export function recordJob({ event, target, by, mode, heldId = null }, now = Date.now()) {
   const r = db.run(`INSERT INTO share_jobs (event_id, title, target_chat, target_name, by_user, mode, held_id, status, created_at, posted_at)

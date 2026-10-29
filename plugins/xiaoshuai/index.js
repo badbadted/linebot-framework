@@ -634,7 +634,6 @@ function queueDuePolls(chatId) {
 // ── 分享妞揪活動到別的群（2026-10-29，只有管理員）：認活動、認群、先確認；預設排進那群的免費回覆，明講才推播 ──
 const SHARE_RE = /(?:分享|轉貼|轉發|貼|轉|發|丟)\s*(?:到|去|給|進)\s*([^\s，,。！!？?]{2,20}?)(?:群組|群|那邊|那裡)?\s*(?:嗎|吧|好嗎|可以嗎|好不好)?\s*[?？。!！]*$/;
 const SHARE_STATUS_RE = /(?:貼|分享|發)(?:出去|過去|到)?了?(?:沒|嗎|了沒)|貼出去了沒|有沒有貼/;
-const PUSH_NOW_RE = /馬上發|馬上貼|現在發|現在貼|用推播|直接推播|推播吧/;
 const SHARE_CANCEL_RE = /^(小帥\s*[,，、]?\s*)?(取消|不要|不用|算了|不貼了|先不要)\s*[!！。.~～]*$/;
 
 /** 分享活動相關的話，回 true＝處理掉了（回覆已用掉） */
@@ -649,12 +648,8 @@ async function shareIntercept({ chatId, userId, text, replyToken, mention, dm, t
   // 等確認中：只認管理員
   if (p) {
     if (SHARE_CANCEL_RE.test(t)) { share.clearPending(chatId); return say('好，不貼了 👌'); }
-    if (p.stage === 'push' && /^確定推播\s*[!！。]*$/.test(t)) return doShare(chatId, userId, p, 'push', say);
-    if (PUSH_NOW_RE.test(t)) {
-      const n = await share.groupMembers(p.target.id);
-      share.setPending(chatId, { ...p, stage: 'push', count: n });
-      return say(`推播到「${p.target.name}」會扣 ${n ?? '（查不到人數，約群組人數）'} 則訊息額度（每個成員算一則）。\n確定要推播就回「確定推播」；不推播回「好」，我照原本排著等免費回覆。`);
-    }
+    // 回「推」（「好 推」「推吧」「推播」…句子裡有推就算；短句才算，免得聊天裡的「推薦」被當成要推播）：直接推播，不再二次確認
+    if (/推/.test(t) && Array.from(t).length <= 10) return doShare(chatId, userId, p, 'push', say);
     if (isAffirm(t)) return doShare(chatId, userId, p, 'reply', say);
   }
   if (!(dm || mention)) return false;
@@ -666,12 +661,9 @@ async function shareIntercept({ chatId, userId, text, replyToken, mention, dm, t
   if (ev.ask) return say(ev.ask);
   const tg = await share.findTarget(m[1], { exclude: chatId });
   if (tg.ask) return say(tg.ask);
-  share.setPending(chatId, { stage: 'confirm', event: ev.event, target: tg.group });
-  const wantPush = PUSH_NOW_RE.test(t);
-  return say([
-    { type: 'text', text: `要把「${cards.clean(ev.event.title, 30)}」貼到「${tg.group.name}」嗎？\n預設不推播：排進那群，等那群有人講話時用免費回覆貼出（最多等 3 天）。回「好」就排${wantPush ? '；你說要馬上發，那會扣額度，回「馬上發」我先算給你看要扣幾則' : '；要馬上發（會扣額度）就說「馬上發」'}。` },
-    ...share.eventMessages(ev.event).slice(1),
-  ]);
+  const [count, left] = await Promise.all([share.groupMembers(tg.group.id), share.quotaLeft()]);
+  share.setPending(chatId, { stage: 'confirm', event: ev.event, target: tg.group, count });
+  return say([{ type: 'text', text: share.askText(ev.event, tg.group, count, left) }, ...share.eventMessages(ev.event).slice(1)]);
 }
 
 /** 排進目標群的免費回覆（預設）或推播（明講、確認過扣幾則才會走到這） */
@@ -1798,6 +1790,7 @@ export default {
       // bot 所在的群組：問框架自己的 /api/groups（本機免金鑰）
       groups: async () => { try { return await (await fetch(`http://127.0.0.1:${process.env.PORT || 3100}/api/groups`)).json(); } catch { return []; } },
       members: async (id) => (lineApi?.getGroupMemberCount ? lineApi.getGroupMemberCount(id) : null),
+      quota: async () => (lineApi?.getQuota ? lineApi.getQuota() : null),
     });
     media.initStickers(db);
     polls.initPolls(db);

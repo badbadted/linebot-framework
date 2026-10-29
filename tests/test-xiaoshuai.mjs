@@ -1823,7 +1823,7 @@ async function shareBot() {
   await xiaoshuai.init(ctx);
   db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GSRC', 1)");
   await xiaoshuai.init(ctx);
-  share.initShare(db, { firestore: fakeNjFs, groups: async () => GROUPS, members: async (id) => (id === 'C_NJ' ? 25 : 2) });
+  share.initShare(db, { firestore: fakeNjFs, groups: async () => GROUPS, members: async (id) => (id === 'C_NJ' ? 25 : 2), quota: async () => ({ limit: 200, used: 150 }) });
   let seq = 9000;
   const dm = async (text) => { const n = replies.length; await xiaoshuai.onPrivateText({ userId: 'UADMIN', text, replyToken: `d${++seq}`, event: { message: { type: 'text', id: String(seq), text } } }); return replies.length > n ? replies.at(-1) : null; };
   const group = async (userId, text) => { const id = String(++seq); const event = { message: { type: 'text', id, text } }; xiaoshuai.onGroupText({ chatId: 'GSRC', userId, text, event }); const n = replies.length; await xiaoshuai.onUnmatched({ chatId: 'GSRC', userId, text, replyToken: `g${id}`, event }); return replies.length > n ? replies.at(-1) : null; };
@@ -1846,7 +1846,7 @@ await test('分享活動：非管理員擋下；沒說好不排；說好才排�
   const { db, dm, group } = await shareBot();
   assert.equal((await group('UOTHER', '小帥 把這個活動分享到妞揪群組'))[0].text, '這個要請 TED 來 🙏');
   const r = await dm('小帥 把 https://niujiu.vercel.app/event/ev1abcdef 分享到妞揪群組');
-  assert.match(r[0].text, /^要把「大安森林公園野餐」貼到「妞揪親子團」嗎？\n預設不推播/);
+  assert.match(r[0].text, /^要把「大安森林公園野餐」貼到「妞揪親子團」嗎？\n回「好」＝等那群有人講話時免費貼出/);
   assert.equal(r[1].type, 'flex');
   assert.equal(heldAnswers('C_NJ').length, 0);                                     // 還沒說好
   assert.match((await dm('取消'))[0].text, /不貼了/);
@@ -1873,17 +1873,20 @@ await test('分享活動：沒開小帥的群，等框架說「這則沒人要�
   assert.match((await dm('小帥 剛剛那團貼出去了沒'))[0].text, /：已貼出（/);
 });
 
-await test('分享活動：說「馬上發」先講會扣幾則，回「確定推播」才推播', async () => {
+await test('分享活動：問的時候講清楚「好」免費排、「推」馬上推播（扣幾則、本月剩幾則）；回「推」直接推播', async () => {
   const { db, pushes, dm } = await shareBot();
-  await dm('小帥 把 https://niujiu.vercel.app/event/ev2abcdef 貼到妞揪親子團');
-  const r = await dm('馬上發');
-  assert.match(r[0].text, /推播到「妞揪親子團」會扣 25 則訊息額度/);
+  const r = await dm('小帥 把 https://niujiu.vercel.app/event/ev2abcdef 貼到妞揪親子團');
+  assert.equal(r[0].text, '要把「陽明山親子健行」貼到「妞揪親子團」嗎？\n回「好」＝等那群有人講話時免費貼出（最多等 3 天）\n回「推」＝馬上推播（會扣 25 則，本月剩 50 則）');
   assert.equal(pushes.length, 0);
-  assert.match((await dm('確定推播'))[0].text, /推播出去了：「陽明山親子健行」→「妞揪親子團」（扣約 25 則）/);
+  assert.match((await dm('好 推'))[0].text, /推播出去了：「陽明山親子健行」→「妞揪親子團」（扣約 25 則）/);
   assert.equal(pushes.length, 1);
   assert.equal(pushes[0].to, 'C_NJ');
   assert.equal(db.get('SELECT mode, status FROM share_jobs').mode, 'push');
   assert.equal(heldAnswers('C_NJ').length, 0);                                       // 推播就不另外排
+  // 長句裡的「推」不算（例：推薦）
+  await dm('小帥 把 https://niujiu.vercel.app/event/ev2abcdef 貼到妞揪親子團');
+  await dm('我覺得這團很推薦給有小孩的家庭');
+  assert.equal(pushes.length, 1);
 });
 
 await test('分享活動：認「剛剛那團」、名稱找不到或群組對不到就反問', async () => {
