@@ -1196,12 +1196,18 @@ async function deliverHeld(chatId, replyToken) {
 }
 
 async function send(chatId, mode, replyToken, reply, images = [], label = '') {
+  const ctl = jobCtl.get(replyToken);
+  if (ctl?.isCancelled?.()) {
+    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：同一個人又補了話，這則不送，合併後重想`);
+    return false;
+  }
   let held = [];
   try {
     const main = [...(reply ? [{ type: 'text', text: reply }] : []), ...images].slice(0, 5);
     held = heldFitting(chatId, 5 - main.length); // 一次最多 5 則，放不下的等下次
     const msgs = [...held.flatMap(heldMessages), ...main];
     const res = await replyMsgs(replyToken, msgs);
+    ctl?.markSent?.();
     if (held.length) releaseHeld(chatId, held);
     try { rememberSent(chatId, res, reply || label || '［行程截圖］'); } catch (err) { console.warn(`[xiaoshuai] 記錄送出訊息失敗：${err.message}`); }
   } catch (err) {
@@ -1464,8 +1470,14 @@ function guardReply(chatId, parsed) {
 }
 
 /** 被叫或在跟小帥說話時出錯（查太久逾時、Luna 掛掉）：至少回一句，不要沉默 */
+// 還在想的回答：送出前看有沒有被同一個人補的話作廢、送出後通知 brain（replyToken → { isCancelled, markSent }）
+const jobCtl = new Map();
+
 async function think(chatId, job) {
-  const r = await thinkOnce(chatId, job);
+  if (job.replyToken && (job.isCancelled || job.markSent)) jobCtl.set(job.replyToken, { isCancelled: job.isCancelled, markSent: job.markSent });
+  let r;
+  try { r = await thinkOnce(chatId, job); } finally { jobCtl.delete(job.replyToken); }
+  if (job.isCancelled?.()) return { replied: false, cancelled: true }; // 被合併後的那句取代：這則的回覆不用（也不拿來貼存著的答案，免得跟重想的那則搶順序）
   // 這次小帥沒開口：回覆還沒用掉，順便貼查好的答案（要交給 Luna 的話回覆留給 Luna）
   if (!r?.replied && !r?.handoff && heldAnswers(chatId, 1).length) await deliverHeld(chatId, job.replyToken);
   return r;

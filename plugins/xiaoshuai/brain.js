@@ -15,6 +15,10 @@
  *   - 回覆前隨機等 delayMs[0]～delayMs[1]；等待中又有新訊息 → 改看最新那句、重新計時（mention 優先權最高）
  *   - 同一群 cooldownMs 內最多回一次
  *   - 從觸發到送出最多 maxWaitMs（LINE replyToken 會過期），超過就放棄
+ *   - 同一個人斷成好幾則連續傳（2026-10-29）：當成同一句話——等這個人安靜 burstQuietMs 才開口（從第一則起最多等 burstMaxMs），
+ *     給 AI 的觸發句是這幾則合併（「為什麼／你也有貼圖／你也是會花錢買貼圖的人嗎」），replyToken 用最新一則的；
+ *     AI 還在想、回答還沒送出時同一個人又補一句 → 前一個作廢（onFire 收到的 isCancelled() 變 true），用合併後的內容重想一次；
+ *     已經送出（onFire 呼叫 markSent()）就算了，下一則只回新補的。不同人不合併。
  */
 
 export const DEFAULTS = {
@@ -28,6 +32,8 @@ export const DEFAULTS = {
   cooldownMs: 15_000,
   maxWaitMs: 20_000,
   maxDebounceMs: 8000,   // 一直有人講話時，最多延後這麼久就要開口（不然熱絡的群永遠等不到）
+  burstQuietMs: 5000,    // 同一個人連續傳：他安靜這麼久才算講完
+  burstMaxMs: 15000,     // 同一個人一直傳：從第一則起最多等這麼久就要開口
   bufferSize: 50,
 };
 
@@ -45,6 +51,7 @@ export function createBrain({
   onFire,                     // async (chatId, { mode, replyToken, transcript }) => { replied: boolean, text?: string }
   onObserve = null,           // (chatId, item) => void：每記一則就通知（小帥存進 DB，bot 重開後還記得最近對話）
   onSkip = null,              // (chatId, job) => void：排好的工作沒送出就放棄（這則的 replyToken 沒用到）
+  onSupersede = null,         // (chatId, job) => void：還在想的回答被同一個人補的話取代（那則不要送）
   now = () => Date.now(),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
@@ -57,7 +64,7 @@ export function createBrain({
     if (!chats.has(chatId)) {
       chats.set(chatId, {
         buf: [], unmentioned: 0, windowUntil: 0, windowJudges: 0, windowReplies: 0,
-        lastReplyAt: -Infinity, pending: null, busy: false,
+        lastReplyAt: -Infinity, pending: null, busy: false, inflight: null,
       });
     }
     return chats.get(chatId);
@@ -103,22 +110,48 @@ export function createBrain({
     else if (windowOpen(s, t) || judge) mode = 'window';
     else if (s.unmentioned >= c.idleThreshold) mode = 'idle';
     else if (s.pending) mode = s.pending.mode; // 正在等著回：沿用原本的模式，改看最新這句
+    else if (sameSpeakerThinking(s, trigger)) mode = s.inflight.job.mode; // 同一個人在小帥想的時候補話：沿用那則的模式
     if (!mode) return true;
     if (mode === 'idle') s.unmentioned = 0;
 
     // 合併等待中的工作：模式取優先權高的，replyToken 與時間用最新的
     const prev = s.pending;
     if (prev) clearTimer(prev.timer);
-    const merged = prev && PRIORITY[prev.mode] > PRIORITY[mode] ? prev.mode : mode;
-    const keepPrevTrigger = prev && merged === prev.mode && prev.mode === 'mention' && !isMention;
+    const who = trigger?.userId || null;
+    // 同一個人還在想著回的那句（回答還沒送出）：作廢，跟這句合併重想
+    const fly = s.inflight;
+    const flyBurst = !prev && sameSpeakerThinking(s, trigger);
+    if (flyBurst) {
+      fly.cancelled = true;
+      try { onSupersede?.(chatId, fly.job); } catch (err) { console.error(`[xiaoshuai] onSupersede error: ${err.message}`); }
+    }
+    const base = flyBurst ? fly.job : prev;
+    const burst = !!(who && base && base.trigger?.userId === who);
+    const merged = base && PRIORITY[base.mode] > PRIORITY[mode] ? base.mode : mode;
+    const keepPrevTrigger = !burst && prev && merged === prev.mode && prev.mode === 'mention' && !isMention;
     const job = {
       mode: merged, replyToken, receivedAt: t, firstAt: prev?.firstAt ?? t, timer: null,
-      judge: merged === 'window' && judge,
-      trigger: keepPrevTrigger ? prev.trigger : trigger,
+      burst, burstAt: burst ? (base.burstAt ?? base.firstAt ?? t) : t,
+      judge: merged === 'window' && (judge || (burst && !!base.judge)),
+      trigger: burst ? mergeTrigger(base.trigger, trigger) : keepPrevTrigger ? prev.trigger : trigger,
     };
     s.pending = job;
     schedule(chatId, job);
     return true;
+  }
+
+  /** 小帥正在想、還沒送出的那則，是不是這個人講的 */
+  function sameSpeakerThinking(s, trigger) {
+    const fly = s.inflight;
+    return !!(trigger?.userId && fly && !fly.sent && !fly.cancelled && fly.job.trigger?.userId === trigger.userId);
+  }
+
+  /** 同一個人連續幾則 → 一句（「為什麼／你也有貼圖」）；其他欄位（回覆到的訊息等）用最新那則的 */
+  function mergeTrigger(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    const parts = [...(a.parts || [a.text]), b.text].filter(x => x != null && String(x).trim());
+    return { ...a, ...b, parts, text: parts.join('／') };
   }
 
   function windowOpen(s, t) {
@@ -135,7 +168,10 @@ export function createBrain({
     const [lo, hi] = c.delayMs;
     const cooldown = c.cooldownMs;
     const delay = t - job.firstAt >= c.maxDebounceMs ? 0 : lo + Math.floor(random() * (hi - lo + 1));
-    const fireAt = Math.max(t + delay, s.lastReplyAt + cooldown);
+    let fireAt = t + delay;
+    // 同一個人又補了一句：等他安靜 burstQuietMs（看他還有沒有要補），從他第一則起最多等 burstMaxMs
+    if (job.burst) fireAt = Math.max(fireAt, Math.min(t + c.burstQuietMs, (job.burstAt ?? t) + c.burstMaxMs));
+    fireAt = Math.max(fireAt, s.lastReplyAt + cooldown);
     if (fireAt - job.receivedAt > c.maxWaitMs) {
       if (s.pending === job) s.pending = null;
       skip(chatId, job);
@@ -164,10 +200,16 @@ export function createBrain({
       s.windowJudges++;
     }
     s.busy = true;
+    const fly = { job, cancelled: false, sent: false };
+    s.inflight = fly;
     try {
       // 不確定是不是叫他的那句：判斷不是在跟他說話，就不插嘴
       const allowChimeIn = job.mode === 'window' ? !job.judge && canChimeIn(s, now()) : true;
-      const r = await onFire(chatId, { mode: job.mode, replyToken: job.replyToken, trigger: job.trigger, transcript: s.buf.slice(), allowChimeIn });
+      const r = await onFire(chatId, {
+        mode: job.mode, replyToken: job.replyToken, trigger: job.trigger, transcript: s.buf.slice(), allowChimeIn,
+        isCancelled: () => fly.cancelled,   // 同一個人補了話：這次的回答不要送
+        markSent: () => { fly.sent = true; }, // 已經送出：之後補的話只回新的部分
+      });
       if (r?.replied) {
         const t = now();
         s.lastReplyAt = t;
@@ -186,6 +228,7 @@ export function createBrain({
       console.error(`[xiaoshuai] fire error: ${err.message}`);
     } finally {
       s.busy = false;
+      if (s.inflight === fly) s.inflight = null;
     }
   }
 

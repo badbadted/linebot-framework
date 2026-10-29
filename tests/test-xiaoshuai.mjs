@@ -62,8 +62,8 @@ function harness({ start = NOON, reply = true, cfg = {} } = {}) {
     }
     t = end;
   }
-  function say(text, { mention = false } = {}) {
-    const item = brain.observe('G', { userId: 'U1', name: '阿庭', text });
+  function say(text, { mention = false, user = 'U1' } = {}) {
+    const item = brain.observe('G', { userId: user, name: user === 'U1' ? '阿庭' : '別人', text });
     return brain.handle('G', { replyToken: `tok-${text}`, isMention: mention, trigger: item });
   }
   return { brain, fired, advance, say, on, get now() { return t; }, set now(v) { t = v; } };
@@ -196,9 +196,9 @@ await test('等待中又有人講話：改看最新那句，只叫 AI 一次', a
   const h = harness();
   h.say('小帥', { mention: true });
   await h.advance(1000);
-  h.say('欸');
+  h.say('欸', { user: 'U2' });
   await h.advance(1000);
-  h.say('人呢');
+  h.say('人呢', { user: 'U2' });
   await h.advance(10_000);
   assert.equal(h.fired.length, 1);
   assert.equal(h.fired[0].mode, 'mention'); // 點名優先權保留
@@ -209,7 +209,7 @@ await test('等待中又有人講話：改看最新那句，只叫 AI 一次', a
 await test('一直有人講話：最多延後 8 秒就開口', async () => {
   const h = harness({ reply: false }); // 不回話 → 不開視窗，只看第一次開口的時間
   h.say('小帥', { mention: true });
-  for (let i = 0; i < 10; i++) { await h.advance(1500); h.say(`插話${i}`); }
+  for (let i = 0; i < 10; i++) { await h.advance(1500); h.say(`插話${i}`, { user: `U${2 + (i % 3)}` }); }
   await h.advance(10_000);
   assert.equal(h.fired.length, 1);
   assert.ok(h.fired[0].at - NOON <= 8000 + 1500 + 2000, `延後太久：${h.fired[0].at - NOON}ms`);
@@ -2046,6 +2046,117 @@ await test('宣稱檢查：「送出開團了」「發到妞揪了」「幫你�
   assert.deepEqual(claims.guardClaims('幫你分享了！', new Set()).removed, ['share']);
   assert.equal(isAffirm('確認'), true);
   assert.equal(isAffirm('確定'), true);
+});
+
+// ── 同一個人斷成好幾則連續傳：當成同一句、只回一次 ─────
+function burstLab({ hold = false } = {}) {
+  let t = NOON;
+  let seq = 0;
+  const timers = new Map();
+  const fired = [];
+  const waits = [];
+  const brain = createBrain({
+    isEnabled: () => true, now: () => t, random: () => 0,
+    setTimer: (fn, ms) => { const id = ++seq; timers.set(id, { at: t + ms, fn }); return id; },
+    clearTimer: (id) => timers.delete(id),
+    onFire: async (_chatId, job) => {
+      const rec = { ...job, at: t, replied: false };
+      fired.push(rec);
+      if (hold) await new Promise(r => waits.push(r));          // AI 還在想，等測試放行
+      if (job.isCancelled()) return { replied: false };           // 跟 xiaoshuai 的 send 一樣：作廢了就不送
+      job.markSent();
+      rec.replied = true;
+      return { replied: true, text: '回覆' };
+    },
+  });
+  const tick = () => new Promise(r => setImmediate(r));
+  async function advance(ms) {
+    const end = t + ms;
+    for (;;) {
+      const due = [...timers.entries()].filter(([, v]) => v.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!due) break;
+      timers.delete(due[0]);
+      t = due[1].at;
+      await Promise.race([due[1].fn(), tick()]);
+    }
+    t = end;
+  }
+  const say = (user, text, { mention = false } = {}) => {
+    const item = brain.observe('G', { userId: user, name: user, text, ts: t });
+    return brain.handle('G', { replyToken: `tok-${text}`, isMention: mention, trigger: item });
+  };
+  const release = async () => { while (waits.length) waits.shift()(); await tick(); await tick(); };
+  return { brain, fired, advance, say, release, get now() { return t; } };
+}
+
+await test('連續傳（13:47 Jasmine 三句）：等她安靜 5 秒才回、只回一次、AI 看到的是合併的一句', async () => {
+  const h = burstLab();
+  h.say('J', '小帥 為什麼', { mention: true });
+  await h.advance(1500);
+  h.say('J', '你也有貼圖');                         // 1.5 秒後補一句（第一則還沒開口）
+  await h.advance(3000);
+  h.say('J', '你也是會花錢買貼圖的人嗎');            // 再 3 秒又補一句
+  await h.advance(4999);
+  assert.equal(h.fired.length, 0);                  // 她安靜還不到 5 秒
+  await h.advance(1);
+  assert.equal(h.fired.length, 1);
+  assert.equal(h.fired[0].mode, 'mention');
+  assert.equal(h.fired[0].trigger.text, '小帥 為什麼／你也有貼圖／你也是會花錢買貼圖的人嗎');
+  assert.equal(h.fired[0].replyToken, 'tok-你也是會花錢買貼圖的人嗎'); // 回覆用最新一則的
+  await h.advance(60_000);
+  assert.equal(h.fired.length, 1);
+});
+
+await test('連續傳：AI 還在想時同一個人又補一句 → 前一個不送，合併後重想、只回一則', async () => {
+  const h = burstLab({ hold: true });
+  h.say('J', '小帥 為什麼', { mention: true });
+  await h.advance(2000);                            // 2 秒後開始想
+  assert.equal(h.fired.length, 1);
+  h.say('J', '你也是會花錢買貼圖的人嗎');            // 還在想就補了一句
+  assert.equal(h.fired[0].isCancelled(), true);
+  await h.release();                                // 第一個想完：作廢、不送
+  await h.advance(10_000);
+  await h.release();
+  assert.equal(h.fired.length, 2);
+  assert.equal(h.fired[1].trigger.text, '小帥 為什麼／你也是會花錢買貼圖的人嗎');
+  assert.deepEqual(h.fired.map(f => f.replied), [false, true]);   // 只送出一則
+});
+
+await test('連續傳：已經送出了才補 → 下一則只回新補的那句', async () => {
+  const h = burstLab();
+  h.say('J', '小帥 為什麼', { mention: true });
+  await h.advance(2000);
+  assert.deepEqual(h.fired.map(f => f.replied), [true]);
+  h.say('J', '你也是會花錢買貼圖的人嗎');
+  await h.advance(30_000);
+  assert.equal(h.fired.length, 2);
+  assert.equal(h.fired[1].trigger.text, '你也是會花錢買貼圖的人嗎');
+});
+
+await test('連續傳：不同人不合併，被叫的那句保留', async () => {
+  const h = burstLab();
+  h.say('U1', '小帥 明天幾點集合', { mention: true });
+  await h.advance(1000);
+  h.say('U2', '我也想知道');
+  await h.advance(10_000);
+  assert.equal(h.fired.length, 1);
+  assert.equal(h.fired[0].trigger.text, '小帥 明天幾點集合');
+});
+
+await test('連續傳：一直傳停不下來，從第一則起最多等 15 秒照樣回', async () => {
+  const h = burstLab();
+  h.say('J', '小帥 我跟你說', { mention: true });
+  for (let i = 1; i <= 6; i++) { await h.advance(1500); h.say('J', `第${i}句`); }   // 每 1.5 秒一句，到 9 秒
+  await h.advance(30_000);
+  assert.equal(h.fired.length, 1);
+  assert.ok(h.fired[0].at - NOON <= 15_000, `等太久：${h.fired[0].at - NOON}ms`);
+  assert.equal(h.fired[0].trigger.text, '小帥 我跟你說／第1句／第2句／第3句／第4句／第5句／第6句');
+  // 超過上限還在傳
+  const g = burstLab();
+  g.say('J', '小帥 開始', { mention: true });
+  for (let i = 1; i <= 12; i++) { await g.advance(1500); g.say('J', `再${i}`); }      // 傳到 18 秒
+  await g.advance(30_000);
+  assert.ok(g.fired[0].at - NOON <= 15_000, `超過上限沒回：${g.fired[0].at - NOON}ms`);
 });
 
 console.log(`\n${pass} 項全部通過`);
