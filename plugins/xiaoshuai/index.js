@@ -74,7 +74,7 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
 說話：台灣口語、全中文（不要夾英文單字），像朋友打字，一次 1～2 句、大約 30 字，最多 60 字；不用條列、不用 Markdown；大多數時候不用 emoji，要用最多一個。
 你是 AI 角色，不用主動強調；有人認真問你是不是 AI、是什麼模型，就老實說：你是用 Anthropic 的 Claude 做的。
 界線：
-- 你只能聊天、上網查資料，以及下面寫到的收藏連結、改行程、妞揪開團、健身教練；自己沒辦法控制設備、訂東西、設提醒。其他事請他打 /help 看指令，不要假裝做了。
+- 你只能聊天、上網查資料，以及下面寫到的收藏連結、改行程、妞揪開團、把妞揪活動分享到 bot 所在的群組（只限 TED：他說「小帥 把○○活動分享到△△群」時系統會處理，你不要說做不到）、健身教練；自己沒辦法控制設備、訂東西、設提醒。其他事請他打 /help 看指令，不要假裝做了。
 - 家裡的事：私訊時他要控制家裡設備（開關燈、冷氣、電視、掃地機…）或問家裡設備的狀態，JSON 加 "to_luna": true、reply 空字串，系統會交給家裡的管家 Luna 處理；群組裡沒有這個功能，直接說做不到。
 - 講出來的話要負責：說了要做的事就要真的做到（做不到就不要答應）；不確定就說不確定，不要講得很肯定；被指出說錯了，直接承認並更正，不硬拗、不找藉口。
 - 上網查：問題需要最新或你不確定的資訊（天氣、雪況、營業時間、價格、交通、日期、附近有什麼、新聞）就查，查到的重點用一兩句講，不貼網址、不列長清單；閒聊不用查。
@@ -633,38 +633,68 @@ function queueDuePolls(chatId) {
 }
 
 // ── 分享妞揪活動到別的群（2026-10-29，只有管理員）：認活動、認群、先確認；預設排進那群的免費回覆，明講才推播 ──
-const SHARE_RE = /(?:分享|轉貼|轉發|貼|轉|發|丟)\s*(?:到|去|給|進)\s*([^\s，,。！!？?]{2,20}?)(?:群組|群|那邊|那裡)?\s*(?:嗎|吧|好嗎|可以嗎|好不好)?\s*[?？。!！]*$/;
+const SHARE_RE = /(?:分享|轉貼|轉發|貼|轉|發|丟)\s*(?:到|去|給|進)\s*([^，,。！!？?]{1,30})/;
 const SHARE_STATUS_RE = /(?:貼|分享|發)(?:出去|過去|到)?了?(?:沒|嗎|了沒)|貼出去了沒|有沒有貼/;
 const SHARE_CANCEL_RE = /^(小帥\s*[,，、]?\s*)?(取消|不要|不用|算了|不貼了|先不要)\s*[!！。.~～]*$/;
 
 /** 分享活動相關的話，回 true＝處理掉了（回覆已用掉） */
 async function shareIntercept({ chatId, userId, text, replyToken, mention, dm, transcript = [] }) {
   const t = String(text || '').normalize('NFKC').trim();
+  // 回的話也記進對話（2026-10-29：之前沒記，TED 回「費用改成200」時 AI 看不到上一句問的是分享，當成在改開團草稿）
   const say = async (msgs) => {
-    try { await replyMsgs(replyToken, typeof msgs === 'string' ? [{ type: 'text', text: msgs }] : msgs); } catch (err) { console.warn(`[xiaoshuai-share] 回覆失敗：${err.message}`); }
+    const list = typeof msgs === 'string' ? [{ type: 'text', text: msgs }] : msgs;
+    try { await replyMsgs(replyToken, list); } catch (err) { console.warn(`[xiaoshuai-share] 回覆失敗：${err.message}`); }
+    const said = list.filter(m => m.type === 'text').map(m => m.text).join('\n');
+    if (said) {
+      brain.observe(chatId, { name: '小帥', text: said, self: true });
+      console.log(`[xiaoshuai-share] ${chatId.slice(0, 8)}：${said.slice(0, 80)}`);
+    }
     return true;
   };
   const admin = !!userId && isAdmin(userId);
   const p = admin ? share.pendingOf(chatId) : null;
-  // 等確認中：只認管理員
+  // 進行中（只認管理員）：等指定活動、等指定群組、等確認
   if (p) {
     if (SHARE_CANCEL_RE.test(t)) { share.clearPending(chatId); return say('好，不貼了 👌'); }
-    // 回「推」（「好 推」「推吧」「推播」…句子裡有推就算；短句才算，免得聊天裡的「推薦」被當成要推播）：直接推播，不再二次確認
-    if (/推/.test(t) && Array.from(t).length <= 10) return doShare(chatId, userId, p, 'push', say);
-    if (isAffirm(t)) return doShare(chatId, userId, p, 'reply', say);
+    if (p.stage === 'confirm') {
+      // 回「推」（「好 推」「推吧」「推播」…句子裡有推就算；短句才算，免得聊天裡的「推薦」被當成要推播）：直接推播，不再二次確認
+      if (/推/.test(t) && Array.from(t).length <= 10) return doShare(chatId, userId, p, 'push', say);
+      if (isAffirm(t)) return doShare(chatId, userId, p, 'reply', say);
+      // 想改活動內容：分享的是妞揪 App 上現有的活動，要到 App 改
+      if (/費用|人數|時間|地點|日期|改成|改為|備註/.test(t) && Array.from(t).length <= 30) {
+        return say(`分享的是妞揪 App 上現有的「${cards.clean(p.event.title, 30)}」，內容要到 App 改（${share.eventUrl(p.event.id)}）。照現在的內容分享就回「好」，要推播回「推」，不分享回「取消」。`);
+      }
+    } else if (!SHARE_RE.test(t) && Array.from(t).length <= 40) {
+      // 上一句問「是哪個活動／哪個群」，這句只回名稱
+      return continueShare(chatId, userId, p.stage === 'need_event' ? { ...p, eventText: t } : { ...p, targetText: t }, say, transcript);
+    }
   }
   if (!(dm || mention)) return false;
   if (SHARE_STATUS_RE.test(t) && /團|活動/.test(t) && !SHARE_RE.test(t)) return say(share.statusText(userId));
-  const m = SHARE_RE.exec(t.replace(/^小帥\s*[,，、]?\s*/, ''));
-  if (!m || !(/活動|團|這個|那個|妞揪|牛揪/.test(t) || /https?:\/\//.test(t))) return false;
+  const body = t.replace(/^小帥\s*[,，、]?\s*/, '');
+  const m = SHARE_RE.exec(body);
+  if (!m || !(/活動|團|這個|那個|妞揪|牛揪|行程|https?:\/\//i.test(t))) return false;
   if (!admin) return say('這個要請 TED 來 🙏');
-  const ev = await share.findEvent(chatId, t, transcript);
-  if (ev.ask) return say(ev.ask);
-  const tg = await share.findTarget(m[1], { exclude: chatId });
-  if (tg.ask) return say(tg.ask);
-  const [count, left] = await Promise.all([share.groupMembers(tg.group.id), share.quotaLeft()]);
-  share.setPending(chatId, { stage: 'confirm', event: ev.event, target: tg.group, count });
-  return say([{ type: 'text', text: share.askText(ev.event, tg.group, count, left) }, ...share.eventMessages(ev.event).slice(1)]);
+  return continueShare(chatId, userId, { eventText: t, targetText: m[1] }, say, transcript);
+}
+
+/** 認活動、認群組；缺哪個就問哪個（記住進度，下一句只回名稱也接得上），都齊了就問「好／推」 */
+async function continueShare(chatId, userId, st, say, transcript = []) {
+  let event = st.event;
+  if (!event) {
+    const ev = await share.findEvent(chatId, st.eventText, transcript);
+    if (ev.ask) { share.setPending(chatId, { ...st, stage: 'need_event', event: null }); return say(ev.ask); }
+    event = ev.event;
+  }
+  let target = st.target;
+  if (!target) {
+    const tg = await share.findTarget(st.targetText || '', { exclude: chatId });
+    if (tg.ask) { share.setPending(chatId, { ...st, stage: 'need_target', event }); return say(tg.ask); }
+    target = tg.group;
+  }
+  const [count, left] = await Promise.all([share.groupMembers(target.id), share.quotaLeft()]);
+  share.setPending(chatId, { stage: 'confirm', event, target, count });
+  return say([{ type: 'text', text: share.askText(event, target, count, left) }, ...share.eventMessages(event).slice(1)]);
 }
 
 /** 排進目標群的免費回覆（預設）或推播（明講、確認過扣幾則才會走到這） */
@@ -1188,7 +1218,7 @@ async function send(chatId, mode, replyToken, reply, images = [], label = '') {
  * 有人說好 → 寫進網頁並推上 GitHub。回傳要接在 reply 後面的文字
  */
 // 「同意」要由程式從觸發訊息本身認定，不能只靠 AI（AI 那輪若讀了網頁，可能被網頁內容誤導成「有人同意」）
-const AFFIRM_RE = /^(小帥\s*[,，、]?\s*)?(好|好啊|好喔|好的|好呀|ok|okay|可以|可以啊|可以喔|改吧|就這樣|沒問題|對|嗯|讚|go)\s*[!！。.~～]*$/i;
+const AFFIRM_RE = /^(小帥\s*[,，、]?\s*)?(好|好啊|好喔|好的|好呀|ok|okay|可以|可以啊|可以喔|改吧|就這樣|沒問題|對|嗯|讚|go|確認|確定|確認無誤)\s*[!！。.~～]*$/i;
 export const isAffirm = (text) => AFFIRM_RE.test(String(text || '').normalize('NFKC').trim());
 
 async function handleTrip(chatId, parsed, trigger) {

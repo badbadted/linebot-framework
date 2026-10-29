@@ -1897,7 +1897,7 @@ await test('分享活動：認「剛剛那團」、名稱找不到或群組對�
   await dm('取消');
   assert.match((await dm('小帥 把野餐那團分享到妞揪群組'))[0].text, /要把「大安森林公園野餐」/);
   await dm('取消');
-  assert.match((await dm('小帥 把野餐那團分享到不存在群組'))[0].text, /找不到「不存在」這個群組/);
+  assert.match((await dm('小帥 把野餐那團分享到不存在群組'))[0].text, /找不到「不存在群組」這個群組/);
 });
 
 // ── 完成宣稱檢查（做好了沒只由程式講） ─────────────
@@ -1996,6 +1996,56 @@ await test('重現 10/29：照片＋「小帥爸工?」→「加到行程裡就�
   assert.ok(!/加進[\s\S]*行程了/.test(r3[0].text), r3[0].text);
   assert.match(r3[0].text, /行程還沒改到/);
   assert.equal(db.all("SELECT * FROM memories WHERE chat_id = 'GSKI'").length, 0);        // 「不用記」＋判斷輪都不寫
+});
+
+await test('重現 10/29 TED 私訊：分享 SUP 到妞揪（4 句）都進分享流程、接得上、不謊稱', async () => {
+  NJ_EVENTS.sup0esl1Ika = { title: '高雄蓮池潭 SUP 立槳體驗', startDate: '2099-11-29', startTime: '14:00', location: '高雄蓮池潭', hostName: '陳二銘', feeMode: 'perPerson', adultFee: 400, kidFee: 400 };
+  try {
+    const { dm, db } = await shareBot();
+    // 1.「SUP行程幫我分享到妞揪」→ 分享流程（不是開團草稿），認出 SUP 那團、妞揪親子團
+    let r = await dm('SUP行程幫我分享到妞揪');
+    assert.match(r[0].text, /^要把「高雄蓮池潭 SUP 立槳體驗」貼到「妞揪親子團」嗎？/);
+    // 想改費用：說明要到 App 改，不當成開團草稿
+    r = await dm('費用改成200');
+    assert.match(r[0].text, /內容要到 App 改/);
+    // 2.「確認」也算肯定 → 排好
+    r = await dm('確認');
+    assert.match(r[0].text, /^排好了 👍「高雄蓮池潭 SUP 立槳體驗」會在「妞揪親子團」下一個人講話時貼出/);
+    assert.equal(heldAnswers('C_NJ').length, 1);
+    db.run('DELETE FROM held_answers');
+    // 3. 剛剛講過 SUP（對話裡有那團的連結）→ 沒講名稱也接得上，群名「妞揪的LINE群組去」對到妞揪親子團
+    r = await dm('有活動 我是要你幫我分享到妞揪的LINE群組去');
+    assert.match(r[0].text, /^要把「高雄蓮池潭 SUP 立槳體驗」貼到「妞揪親子團」嗎？/);
+    await dm('取消');
+    // 新的對話：沒講活動名稱 → 問是哪個活動；4. 下一句只回名稱也接得上
+    const fresh = await shareBot();
+    r = await fresh.dm('有活動 我是要你幫我分享到妞揪的LINE群組去');
+    assert.match(r[0].text, /是哪個活動/);
+    r = await fresh.dm('蓮池潭');
+    assert.match(r[0].text, /^要把「高雄蓮池潭 SUP 立槳體驗」貼到「妞揪親子團」嗎？/);
+    await fresh.dm('取消');
+    // 群名對不到 → 問；下一句只回群名「妞揪親子團」接得上
+    r = await fresh.dm('小帥 把 SUP 那團分享到親子群組');
+    if (!/^要把/.test(r[0].text)) {
+      r = await fresh.dm('妞揪親子團');
+    }
+    assert.match(r[0].text, /^要把「高雄蓮池潭 SUP 立槳體驗」貼到「妞揪親子團」嗎？/);
+    await fresh.dm('取消');
+    r = await fresh.dm('小帥 把 SUP 那團分享到不存在群');
+    assert.match(r[0].text, /找不到/);
+    r = await fresh.dm('妞揪親子團');
+    assert.match(r[0].text, /^要把「高雄蓮池潭 SUP 立槳體驗」貼到「妞揪親子團」嗎？/);
+  } finally { delete NJ_EVENTS.sup0esl1Ika; }
+});
+
+await test('宣稱檢查：「送出開團了」「發到妞揪了」「幫你分享了」沒做成也擋', () => {
+  const r = claims.guardClaims('收到確認，我送出開團了。成功的話系統會附上妞揪的連結。', new Set());
+  assert.deepEqual(r.removed, ['nj']);
+  assert.ok(!/送出開團/.test(r.reply));
+  assert.deepEqual(claims.guardClaims('好，已經發到妞揪親子團了', new Set()).removed, ['share']);
+  assert.deepEqual(claims.guardClaims('幫你分享了！', new Set()).removed, ['share']);
+  assert.equal(isAffirm('確認'), true);
+  assert.equal(isAffirm('確定'), true);
 });
 
 console.log(`\n${pass} 項全部通過`);

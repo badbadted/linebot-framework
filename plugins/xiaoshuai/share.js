@@ -108,7 +108,7 @@ export async function findEvent(chatId, text, transcript = [], now = Date.now())
   // 3. 照名稱在妞揪找（還沒過的活動）：只取「把 ○○ 分享到…」的 ○○
   const name = String(text).normalize('NFKC').replace(/^.*?小帥\s*[,，、]?\s*/, '').replace(/https?:\/\/\S+/g, ' ')
     .replace(/(?:分享|轉貼|轉發|貼|轉|發|丟)\s*(?:到|去|給|進).*$/, '').replace(/^(?:幫我|請)?\s*把/, '')
-    .replace(/那團|這團|這個活動|那個活動|這個|那個|活動|的/g, ' ');
+    .replace(/那團|這團|這個活動|那個活動|這個|那個|活動|行程|幫我|我是要你|我要你|你幫我|請你|有活動|的/g, ' ');
   const want = new Set([...grams(name)].filter(g => !COMMON.has(g)));
   if (want.size) {
     const fs = await getFs();
@@ -134,11 +134,12 @@ export async function findEvent(chatId, text, transcript = [], now = Date.now())
 const norm = (s) => String(s || '').normalize('NFKC').toLowerCase().replace(/\s+/g, '');
 /** 「妞揪群組」→ 對到「妞揪親子團」；回 { group } 或 { ask } */
 export async function findTarget(phrase, { exclude = null } = {}) {
-  const want = norm(phrase).replace(/的?(群組|群|團)$/, '');
+  // 「妞揪的LINE群組去」「妞揪群」「妞揪那邊」→「妞揪」
+  const want = norm(phrase).replace(/line|賴/g, '').replace(/(?:那邊|那裡|裡面|上面|一下|過去|去|吧|喔|啦)+$/, '').replace(/的?(?:群組|群)$/, '').replace(/的$/, '');
   if (!want) return { ask: '要貼到哪個群組？' };
   const groups = (await listGroups()).filter(g => g.id !== exclude);
   const wg = grams(want);
-  const hit = groups.filter(g => norm(g.name).includes(want) || (wg.size > 0 && [...wg].every(x => grams(g.name).has(x))));
+  const hit = groups.filter(g => norm(g.name).includes(want) || norm(want).includes(norm(g.name)) || (wg.size > 0 && [...wg].every(x => grams(g.name).has(x))));
   const exact = groups.filter(g => norm(g.name) === want);
   const list = exact.length ? exact : hit;
   if (list.length === 1) return { group: list[0] };
