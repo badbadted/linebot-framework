@@ -1790,4 +1790,13 @@ await test('幽默：被虧時可以只回一張貼圖；不能貼時不硬送',
   assert.ok(Object.values(media.STICKERS).every(id => +id >= 52002734 && +id <= 52002773)); // 都在機器人可用的 11537 這包
 });
 
+await test('開團說法：錯字「牛揪」、「發活動」也認得；私訊提示寫明可以開團', async () => {
+  const njm = await import('../plugins/xiaoshuai/njevent.js');
+  assert.ok(njm.aboutEvent('小帥幫我牛揪發活動。'));
+  assert.ok(njm.aboutEvent('幫我發個活動'));
+  assert.equal(njm.aboutEvent('今天好冷'), false);
+  const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], dm: true });
+  assert.ok(p.includes('妞揪開團在私訊也可以開'));
+});
+
 console.log(`\n${pass} 項全部通過`);

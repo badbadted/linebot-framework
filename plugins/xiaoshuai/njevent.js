@@ -37,7 +37,8 @@ export function initNjEvent(database, { firestore } = {}) {
   `);
 }
 
-const EVENT_RE = /開團|揪團|開一團|揪一團|開個團|開活動|辦活動|揪活動|妞揪/;
+// 2026-10-29：「小帥幫我牛揪發活動」沒命中 → 沒帶開團說明，AI 自己編「私訊不能開」；補常見錯字與說法
+const EVENT_RE = /開團|揪團|開一團|揪一團|開個團|開活動|辦活動|揪活動|發活動|發個活動|發起活動|開個活動|辦個活動|揪人|妞揪|牛揪|紐揪|扭揪|妞糾/;
 export const aboutEvent = (text) => EVENT_RE.test(String(text || ''));
 
 const key = (chatId, userId) => `${chatId}:${userId}`;
