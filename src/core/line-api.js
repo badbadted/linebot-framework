@@ -126,5 +126,21 @@ export function createLineAPI(channelAccessToken) {
     return { buffer, contentType: (res.headers.get('content-type') || '').split(';')[0].trim() };
   }
 
-  return { reply, validateReply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, leaveChat, getContent };
+  /**
+   * 本月推播額度與用量（reply 免費、不算在內）
+   * @returns {{ limit: number|null, used: number }}  limit=null 表示沒有上限
+   */
+  async function getQuota() {
+    const [q, c] = await Promise.all([
+      fetch(`${LINE_API}/quota`, { headers }),
+      fetch(`${LINE_API}/quota/consumption`, { headers }),
+    ]);
+    const [qBody, cBody] = await Promise.all([q.text(), c.text()]);
+    if (!q.ok) throw new Error(`LINE quota failed: ${q.status} ${qBody}`);
+    if (!c.ok) throw new Error(`LINE quota consumption failed: ${c.status} ${cBody}`);
+    const quota = JSON.parse(qBody);
+    return { limit: quota.type === 'limited' ? Number(quota.value) : null, used: Number(JSON.parse(cBody).totalUsage) || 0 };
+  }
+
+  return { reply, validateReply, push, multicast, getProfile, getGroupSummary, getGroupMemberProfile, leaveChat, getContent, getQuota };
 }

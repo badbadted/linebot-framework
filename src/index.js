@@ -22,6 +22,7 @@ import { createProviderRegistry } from './core/provider-registry.js';
 import { registerBuiltinProviders } from './providers/index.js';
 import { createLogger } from './core/logger.js';
 import { createApiAuth } from './core/api-auth.js';
+import { createQuotaAlert } from './core/quota-alert.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -645,6 +646,21 @@ async function main() {
       res.status(502).json({ error: err.message });
     }
   });
+
+  // ── LINE 推播額度警示（2026-10-29）：每天 12:00 查本月用量，達 80% 私訊管理員，每月最多一次 ──
+  // 手動觸發：POST /api/cron/line-quota-check
+  const quotaDb = registry.get('db')?.getDatabase('_system');
+  if (quotaDb && adminUserIds[0]) {
+    const quotaAlert = createQuotaAlert({
+      getQuota: () => lineApi.getQuota(),
+      push: (text) => lineApi.push(adminUserIds[0], text),
+      db: quotaDb,
+    });
+    scheduler.add('line-quota-check', '0 12 * * *', async () => {
+      const r = await quotaAlert.check();
+      console.log(`[quota] ${r.month} 已用 ${r.used}／${r.limit ?? '無上限'}（${Math.round(r.ratio * 100)}%）→ ${r.reason}`);
+    }, { plugin: 'core', describe: 'LINE 推播額度達 80% 時通知管理員（每月最多一次）' });
+  }
 
   // ── 公告 API（2026-10-28）：排進群組「下一個人講話時」的免費回覆，不推播、不扣訊息額度 ──
   // 受 apiAuth 保護（同 /api/push）。body: { to: groupId, text, keepHours? }（預設等 72 小時，最多 168）
