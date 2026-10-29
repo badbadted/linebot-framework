@@ -18,6 +18,7 @@ import { idleAllowed, idleEvent, runIdleHooks } from './core/idle-reply.js';
 import { createLineAPI } from './core/line-api.js';
 import { createScheduler } from './core/scheduler.js';
 import { createWebhookHandler } from './core/webhook.js';
+import { createEventDedup } from './core/event-dedup.js';
 import { loadPlugins } from './core/plugin-loader.js';
 import { createProviderRegistry } from './core/provider-registry.js';
 import { registerBuiltinProviders } from './providers/index.js';
@@ -505,6 +506,7 @@ async function main() {
   const llm = registry.get('llm');
 
   const webhookHandler = createWebhookHandler({
+    dedup: createEventDedup(dataDir),
     channelSecret: config.line.channelSecret,
     router,
     lineApi,

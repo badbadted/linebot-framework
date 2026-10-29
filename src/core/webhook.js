@@ -6,24 +6,28 @@
  * - 支援 text message 事件（其他類型可擴充）
  */
 
+import { createMemoryDedup } from './event-dedup.js';
 import { createHmac, timingSafeEqual } from 'crypto';
 
-export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, onChatSeen, onGroupText, onPostback, logger }) {
+const MAX_AGE_MS = 5 * 60_000;            // 一般事件：超過 5 分鐘不收（防重播）
+const MAX_REDELIVERY_AGE_MS = 30 * 60_000; // LINE 重送的事件（timestamp 是原本的時間）：放寬到 30 分鐘
+
+/** 事件夠不夠新：LINE 重送（deliveryContext.isRedelivery）放寬，其他照舊 5 分鐘 */
+export function eventFresh(event, now = Date.now()) {
+  const ts = Number(event?.timestamp || 0);
+  const max = event?.deliveryContext?.isRedelivery === true ? MAX_REDELIVERY_AGE_MS : MAX_AGE_MS;
+  return Math.abs(now - ts) <= max;
+}
+
+export function createWebhookHandler({ channelSecret, router, lineApi, allowlist, onUnmatched, onFollow, onUnfollow, onJoin, onLeave, onChatSeen, onGroupText, onPostback, logger, dedup = null }) {
   // 啟動期告警：未設 channelSecret 時 webhook 會對所有請求靜默 return，bot 變成「活著但永不回應」
   // 且沒有任何錯誤訊息可察覺。這裡在建構時（啟動一次）大聲提示，避免部署忘了設 secret 後默默失效。
   if (!channelSecret) {
     console.error('[webhook] ⚠️ 未設定 LINE_CHANNEL_SECRET — webhook 將忽略所有請求，bot 不會回應任何訊息！請檢查設定。');
   }
 
-  // 事件去重：防止同一 webhookEventId 被重複處理
-  const recentEventIds = new Map(); // eventId → timestamp
-  const DEDUP_WINDOW = 5 * 60_000;  // 5 分鐘
-  setInterval(() => {
-    const cutoff = Date.now() - DEDUP_WINDOW;
-    for (const [id, ts] of recentEventIds) {
-      if (ts < cutoff) recentEventIds.delete(id);
-    }
-  }, 60_000);
+  // 事件去重：防止同一 webhookEventId 被重複處理（存 DB，bot 重開後 LINE 重送的事件也認得）
+  const seen = dedup || createMemoryDedup();
 
   return async function handleWebhook(req, res) {
     // 立即回 200（LINE 要求 1 秒內回應）
@@ -55,21 +59,22 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
     }
 
     for (const event of (data.events || [])) {
-      // 防重播攻擊：拒絕超過 5 分鐘的事件
+      // 防重播攻擊：拒絕太舊的事件（LINE 重送的放寬到 30 分鐘）
       const eventTs = Number(event.timestamp || 0);
-      if (Math.abs(Date.now() - eventTs) > 5 * 60_000) {
-        console.log(`[webhook] rejected stale event: ${eventTs}`);
+      if (!eventFresh(event)) {
+        console.log(`[webhook] rejected stale event: ${eventTs}${event.deliveryContext?.isRedelivery ? '（重送）' : ''}`);
         continue;
       }
+      if (event.deliveryContext?.isRedelivery) console.log(`[webhook] LINE 重送的事件（晚了 ${Math.round((Date.now() - eventTs) / 1000)} 秒）`);
 
       // 事件去重：同一 webhookEventId 只處理一次
       const eventId = event.webhookEventId;
       if (eventId) {
-        if (recentEventIds.has(eventId)) {
+        if (seen.has(eventId)) {
           console.log(`[webhook] deduplicated event: ${eventId.slice(0, 8)}`);
           continue;
         }
-        recentEventIds.set(eventId, Date.now());
+        seen.add(eventId);
       }
 
       const evUserId = event.source?.userId;
