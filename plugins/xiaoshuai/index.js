@@ -39,6 +39,7 @@ import * as cards from './cards.js';
 import * as kb from './kb.js';
 import * as polls from './polls.js';
 import * as share from './share.js';
+import * as claims from './claims.js';
 import * as social from '../../src/utils/social-preview.js';
 import { join as pathJoin, resolve as pathResolve } from 'node:path';
 
@@ -957,11 +958,23 @@ export function parseReply(raw, mode) {
 const TRIP_TOPIC_RE = /行程|[Dd][1-9]|第[一二三四五六七八九1-9]天|\d{1,2}\s*[/／月]\s*\d{1,2}|日期|幾點|時間|住宿|住哪|飯店|民宿|交通|機場|巴士|接駁|新幹線|電車|集合|出發|回程|班機|航班|去哪|滑雪|雪場|市集|景點|行李|成員|網頁|截圖|傳圖|給我看|補充資訊|改成|換成|加一|加個|新增|刪掉|拿掉|那天|當天|隔天|頁面|連結|網址|網站|那趟|這趟|[一二三四五六七八九十0-9]月/;
 export const aboutTrip = (text) => TRIP_TOPIC_RE.test(String(text || '').normalize('NFKC'));
 
-async function tripContext(chatId, text) {
+/** 小帥上一句（15 分鐘內）剛好講到其中一份行程的標題 → 那份的名稱（「是加到『2027 東京・青森』那份對吧？」→「對」） */
+export function tripNamedInLastReply(infos, transcript, now = Date.now()) {
+  const last = [...(transcript || [])].reverse().find(t => t.self);
+  if (!last || now - (last.ts || 0) > LAST_TRIP_MS) return null;
+  const norm = (x) => String(x || '').normalize('NFKC').replace(/[^\p{L}\p{N}]/gu, '');
+  const said = norm(last.text);
+  const hit = infos.filter(i => norm(i.title).length >= 4 && said.includes(norm(i.title)));
+  return hit.length === 1 ? hit[0].name : null;
+}
+
+async function tripContext(chatId, text, transcript = []) {
   const names = tripsOf(chatId);
   if (!names.length) return null;
   const pending = pendingOf(chatId);
   const infos = names.map(n => trip.info(n) || { name: n, title: n, start: null });
+  const named = tripNamedInLastReply(infos, transcript);
+  if (named) lastTrip.set(chatId, { name: named, at: Date.now() });
   const lastT = lastTrip.get(chatId);
   const tripRecent = lastT && Date.now() - lastT.at < LAST_TRIP_MS;
   if (!pending && !tripRecent && !aboutTrip(text)) return { brief: true, all: infos.map(i => ({ title: i.title, url: trip.tripUrl(i.name) })) };
@@ -989,7 +1002,7 @@ export function llmTimeout(triggerTs, now = Date.now()) {
 
 async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true, long = false, dm = false }) {
   const replying = mode === 'mention' || mode === 'followup';
-  const tripCtx = replying ? await tripContext(chatId, trigger?.text) : null;
+  const tripCtx = replying ? await tripContext(chatId, trigger?.text, transcript) : null;
   // 這句跟收藏有關才給 AI 看每一筆（標題、說明來自網頁 → 這輪視同上網過，不寫記憶、不改行程）
   // 在開妞揪團（這句提到開團，或這個人有草稿）→ 不帶收藏細節、學習資料，避免整輪被當成「讀過外部內容」而不能開
   const njDraft = replying ? nj.draftOf(chatId, trigger?.userId) : null;
@@ -1047,8 +1060,16 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true, lon
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 有上網，略過記憶 ${parsed.remember.length} 條`);
     parsed.remember = [];
   }
+  // 「是不是在跟小帥說話」的判斷輪（Haiku、沒看照片）判定是在跟小帥說話時，記憶留給接著回話的那輪（2026-10-29：就是這輪違反「不用記」寫進去的）
+  if (mode === 'window' && parsed.toMe && parsed.remember.length) parsed.remember = [];
+  if (parsed.remember.length && claims.noMemoryAsked(trigger, transcript)) {
+    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 有人說不用記，略過記憶 ${parsed.remember.length} 條`);
+    parsed.remember = [];
+  }
   const saved = parsed.remember.length ? addMemories(chatId, parsed.remember) : [];
   if (saved.length) console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 記住：${saved.join('｜')}`);
+  // 這一輪程式真的做成的動作（宣稱檢查用；各功能做成時再加）
+  parsed.done = new Set(saved.length ? ['memory'] : []);
   return parsed;
 }
 
@@ -1211,6 +1232,7 @@ async function tripEdits(chatId, parsed, trigger, ctx) {
     pendingEdits.delete(chatId);
     const r = await trip.apply(pending.name, pending.ops, trigger?.name);
     if (!r.ok) return `\n\n⚠️ 行程沒改成：${r.error}`;
+    parsed.done?.add('trip');
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 行程已更新：${r.changes.join('；')}`);
     // 附上改過那幾段的截圖讓大家確認（本機檔已是改好的版本，不用等網頁更新）
     const shots = [];
@@ -1238,6 +1260,7 @@ async function tripEdits(chatId, parsed, trigger, ctx) {
   const d = await trip.describe(ctx.name, parsed.tripEdit);
   if (!d.ok) return `\n\n（這樣改不了：${d.error}）`;
   pendingEdits.set(chatId, { name: ctx.name, ops: parsed.tripEdit, changes: d.changes, at: Date.now() });
+  parsed.done?.add('trip_pending');
   const fromWeb = parsed.webUsed ? '\n（內容是網路上查到的，請先看過對不對）' : '';
   return `\n\n📝 要改的內容：\n${d.changes.map(c => `・${c}`).join('\n')}${fromWeb}\n說「好」我就改（15 分鐘內有效）`;
 }
@@ -1256,6 +1279,7 @@ async function handleLinks(chatId, parsed, trigger) {
       sourceText: trigger?.text, by: trigger?.name, byId: trigger?.userId,
     });
     if (!r.ok) return `\n\n（沒存成：${r.error}）`;
+    parsed.done?.add('link');
     return r.dup
       ? `\n\n🔖 這個之前存過了：#${r.id} ${r.title}（${r.category}）`
       : `\n\n${savedText(r)}`;
@@ -1291,6 +1315,7 @@ async function handleNj(chatId, parsed, trigger) {
       const host = await nj.resolveHost(userId, trigger?.name);
       if (!host.ok) return `\n\n⚠️ ${host.error}`;
       const r = await nj.createEvent(draft, host.user);
+      parsed.done?.add('nj');
       share.rememberCreated(chatId, r.id, draft.title);
       nj.clearDraft(chatId, userId);
       console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 妞揪開團：${draft.title} → ${r.id}`);
@@ -1305,6 +1330,7 @@ async function handleNj(chatId, parsed, trigger) {
     }
     const { d, problems } = nj.mergeDraft(draft, parsed.njEvent);
     nj.saveDraft(chatId, userId, d);
+    parsed.done?.add('nj_draft');
     const missing = nj.missingOf(d);
     const head = `\n\n📝 開團草稿（${trigger?.name || '你'}）：\n${nj.describeDraft(d).join('\n')}`;
     const warn = problems.length ? `\n⚠️ ${problems.join('；')}` : '';
@@ -1322,7 +1348,9 @@ async function handleFitness(chatId, parsed, trigger) {
   if (!parsed.fitnessOn) return '';
   if (parsed.fitness && parsed.webUsed) return '\n\n（剛剛有上網查資料，為了安全這次健身紀錄先不記，請再說一次）';
   if (!parsed.fitness && !coach.FITNESS_RE.test(String(trigger?.text || ''))) return '';
-  return coach.applyFitness(chatId, parsed.fitness);
+  const out = coach.applyFitness(chatId, parsed.fitness);
+  if (out) parsed.done?.add('fitness');
+  return out;
 }
 
 /**
@@ -1396,6 +1424,15 @@ async function handleCards(chatId, parsed) {
   return '';
 }
 
+/** AI 的 reply 裡「已經做好了」的宣稱，對應的動作這一輪沒做成就拿掉、改成如實說明（claims.js） */
+function guardReply(chatId, parsed) {
+  const g = claims.guardClaims(parsed.reply, parsed.done || new Set(), { structured: !!(parsed.tripEdit || parsed.njEvent || parsed.saveLink || parsed.fitness) });
+  if (g.removed.length) {
+    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 擋下沒做成的宣稱（${g.removed.join('、')}）：${String(parsed.reply).slice(0, 60)}`);
+    parsed.reply = g.reply;
+  }
+}
+
 /** 被叫或在跟小帥說話時出錯（查太久逾時、Luna 掛掉）：至少回一句，不要沉默 */
 async function think(chatId, job) {
   const r = await thinkOnce(chatId, job);
@@ -1444,6 +1481,7 @@ async function longResearch(chatId, job) {
   try {
     const mode = job.mode === 'mention' ? 'mention' : 'followup';
     const parsed = await ask(chatId, mode, { trigger: job.trigger, transcript: job.transcript, long: true, dm: !!job.dm });
+    guardReply(chatId, parsed);
     const answer = parsed.reply?.trim() || '我查了一輪還是找不到可靠的資料，抱歉 🙇';
     const who = job.trigger?.name ? `${job.trigger.name} ` : '';
     const q = String(job.trigger?.text || '').replace(/^小帥\s*/, '').slice(0, 30);
@@ -1478,6 +1516,7 @@ async function thinkInner(chatId, job) {
       // 第二段：是在接小帥的話 → 跟被叫一樣，用 Sonnet 認真回，並重開視窗
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
       const extra = handleSocial(parsed) + await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) + handleKb(chatId, parsed); // 先跑：可能會清掉 parsed.reply
+      guardReply(chatId, parsed);
       const reply = (parsed.reply + extra).trim();
       if (!reply && !parsed.images && parsed.sticker) {
         const only = await stickerOnly(chatId, 'followup', replyToken, parsed);
@@ -1487,6 +1526,7 @@ async function thinkInner(chatId, job) {
       const extras = withSticker(chatId, parsed, reply);
       return (await send(chatId, 'followup', replyToken, reply, extras)) ? { replied: true, text: reply, asMention: true } : { replied: false };
     }
+    guardReply(chatId, judged);
     if (!judged.reply || !allowChimeIn) {
       console.log(`[xiaoshuai] ${chatId.slice(0, 8)} window：不是在跟小帥說話，不說話`);
       return { replied: false };
@@ -1512,6 +1552,7 @@ async function thinkInner(chatId, job) {
   // 私訊講到家裡設備：不回，回覆留給 Luna
   if (job.dm && parsed.toLuna) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 私訊：家裡的事，交給 Luna`); return { replied: false, handoff: true }; }
   const extra = mode === 'mention' ? handleSocial(parsed) + await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handleFitness(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) + handleKb(chatId, parsed) : ''; // 先跑：可能會清掉 parsed.reply
+  guardReply(chatId, parsed);
   const reply = (parsed.reply + extra).trim();
   if (!reply && !parsed.images && parsed.sticker && mode !== 'idle') {
     const only = await stickerOnly(chatId, mode, replyToken, parsed);

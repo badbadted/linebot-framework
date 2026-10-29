@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { addressOf, handlePhoto, socialUrlFor, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
+import xiaoshuai, { tripNamedInLastReply, addressOf, handlePhoto, socialUrlFor, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
@@ -17,6 +17,7 @@ import * as cards from '../plugins/xiaoshuai/cards.js';
 import * as kb from '../plugins/xiaoshuai/kb.js';
 import * as polls from '../plugins/xiaoshuai/polls.js';
 import * as share from '../plugins/xiaoshuai/share.js';
+import * as claims from '../plugins/xiaoshuai/claims.js';
 import * as social from '../src/utils/social-preview.js';
 import coach, * as coachMod from '../plugins/coach/index.js';
 import { mkdtempSync, readdirSync as lsDir } from 'node:fs';
@@ -1897,6 +1898,104 @@ await test('分享活動：認「剛剛那團」、名稱找不到或群組對�
   assert.match((await dm('小帥 把野餐那團分享到妞揪群組'))[0].text, /要把「大安森林公園野餐」/);
   await dm('取消');
   assert.match((await dm('小帥 把野餐那團分享到不存在群組'))[0].text, /找不到「不存在」這個群組/);
+});
+
+// ── 完成宣稱檢查（做好了沒只由程式講） ─────────────
+await test('宣稱檢查：每個功能沒做成就拿掉宣稱、改成如實說明；做成了不動', () => {
+  const g = (reply, done = [], o) => claims.guardClaims(reply, new Set(done), o);
+  const cases = [
+    ['trip', '收到，我加進青森雪國之旅那份行程了。', /行程還沒改到/],
+    ['trip', '好，行程改好了！', /行程還沒改到/],
+    ['nj', '好～團開好了，大家快去報名。', /團還沒開/],
+    ['poll', '投票開好了，大家來投！', /投票／報名還沒開/],
+    ['share', '已經分享到妞揪親子團了。', /還沒分享出去/],
+    ['link', '收藏好了，之後找得到。', /還沒收藏/],
+    ['memory', '沒罷工啦😂 照片我用記的幫你存了：2/6 青森屋 8:45 接駁車。', /這次沒有記下來/],
+    ['memory', '好，記住了！', /這次沒有記下來/],
+  ];
+  for (const [key, reply, note] of cases) {
+    const r = g(reply);
+    assert.deepEqual(r.removed, [key], reply);
+    assert.match(r.reply, note, reply);
+  }
+  // 留下沒問題的那幾句
+  assert.equal(g('沒罷工啦，我只是在默默加班😂 照片我用記的幫你存了：2/6 青森屋 8:45 接駁車到三澤站。').reply, '沒罷工啦，我只是在默默加班😂\n（這次沒有記下來）');
+  // 真的做成了：不動
+  assert.deepEqual(g('收到，我加進行程了。', ['trip']).removed, []);
+  assert.deepEqual(g('好，記住了！', ['memory']).removed, []);
+  assert.deepEqual(g('練得好，記下了。', ['fitness']).removed, []);
+  assert.deepEqual(g('好～團開好了', ['nj']).removed, []);
+  assert.deepEqual(g('今天天氣不錯，適合去滑雪。').removed, []);
+});
+
+await test('宣稱檢查：文字自問確認（沒給結構化欄位）拿掉，回「好」不會被當成確認', () => {
+  const r = claims.guardClaims('是加到「2027 東京・青森雪國之旅」那份對吧？2/6 看起來是那趟，你確認我就照著改。', new Set());
+  assert.deepEqual(r.removed, ['self_confirm']);
+  assert.equal(r.reply, '是加到「2027 東京・青森雪國之旅」那份對吧？2/6 看起來是那趟\n（我還沒有列出要改的內容，所以回「好」不會改任何東西；要改就直接說要加或改什麼）');
+  // 有列出修改內容（程式的修改清單）就是正規流程，不動
+  assert.deepEqual(claims.guardClaims('這樣改可以嗎？確認我就改', new Set(['trip_pending'])).removed, []);
+  assert.deepEqual(claims.guardClaims('說好我就開團', new Set(), { structured: true }).removed, []);
+});
+
+await test('不用記：這句或前兩句有人說「不用記」就不寫記憶', () => {
+  assert.equal(claims.noMemoryAsked({ text: '加到行程裡就好不用記' }, []), true);
+  assert.equal(claims.noMemoryAsked({ text: '對' }, [{ text: '加到行程裡就好不用記' }, { text: '對' }]), true);
+  assert.equal(claims.noMemoryAsked({ text: '對' }, [{ text: '不要記喔' }, { text: 'a' }, { text: 'b' }, { text: '對' }]), false); // 太早以前
+  assert.equal(claims.noMemoryAsked({ text: '記一下' }, []), false);
+});
+
+await test('行程：小帥上一句講到其中一份行程（標題有 emoji 也認得）→ 回「對」就接那份', () => {
+  const infos = [{ name: 'christmas-ski-trip', title: '2026 聖誕滑雪旅行' }, { name: 'snow-trip-2027', title: '❄️ 2027 東京・青森雪國之旅 ⛷️' }];
+  const now = Date.now();
+  const tr = [{ text: '加到行程裡就好不用記', ts: now - 30_000 }, { self: true, text: '是加到「2027 東京・青森雪國之旅」那份對吧？', ts: now - 20_000 }];
+  assert.equal(tripNamedInLastReply(infos, tr, now), 'snow-trip-2027');
+  assert.equal(tripNamedInLastReply(infos, [{ self: true, text: '你是說聖誕那趟還是青森那趟？', ts: now }], now), null);  // 沒講完整標題
+  assert.equal(tripNamedInLastReply(infos, tr, now + 20 * 60_000), null);                                       // 太久以前
+});
+
+await test('重現 10/29：照片＋「小帥爸工?」→「加到行程裡就好不用記」→「對」：不謊稱、不寫記憶', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const raw = new Database(':memory:');
+  const db = { run: (q, ...a) => raw.prepare(q).run(...a), get: (q, ...a) => raw.prepare(q).get(...a), all: (q, ...a) => raw.prepare(q).all(...a), exec: (q) => raw.exec(q) };
+  const replies = [];
+  const MEM = '2/6 青森屋 8:45 接駁車到三澤站，12 位已預約，加入青森雪國之旅行程';
+  const ai = (c) => {
+    if (c.includes('"to_me"')) return `{"to_me":true,"reply":"","remember":["${MEM}"]}`;           // 判斷輪（Haiku）
+    if (/【叫你的那句】\n[^\n]*小帥爸工/.test(c)) return '{"reply":"沒罷工啦，我只是在默默加班😂 照片我用記的幫你存了：2/6 青森屋 8:45 接駁車到三澤站，12 位已預約。","remember":["2/6 青森屋 8:45 接駁車"]}';
+    if (/【接你話的那句】\n[^\n]*：對/.test(c)) return `{"reply":"收到，2/6 青森屋 8:45 接駁車到三澤站、12 位已預約，我加進青森雪國之旅那份行程了。","remember":["${MEM}"]}`;
+    return '{"reply":"是加到「2027 東京・青森雪國之旅」那份對吧？2/6 看起來是那趟，你確認我就照著改。","remember":[]}';
+  };
+  const ctx = { db, isAdmin: (u) => u === 'UADMIN',
+    lineApi: { reply: async (_t, m) => { replies.push(m); return {}; }, push: async () => { throw new Error('不該推播'); },
+      getGroupMemberProfile: async (_g, u) => ({ displayName: u === 'UADMIN' ? 'TED' : '二銘' }),
+      getContent: async () => ({ contentType: 'image/jpeg', buffer: Buffer.from('jpg') }) },
+    providers: { llm: { generate: async ({ messages }) => ({ text: ai(messages[0].content) }) } } };
+  await xiaoshuai.init(ctx);
+  db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GSKI', 1)");
+  await xiaoshuai.init(ctx);
+  let seq = 7000;
+  const say = async (userId, text, type = 'text') => {
+    const id = String(++seq);
+    const event = { message: { type, id, text } };
+    xiaoshuai.onGroupText({ chatId: 'GSKI', userId, text: type === 'image' ? '［照片］' : text, event });
+    if (type === 'image') return null;
+    const n = replies.length;
+    await xiaoshuai.onUnmatched({ chatId: 'GSKI', userId, text, replyToken: `r${id}`, event });
+    for (let i = 0; i < 150 && replies.length === n; i++) await new Promise(r => setTimeout(r, 200));
+    return replies.length > n ? replies.at(-1) : null;
+  };
+  await say('U2', '', 'image');
+  const r1 = await say('U2', '小帥爸工?');
+  if (!r1 || /休息中/.test(r1[0].text)) return;                                   // 時段外：小帥只回休息中，跳過
+  assert.ok(!r1[0].text.includes('用記的幫你存了'), r1[0].text);
+  assert.match(r1[0].text, /沒罷工啦[\s\S]*（這次沒有記下來）/);
+  const r2 = await say('UADMIN', '加到行程裡就好不用記');
+  assert.ok(!/你確認我就照著改/.test(r2[0].text), r2[0].text);
+  assert.match(r2[0].text, /回「好」不會改任何東西/);
+  const r3 = await say('UADMIN', '對');
+  assert.ok(!/加進[\s\S]*行程了/.test(r3[0].text), r3[0].text);
+  assert.match(r3[0].text, /行程還沒改到/);
+  assert.equal(db.all("SELECT * FROM memories WHERE chat_id = 'GSKI'").length, 0);        // 「不用記」＋判斷輪都不寫
 });
 
 console.log(`\n${pass} 項全部通過`);
