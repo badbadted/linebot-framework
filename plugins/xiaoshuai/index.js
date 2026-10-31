@@ -704,10 +704,11 @@ async function calIntent(text, chatId, dm) {
 async function calendarIntercept({ chatId, userId, text, replyToken, mention, dm }) {
   if (!userId || (!dm && !mention)) return false;
   const t = String(text || '').normalize('NFKC').trim();
-  // 綁了旅遊行程的群，「明天行程」是在問旅遊行程：要講「行事曆」才算
-  if (!dm && tripsOf(chatId).length && !/行事曆/.test(t)) return false;
   const now = Date.now();
   let it = cal.ruleIntent(t, now);
+  // 綁了旅遊行程的群（2026-11-01）：行事曆會帶出行程每天，「明天行程」「這週有什麼」照樣查；
+  // 新增、改、刪可能是在改旅遊行程（「12/26 晚上加燒肉」），要講「行事曆」才算
+  if (!dm && tripsOf(chatId).length && !/行事曆/.test(t) && it?.action !== 'query') return false;
   if (!it) {
     if (!cal.looksLikeCalendar(t, now)) return false;
     const ai = await calIntent(t, chatId, dm);
@@ -2081,7 +2082,8 @@ export default {
     });
     media.initStickers(db);
     polls.initPolls(db);
-    cal.initCalendar(db, { dir: process.env.XIAOSHUAI_CAL_DIR });
+    // 綁了旅遊行程的群：行事曆直接讀行程每天的摘要（行程網頁是正本，不另存）
+    cal.initCalendar(db, { dir: process.env.XIAOSHUAI_CAL_DIR, trips: (chatId) => tripsOf(chatId).flatMap(n => trip.daysOf(n)) });
     kb.initKb(db, { backups: process.env.XIAOSHUAI_KB_BACKUPS || pathJoin(pathResolve(import.meta.dirname, '..', '..'), 'data', 'backups', 'xiaoshuai-kb') });
     if (!kbTimer) { kbTimer = setInterval(() => kb.backupDaily(), 3600_000); kbTimer.unref?.(); }
     photo.initPhotos(db);

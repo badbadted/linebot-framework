@@ -33,8 +33,13 @@ let db = null;
 let pageDir = join(ROOT, 'public', 'cal');
 let publicBase = (process.env.BOT_PUBLIC_URL || 'https://bot.pushbike-training.app').replace(/\/$/, '');
 
-export function initCalendar(database, { dir, base } = {}) {
+/** 綁了旅遊行程的聊天：行程每天的摘要（index.js 給；行程網頁是正本，行事曆只讀不存） */
+let tripDays = () => [];
+export const TRIP_URL_RE = /^https:\/\/badbadted\.github\.io\/temp-reports\/[a-z0-9-]{1,60}\.html(?:#d\d{1,2})?$/;
+
+export function initCalendar(database, { dir, base, trips } = {}) {
   db = database;
+  if (trips) tripDays = trips;
   if (dir) pageDir = dir;
   if (base) publicBase = String(base).replace(/\/$/, '');
   db.exec(`
@@ -364,7 +369,9 @@ export function pickEvent(chatId, target, now = Date.now()) {
   const norm = (x) => String(x).normalize('NFKC').toLowerCase().replace(/\s+/g, '');
   let hits = list.filter(e => want.includes(norm(e.title)) || norm(e.title).includes(want));
   if (!hits.length) {
-    const scored = list.map(e => ({ e, n: polls.overlap(e.title, want) })).filter(x => x.n > 0).sort((a, b) => b.n - a.n);
+    // 只有一個詞一樣不算（「神樂滑雪場」不是「滑雪課」）：至少兩個詞，或對方標題就只有一個詞
+    const scored = list.map(e => ({ e, n: polls.overlap(e.title, want) }))
+      .filter(x => x.n >= Math.min(2, polls.overlap(x.e.title, x.e.title))).filter(x => x.n > 0).sort((a, b) => b.n - a.n);
     hits = scored.length && (scored.length === 1 || scored[0].n > scored[1].n) ? [scored[0].e] : scored.map(x => x.e);
   }
   // 同名好幾件但句子裡有日期：用日期挑
@@ -396,6 +403,15 @@ export function itemsBetween(sources, from, to, now = Date.now()) {
       items.push({ id: null, chatId: s.chatId, day, time: `${pad(pt.h)}:${pad(pt.mi)}`, title: `${p.title} ${p.kind === 'vote' ? '投票' : '報名'}截止`, place: '', by: p.created_by_name, poll: true, src: s.label || '' });
     }
   }
+  // 旅遊行程：一天一筆全天，附連到行程網頁那一天（網址只收行程網頁的網域）
+  for (const s of sources) {
+    let days = [];
+    try { days = tripDays(s.chatId) || []; } catch { days = []; }
+    for (const d of days) {
+      if (d.day < from || d.day > to) continue;
+      items.push({ id: null, chatId: s.chatId, day: d.day, time: null, title: cards.clean(d.title, 30), place: '', by: '', poll: false, trip: true, url: TRIP_URL_RE.test(d.url) ? d.url : null, src: s.label || '' });
+    }
+  }
   const out = new Map();
   for (const it of items.sort((a, b) => (a.day + (a.time || '')).localeCompare(b.day + (b.time || '')))) {
     if (!out.has(it.day)) out.set(it.day, []);
@@ -423,7 +439,7 @@ export function writePage(chatId, sources, { title = '行事曆', now = Date.now
   const from = addDays(today.slice(0, 8) + '01', -62);
   const to = addDays(today, 366);
   const items = [...itemsBetween(sources, from, to, now).values()].flat()
-    .map(i => ({ d: i.day, t: i.time || '', n: i.title, p: i.place || '', b: i.by || '', v: i.poll ? 1 : 0, s: sources.length > 1 ? i.src : '' }));
+    .map(i => ({ d: i.day, t: i.time || '', n: i.title, p: i.place || '', b: i.by || '', v: i.poll ? 1 : 0, s: sources.length > 1 ? i.src : '', ...(i.trip ? { k: 1, u: i.url || '' } : {}) }));
   if (!existsSync(pageDir)) mkdirSync(pageDir, { recursive: true });
   const file = join(pageDir, `${tokenOf(chatId)}.html`);
   writeFileSync(`${file}.tmp`, pageHtml({ title: cards.clean(title, 30), items, today, updated: now, legend: sources.length > 1 }));
@@ -489,6 +505,7 @@ export function pageHtml({ title, items, today, updated, legend = false }) {
   .ev.allday .tm { color:var(--sub); font-weight:500; }
   .ev.v .tm { color:var(--vote); }
   .ev .sub { font-size:11.5px; color:var(--sub); margin-top:2px; }
+  .go { display:inline-block; margin-top:4px; font-size:12.5px; color:var(--main); text-decoration:none; font-weight:600; }
   .empty { margin:4px 12px 12px; display:flex; gap:12px; align-items:center; background:var(--card); border-radius:14px; padding:12px; font-size:14px; color:var(--sub); }
   .empty .av { width:64px; height:64px; }
   .empty.big { flex-direction:column; text-align:center; padding:20px 12px; }
@@ -519,6 +536,7 @@ const D = ${data};
 const AV = '../xiaoshuai/avatar.jpg';
 const NOTE = '../xiaoshuai/note.jpg';
 const W = '日一二三四五六';
+const TRIP_RE = /^https:\\/\\/badbadted\\.github\\.io\\/temp-reports\\/[a-z0-9-]{1,60}\\.html(#d\\d{1,2})?$/;
 const byDay = {};
 for (const i of D.items) (byDay[i.d] = byDay[i.d] || []).push(i);
 const pad = (n) => String(n).padStart(2, '0');
@@ -576,8 +594,9 @@ function render() {
       r.append(el('div', 'tm', i.t || '全天'));
       const body = el('div', null);
       body.append(el('div', null, (i.v ? '🗳️ ' : '') + i.n));
-      const sub = [i.p ? '📍 ' + i.p : '', i.s ? '👥 ' + i.s : '', i.b && !i.v ? i.b + ' 加的' : ''].filter(Boolean).join('・');
+      const sub = [i.k ? '🧳 旅遊行程' : '', i.p ? '📍 ' + i.p : '', i.s ? '👥 ' + i.s : '', i.b && !i.v ? i.b + ' 加的' : ''].filter(Boolean).join('・');
       if (sub) body.append(el('div', 'sub', sub));
+      if (i.k && TRIP_RE.test(i.u || '')) { const a = el('a', 'go', '看行程 ›'); a.href = i.u; a.target = '_blank'; a.rel = 'noopener'; body.append(a); }
       r.append(body);
       box.append(r);
     }
@@ -641,6 +660,7 @@ function dayBubble(day, items, { sub, today, url, showSrc }) {
       t(i.time || '全天', { size: i.time ? 'sm' : 'xs', weight: i.time ? 'bold' : 'regular', color: i.poll ? POLL_COLOR : i.time ? CAL_COLOR : '#64748b', flex: 2, wrap: false }),
       { type: 'box', layout: 'vertical', flex: 6, contents: [
         t(`${i.poll ? '🗳️ ' : ''}${cards.clean(i.title, 30)}`, { size: 'sm', maxLines: 2 }),
+        ...(i.trip ? [t('🧳 旅遊行程', { size: 'xxs', color: '#64748b', wrap: false })] : []),
         ...([i.place ? `📍 ${cards.clean(i.place, 20)}` : '', showSrc && i.src ? `${i.src === '我的' ? '🙋' : '👥'} ${cards.clean(i.src, 16)}` : ''].filter(Boolean)
           .map(x => t(x, { size: 'xxs', color: '#64748b', wrap: false }))),
       ] },
@@ -654,7 +674,9 @@ function dayBubble(day, items, { sub, today, url, showSrc }) {
     body: { type: 'box', layout: 'vertical', paddingAll: '12px', spacing: 'none', contents: rows },
   };
   const safe = url && cards.safeUri(url, (u) => u.startsWith(`${publicBase}/public/cal/`));
-  if (safe) b.footer = { type: 'box', layout: 'vertical', paddingAll: '6px', contents: [monthBtn(safe)] };
+  const tripLink = items.map(i => i.trip && i.url && cards.safeUri(i.url, (u) => TRIP_URL_RE.test(u))).find(Boolean);
+  const btns = [tripLink && { type: 'button', style: 'link', height: 'sm', action: { type: 'uri', label: '🧳 看這天行程', uri: tripLink } }, safe && monthBtn(safe)].filter(Boolean);
+  if (btns.length) b.footer = { type: 'box', layout: 'vertical', paddingAll: '6px', contents: btns };
   return b;
 }
 

@@ -4,16 +4,21 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const PAGE_DIR = mkdtempSync(join(tmpdir(), 'xs-cal-'));
 process.env.XIAOSHUAI_CAL_DIR = PAGE_DIR;
+// 旅遊行程的 repo（行事曆直接讀行程每天的摘要）
+const TRIP_DIR = mkdtempSync(join(tmpdir(), 'xs-trip-'));
+mkdirSync(join(TRIP_DIR, 'trips'));
+process.env.TRIP_REPO_DIR = TRIP_DIR;
 
 const cal = await import('../plugins/xiaoshuai/calendar.js');
 const polls = await import('../plugins/xiaoshuai/polls.js');
 const claims = await import('../plugins/xiaoshuai/claims.js');
+const trip = await import('../plugins/xiaoshuai/trip.js');
 const { default: xiaoshuai } = await import('../plugins/xiaoshuai/index.js');
 
 let pass = 0;
@@ -348,12 +353,57 @@ await test('群組：查詢、改時間、刪除（AI 認出要改哪一件）',
   assert.match((await say('U2', '小帥 刪掉 烤肉'))[0].text, /找不到「烤肉」/);
 });
 
-await test('綁了旅遊行程的群：「明天行程」交給行程，要講「行事曆」才算', async () => {
+await test('綁了旅遊行程的群：行事曆帶出行程每天（附連到行程那天）；查詢照樣接，新增要講「行事曆」', async () => {
+  const y = +D3.slice(0, 4);
+  writeFileSync(join(TRIP_DIR, 'trips', 'ski-2026.json'), JSON.stringify({ meta: { title: `${y} 滑雪團` }, days: [
+    { date: md(D3), glance: { d: md(D3), emoji: '⛷️', place: '神樂滑雪場（請教練）' } },
+    { date: md(D4), glance: { d: md(D4), emoji: '💙', place: '🛍️ 三井 Outlet' } },
+  ] }));
   const { db, say } = await calBot();
-  const r = await say('U1', '小帥 明天行程', 'GTRIP');
-  assert.ok(!r || !/沒有排事情|有 \d+ 件事/.test(r[0]?.text || ''));
+  const r = await say('U1', '小帥 最近有什麼', 'GTRIP');
+  assert.match(r[0].text, /2 天有事（共 2 件）/);
+  const bubbles = r[1].contents.contents;
+  assert.match(JSON.stringify(bubbles[0].body), /⛷️ 神樂滑雪場（請教練）/);
+  assert.match(JSON.stringify(bubbles[0].body), /🧳 旅遊行程/);
+  assert.match(JSON.stringify(bubbles[1].body), /💙 三井 Outlet/);
+  assert.deepEqual(bubbles[0].footer.contents[0].action, { type: 'uri', label: '🧳 看這天行程', uri: 'https://badbadted.github.io/temp-reports/ski-2026.html#d1' });
+  assert.equal(bubbles[1].footer.contents[0].action.uri, 'https://badbadted.github.io/temp-reports/ski-2026.html#d2');
+  assert.equal(db.get("SELECT COUNT(*) n FROM cal_events WHERE chat_id = 'GTRIP'").n, 0); // 只讀，不另存
+  // 新增：沒講「行事曆」可能是在改旅遊行程，不接；講了才記
+  await say('U1', `小帥 記一下 ${md(D3)} 晚上 燒肉`, 'GTRIP');
+  assert.equal(db.get("SELECT COUNT(*) n FROM cal_events WHERE chat_id = 'GTRIP'").n, 0);
   await say('U1', `小帥 行事曆加 ${md(D3)} 滑雪課`, 'GTRIP');
   assert.equal(db.get("SELECT title FROM cal_events WHERE chat_id = 'GTRIP'").title, '滑雪課');
+  // 行程那幾筆刪不掉（不在行事曆的資料裡）
+  assert.match((await say('U1', '小帥 刪掉行事曆的 神樂滑雪場', 'GTRIP'))[0].text, /找不到/);
+  // 沒綁行程的群不會出現
+  const other = await say('U1', '小帥 最近有什麼', 'GC');
+  assert.ok(!JSON.stringify(other).includes('神樂'));
+});
+
+await test('行程每天的摘要：標題年份、跨年、連到那一天、去掉重複 emoji；網址只收行程網頁', async () => {
+  writeFileSync(join(TRIP_DIR, 'trips', 'newyear.json'), JSON.stringify({ meta: { title: '2026 跨年團' }, days: [
+    { glance: { d: '12/31', emoji: '🎆', place: '倒數' } }, { glance: { d: '1/1', emoji: '⛩️', place: '⛩️ 初詣' } }, { date: '沒日期' }] }));
+  assert.deepEqual(trip.daysOf('newyear', 2000, TRIP_DIR), [
+    { day: '2026-12-31', n: 1, title: '🎆 倒數', url: 'https://badbadted.github.io/temp-reports/newyear.html#d1' },
+    { day: '2027-01-01', n: 2, title: '⛩️ 初詣', url: 'https://badbadted.github.io/temp-reports/newyear.html#d2' },
+  ]);
+  assert.deepEqual(trip.daysOf('../etc', 2026, TRIP_DIR), []);
+  assert.deepEqual(trip.daysOf('nope', 2026, TRIP_DIR), []);
+  // 網址不是行程網頁的：不放連結
+  cal.initCalendar(await memDb(), { dir: PAGE_DIR, trips: () => [{ day: '2026-11-05', title: '怪怪的', url: 'https://evil.example/x' }, { day: '2026-11-06', title: '正常', url: 'https://badbadted.github.io/temp-reports/a.html#d2' }] });
+  const byDay = cal.itemsBetween([{ chatId: 'G', label: '' }], '2026-11-01', '2026-11-30', NOW);
+  assert.equal(byDay.get('2026-11-05')[0].url, null);
+  const msgs = cal.queryMessages(cal.rangeOf('next_week', NOW), byDay, { now: NOW });
+  assert.equal(msgs[1].contents.contents[0].footer, undefined);
+  assert.match(JSON.stringify(msgs[1].contents.contents[1].footer), /a.html#d2/);
+  // 月曆網頁：行程那筆標「旅遊行程」、帶網址（前端再驗一次才給連結）
+  cal.writePage('GT', [{ chatId: 'GT', label: '' }], { now: NOW });
+  const html = readFileSync(join(PAGE_DIR, readdirSync(PAGE_DIR).filter(f => f.endsWith('.html')).map(f => [f, readFileSync(join(PAGE_DIR, f), 'utf8')]).find(([, h]) => h.includes('"n":"正常"'))[0]), 'utf8');
+  assert.ok(html.includes('"k":1,"u":"https://badbadted.github.io/temp-reports/a.html#d2"'));
+  assert.ok(html.includes("TRIP_RE.test(i.u || '')"));
+  assert.ok(html.includes('看行程 ›'));
+  cal.initCalendar(await memDb(), { dir: PAGE_DIR, trips: () => [] });
 });
 
 await test('私訊：只有 TED；跟群組分開存；含群組才一起列', async () => {

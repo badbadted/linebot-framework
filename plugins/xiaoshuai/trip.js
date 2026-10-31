@@ -31,6 +31,32 @@ export function info(name) {
 }
 export const validName = (name) => /^[a-z0-9-]{1,60}$/.test(name || '');
 
+/**
+ * 行程每天的摘要（行事曆用，2026-11-01：行程網頁是正本，行事曆直接讀，不另存）
+ * 年份：標題裡的 20xx，沒有就用 fallbackYear；日期往回跳（12/31 → 1/1）就跨年
+ * @returns [{ day: 'YYYY-MM-DD', n, title, url }]（讀不到回 []）
+ */
+export function daysOf(name, fallbackYear = new Date().getFullYear(), repo = TRIP_REPO) {
+  if (!validName(name)) return [];
+  let t;
+  try { t = JSON.parse(readFileSync(join(repo, 'trips', `${name}.json`), 'utf8')); } catch { return []; }
+  let year = Number(/20\d\d/.exec(String(t.meta?.title || t.title || ''))?.[0]) || fallbackYear;
+  const out = [];
+  let prev = 0;
+  (t.days || []).forEach((d, i) => {
+    const md = /^(\d{1,2})\/(\d{1,2})/.exec(d.glance?.d || d.date || '');
+    if (!md) return;
+    const ord = +md[1] * 100 + +md[2];
+    if (prev && ord < prev) year += 1;
+    prev = ord;
+    const place = String(d.glance?.place || d.title || '').replace(/^\p{Extended_Pictographic}️?\s*/u, '');
+    const title = [d.glance?.emoji, place].filter(Boolean).join(' ').trim();
+    if (!title) return;
+    out.push({ day: `${year}-${String(+md[1]).padStart(2, '0')}-${String(+md[2]).padStart(2, '0')}`, n: i + 1, title, url: `${tripUrl(name)}#d${i + 1}` });
+  });
+  return out;
+}
+
 let queue = Promise.resolve();
 function serial(fn) {
   const p = queue.then(fn, fn);
