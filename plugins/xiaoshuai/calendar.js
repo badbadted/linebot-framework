@@ -102,11 +102,12 @@ export function parseWhen(text, now = Date.now()) {
   const take = (m) => { spans.push([m.index, m.index + m[0].length]); return m; };
   let day = null;
   let m;
-  if ((m = /(\d{4})\s*[/.年-]\s*(\d{1,2})\s*[/.月-]\s*(\d{1,2})\s*(?:日|號)?/.exec(s))) {
+  // 日期後面的「(四)」「(週四)」一起拿掉（學校行事曆常這樣寫）
+  if ((m = /(\d{4})\s*[/.年-]\s*(\d{1,2})\s*[/.月-]\s*(\d{1,2})\s*(?:日|號)?(?:\s*\(\s*(?:週|星期)?[一二三四五六日天]\s*\))?/.exec(s))) {
     take(m);
     if (!validDay(+m[1], +m[2], +m[3])) return { error: `${m[1]}/${m[2]}/${m[3]} 不是正確的日期` };
     day = keyOf(+m[1], +m[2], +m[3]);
-  } else if ((m = /(?<!\d)(\d{1,2})\s*[/月]\s*(\d{1,2})\s*(?:日|號)?(?![\d:])/.exec(s))) {
+  } else if ((m = /(?<!\d)(\d{1,2})\s*[/月]\s*(\d{1,2})(?![\d:])\s*(?:日|號)?(?:\s*\(\s*(?:週|星期)?[一二三四五六日天]\s*\))?/.exec(s))) {
     take(m);
     let y = t.y;
     if (!validDay(y, +m[1], +m[2]) && !validDay(y + 1, +m[1], +m[2])) return { error: `${m[1]}/${m[2]} 不是正確的日期` };
@@ -177,7 +178,7 @@ export function titleOf(text, w) {
     .replace(/(?:要記得|記得提醒|提醒我|幫我記|記一下)\s*[!！。.~～]*$/, '')
     .replace(/^[\s,，、:：的]+|[\s,，、。!！~～]+$/g, '');
   let place = '';
-  const pm = /\s*(?:在|地點\s*[:：]?|@)\s*([^\s,，。]{2,20})\s*$/.exec(s);
+  const pm = /\s*(?:地點\s*[:：]?\s*在?|在|@)\s*([^\s,，。]{2,20})\s*$/.exec(s);
   if (pm && pm.index > 0) { place = pm[1]; s = s.slice(0, pm.index); }
   return { title: cards.clean(s.replace(/[\s,，、]+$/, ''), 30), place: cards.clean(place, 20) };
 }
@@ -224,7 +225,8 @@ export const dayRange = (day) => ({ from: day, to: day, label: dayLabel(day), si
  */
 export function ruleIntent(text, now = Date.now()) {
   const s = String(text || '').normalize('NFKC').replace(/^\s*小帥\s*[,，、]?\s*/, '').trim();
-  if (!s || Array.from(s).length > 80) return null;
+  // 好幾筆（貼一段、條列、一句講兩件事）：交給 AI 一次整理
+  if (!s || Array.from(s).length > 80 || splitItems(s, now).length >= 2) return null;
   let m = QUERY_RE.exec(s);
   if (m && !ADD_START_RE.test(s)) return { action: 'query', range: rangeOf(m[1], now) };
   m = /^(今天|今日|明天|後天|這週|這禮拜|這星期|本週|下週|下禮拜|下星期|這個月|本月|下個月|最近|接下來)\s*(?:呢|咧)?\s*[?？]?$/.exec(s);
@@ -244,6 +246,41 @@ export function ruleIntent(text, now = Date.now()) {
   return null;
 }
 
+export const MAX_BATCH = 20;
+// 斷句：換行、分號、逗號、頓號、「還有／另外」；沒有日期的那段接到前一段後面（「地點在學校」），第一個日期前的開頭（「幫我記：」）不要
+const SPLIT_RE = /\n|[；;，,、。]|還有|另外|然後/;
+
+/**
+ * 一段話拆成一筆一筆：每筆要有日期（parseWhen 抓得到 day）；日期看不懂的也留著（error），讓呼叫端列出來
+ * @returns [{ text, w }]（w 是 parseWhen 的結果，可能有 error）
+ */
+export function splitItems(text, now = Date.now()) {
+  const out = [];
+  for (const piece of String(text || '').normalize('NFKC').split(SPLIT_RE)) {
+    const p = piece.trim();
+    if (!p) continue;
+    const w = parseWhen(p, now);
+    if (w && (w.error || w.day)) out.push({ text: p, w });
+    else if (out.length) out.at(-1).text += ` ${p}`;
+  }
+  for (const it of out) if (!it.w.error) it.w = parseWhen(it.text, now); // 接上後面那段後重抓位置（時間可能在後面那段）
+  return out.slice(0, MAX_BATCH);
+}
+
+/**
+ * 規則版的多筆整理（AI 掛掉時的備案）：每筆 → { title, place, when } 或 { raw, error }
+ * 問句（「明天會下雨嗎」）不算
+ */
+export function ruleItems(text, now = Date.now()) {
+  return splitItems(text, now)
+    .filter(it => !/[?？]\s*$|嗎\s*$|呢\s*$|天氣|下雨|下雪/.test(it.text))
+    .map(it => {
+      if (it.w.error) return { raw: cards.clean(it.text, 30), error: it.w.error };
+      const { title, place } = titleOf(it.text, it.w);
+      return title ? { title, place, when: it.w } : { raw: cards.clean(it.text, 30), error: '沒寫是什麼事' };
+    });
+}
+
 /**
  * 叫小帥的話像在講行事曆，才值得問 AI：講到行事曆／改刪，或一開頭就是日期時間、而且不是問句
  * （「11/5 晚上七點 家長會」要問；「東京明天會下雪嗎」「明天會下雨嗎」不問，省一次 AI）
@@ -251,6 +288,7 @@ export function ruleIntent(text, now = Date.now()) {
 export function looksLikeCalendar(text, now = Date.now()) {
   const s = String(text || '').normalize('NFKC').replace(/^\s*小帥\s*[,，、]?\s*/, '');
   if (/行事曆|行程表|(?:刪掉|刪除|改到|改成|延到|延後到|提早到|挪到)/.test(s)) return true;
+  if (splitItems(s, now).length >= 2) return true; // 貼一段、條列好幾天：交給 AI 整理（混在裡面的問句 AI 會略過）
   if (/[?？]\s*$|嗎\s*$|呢\s*$|什麼|幾點|怎麼|如何|會不會|要不要|天氣|下雨|下雪/.test(s)) return false;
   const w = parseWhen(s, now);
   return !!(w && !w.error && Math.min(...w.spans.map(x => x[0])) <= 1);
@@ -529,7 +567,18 @@ const pb = (label, data, displayText, primary = false) => ({ type: 'button', sty
 const monthBtn = (url) => ({ type: 'button', style: 'link', height: 'sm', action: { type: 'uri', label: '🗓️ 看整個月', uri: url } });
 
 /** 記好了／改好了的那張卡：時間、地點、提醒方式＋刪掉、這週行程、看整個月 */
-export function eventFlex(ev, { dm = false, url = null, verb = '加的' } = {}) {
+export function eventFlex(ev, opts = {}) {
+  return cards.flex([eventBubble(ev, opts)], `📅 ${ev.title}\n${whenLabel(ev)}${ev.place ? `\n📍 ${ev.place}` : ''}`);
+}
+
+/** 一次記好幾筆：一筆一張，左右滑（最多 10 張，其他看整個月） */
+export const MAX_EVENT_CARDS = 10;
+export function eventsFlex(list, opts = {}) {
+  const shown = list.slice(0, MAX_EVENT_CARDS);
+  return cards.flex(shown.map(ev => eventBubble(ev, opts)), shown.map(ev => `${whenLabel(ev)} ${ev.title}`).join('\n'), MAX_EVENT_CARDS);
+}
+
+function eventBubble(ev, { dm = false, url = null, verb = '加的' } = {}) {
   const footer = [{ type: 'box', layout: 'horizontal', spacing: 'sm', contents: [pb('🗑️ 刪掉', `cal:del:${ev.id}`, `🗑️ 刪掉 ${cards.clean(ev.title, 20)}`), pb('📅 這週行程', 'cal:week', '📅 這週行程', true)] }];
   const safe = url && cards.safeUri(url, (u) => u.startsWith(`${publicBase}/public/cal/`));
   if (safe) footer.push(monthBtn(safe));
@@ -543,7 +592,7 @@ export function eventFlex(ev, { dm = false, url = null, verb = '加的' } = {}) 
     ] },
     footer: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '10px', contents: footer },
   };
-  return cards.flex([bubble], `📅 ${ev.title}\n${whenLabel(ev)}${ev.place ? `\n📍 ${ev.place}` : ''}`);
+  return bubble;
 }
 
 /** 一天一張；today 那張標橘色；item 是 itemsBetween 的 */

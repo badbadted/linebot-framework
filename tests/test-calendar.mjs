@@ -394,4 +394,79 @@ await test('早報接上小帥：今天有事，7 點後第一則訊息排進免
   assert.equal(db.all("SELECT text FROM held_answers WHERE chat_id = 'GC'").length, held.length); // 一天一次
 });
 
+await test('多筆拆句：換行、頓號、日期後的（四）、地點在○○；沒日期的段落接到前一筆；看不懂的日期留著標錯', () => {
+  const paste = '小帥 幫我記：\n11/5（四）18:30 家長日\n11/7 校外教學 地點在動物園\n帶便當\n13/40 亂打\n11/12 運動會';
+  assert.deepEqual(cal.splitItems(paste, NOW).map(i => i.text), ['11/5(四)18:30 家長日', '11/7 校外教學 地點在動物園 帶便當', '13/40 亂打', '11/12 運動會']);
+  const items = cal.ruleItems(paste, NOW);
+  assert.deepEqual(items.map(i => i.title || i.raw), ['家長日', '校外教學 地點在動物園 帶便當', '13/40 亂打', '運動會']);
+  assert.equal(items[0].when.time, '18:30');
+  assert.match(items[2].error, /不是正確的日期/);
+  assert.deepEqual(cal.ruleItems('11/5 家長會、11/7 校外教學 在動物園', NOW).map(i => [i.title, i.place, i.when.day]),
+    [['家長會', '', '2026-11-05'], ['校外教學', '動物園', '2026-11-07']]);
+  // 混了問句：問句那段不算
+  assert.deepEqual(cal.ruleItems('11/5 晚上七點 家長會，還有明天會下雨嗎？', NOW).map(i => i.title), ['家長會']);
+  // 好幾筆一律交給 AI 整理（規則不搶）；一筆照舊
+  assert.equal(cal.ruleIntent('小帥 記一下 11/5 家長會、11/7 校外教學', NOW), null);
+  assert.equal(cal.looksLikeCalendar('小帥 11/5 家長會\n11/7 校外教學', NOW), true);
+  assert.equal(cal.looksLikeCalendar('小帥 明天會下雨嗎', NOW), false);
+  assert.equal(cal.ruleIntent('小帥 記一下 11/5 家長會', NOW).action, 'add');
+});
+
+const D5 = cal.addDays(cal.todayKey(), 5);
+const multiAi = (items) => (c) => (c.includes('要處理行事曆') ? JSON.stringify({ action: 'add', items }) : '{"action":"none"}');
+
+await test('多筆：貼一段 → AI 整理好直接全部記，回「記好了 N 筆」＋左右滑卡；看不懂日期的那筆列出來、其他照記', async () => {
+  const intent = multiAi([
+    { title: '家長日', when: `${md(D3)} 18:30`, place: '' },
+    { title: '校外教學', when: `${md(D4)}`, place: '動物園' },
+    { title: '運動會', when: `${md(D5)} 早上八點`, place: '' },
+    { title: '戶外教學說明會', when: '下學期某天', place: '' },
+  ]);
+  const { db, say, asked } = await calBot({ intent });
+  const r = await say('U1', `小帥 幫我記一下學校行事曆：\n${md(D3)}（四）18:30 家長日\n${md(D4)} 校外教學 地點在動物園\n${md(D5)} 早上八點 運動會\n下學期某天 戶外教學說明會`);
+  assert.equal(asked.length, 1);
+  assert.match(r[0].text, /^記好了 3 筆 📅，往右滑看 👉\n這幾筆沒記，日期看不懂：戶外教學說明會（日期看不懂）$/);
+  assert.equal(r[1].contents.type, 'carousel');
+  assert.equal(r[1].contents.contents.length, 3);
+  assert.match(JSON.stringify(r[1].contents.contents[1]), /動物園/);
+  assert.match(r[1].altText, /18:30 家長日/);
+  assert.deepEqual(db.all('SELECT day, time, title FROM cal_events ORDER BY day').map(e => [e.day, e.time, e.title]),
+    [[D3, '18:30', '家長日'], [D4, null, '校外教學'], [D5, '08:00', '運動會']]);
+  // 再貼一次：重複的不再記
+  const again = await say('U1', `小帥 ${md(D3)} 18:30 家長日\n${md(D4)} 校外教學`);
+  assert.match(again[0].text, /已經有了，沒重複記/);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 3);
+});
+
+await test('多筆：一句講兩件事、混了問句（AI 只列真的事）；全部看不懂就說哪幾筆沒記', async () => {
+  const { db, say } = await calBot({ intent: (c) => {
+    if (!c.includes('要處理行事曆')) return '{"action":"none"}';
+    if (c.includes('亂寫')) return JSON.stringify({ action: 'add', items: [{ title: '亂寫', when: '某天' }, { title: '亂寫二', when: '' }] });
+    return JSON.stringify({ action: 'add', items: [{ title: '家長會', when: `${md(D3)} 晚上七點` }, { title: '繳費', when: `${md(D4)}` }] });
+  } });
+  const r = await say('U2', `小帥 ${md(D3)} 晚上七點 家長會，${md(D4)} 要繳費，還有明天會下雨嗎？`);
+  assert.equal(r[0].text, '記好了 2 筆 📅，往右滑看 👉');
+  assert.deepEqual(db.all('SELECT title FROM cal_events ORDER BY day').map(e => e.title), ['家長會', '繳費']);
+  const bad = await say('U2', `小帥 ${md(D3)} 亂寫、${md(D4)} 亂寫`);
+  assert.equal(bad[0].text, '這幾筆沒記，日期看不懂：亂寫（日期看不懂）、亂寫二（日期看不懂）');
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 2);
+});
+
+await test('多筆：AI 沒回應 → 照規則拆著記（問句跳過）；一筆的就不硬記', async () => {
+  const { db, say } = await calBot({ intent: () => { throw new Error('timeout'); } });
+  const r = await say('U1', `小帥 ${md(D3)} 晚上七點 家長會\n${md(D4)} 校外教學 在動物園\n明天會下雨嗎？`);
+  assert.match(r[0].text, /記好了 2 筆/);
+  assert.deepEqual(db.all('SELECT title, place FROM cal_events ORDER BY day').map(e => [e.title, e.place]), [['家長會', ''], ['校外教學', '動物園']]);
+  await say('U1', `小帥 ${md(D5)} 牙醫`);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 2);
+});
+
+await test('單筆沒明講「記」：AI 判斷是記事就直接記，不問使用者', async () => {
+  const { db, say } = await calBot({ intent: multiAi([{ title: '看牙醫', when: `${md(D3)} 下午三點` }]) });
+  const r = await say('U1', `小帥 ${md(D3)} 下午三點 看牙醫`);
+  assert.equal(r[0].text, '記好了 📅');
+  assert.equal(r[1].contents.type, 'bubble');
+  assert.equal(db.get('SELECT time FROM cal_events').time, '15:00');
+});
+
 console.log(`\n${pass} 項全部通過`);
