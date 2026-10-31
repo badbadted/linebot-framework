@@ -70,6 +70,9 @@ function harness({ start = NOON, reply = true, cfg = {} } = {}) {
 }
 
 let pass = 0;
+// 用真時鐘的測試：時段外被叫只會回「休息中」（onUnmatched 也回 true，不能拿它判斷），整段略過
+const offHours = () => { const m = taipeiMinutes(Date.now()); return m < 9 * 60 || m >= 22 * 60 + 30; };
+
 async function test(name, fn) {
   await fn();
   pass++;
@@ -776,7 +779,7 @@ await test('查太久逾時：先回一句「稍後」、背景繼續查，查�
   await xiaoshuai.init(ctx);
   db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GF', 1)");
   await xiaoshuai.init(ctx);
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GF', text: '小帥 東京明天會下雪嗎', replyToken: 'rt', event: {} }))) return; // 時段外就略過
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GF', text: '小帥 東京明天會下雪嗎', replyToken: 'rt', event: {} }))) return;
   for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200)); // 小帥回前會等 2～6 秒
   assert.ok(replies.length, '應該要回一句');
   const text = typeof replies[0] === 'string' ? replies[0] : replies[0].map(m => m.text).join('');
@@ -806,7 +809,7 @@ await test('背景查完：等下一個人講話才用免費回覆貼答案、�
   await xiaoshuai.init(ctx);
   db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GR', 1)");
   await xiaoshuai.init(ctx);
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GR', text: '小帥 東京明天會下雪嗎', replyToken: 'rt', event: {} }))) return;
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GR', text: '小帥 東京明天會下雪嗎', replyToken: 'rt', event: {} }))) return;
   for (let i = 0; i < 100 && !heldAnswers('GR').length; i++) await new Promise(r => setTimeout(r, 100));
   assert.match(heldAnswers('GR')[0].text, /剛剛問的「東京明天會下雪嗎」查好了（\d\d:\d\d）：\n東京明天降雪機率約兩成/);
   assert.equal(replies.length, 1);                          // 沒人講話就不貼
@@ -840,7 +843,7 @@ await test('有人叫小帥時：查好的答案跟這次的回答一起送', as
   await xiaoshuai.init(ctx);
   db.run('INSERT INTO held_answers (chat_id, text, at) VALUES (?, ?, ?)', 'GH', '🔎 查好了：答案', Date.now());
   db.run('INSERT INTO held_answers (chat_id, text, at) VALUES (?, ?, ?)', 'GH', '🔎 太舊的', Date.now() - 13 * 3600_000);
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GH', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return;
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GH', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return;
   for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200));
   assert.deepEqual(replies[0].map(m => m.text), ['🔎 查好了：答案', '在喔']); // 先貼查好的，再回這句；超過 12 小時的不貼
   assert.deepEqual(heldAnswers('GH'), []);
@@ -1011,7 +1014,7 @@ await test('附圖：AI 沒給 photo → 不查 Commons、不附圖', async () =
   const fc = fakeCommons();
   photo.configure({ fetch: fc.f, dir: mkdtempSync(pjoin(tmpdir(), 'xs-photo-')) });
   const { replies } = await photoBot('{"reply":"在喔"}');
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return; // 時段外跳過
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return; // 時段外跳過
   await waitReply(replies);
   assert.deepEqual(replies[0].map(m => m.type), ['text']);
   assert.equal(fc.calls.length, 0);
@@ -1021,7 +1024,7 @@ await test('附圖：AI 給 photo → 回覆＋附圖卡一起 reply；那輪不
   const fc = fakeCommons();
   photo.configure({ fetch: fc.f, dir: mkdtempSync(pjoin(tmpdir(), 'xs-photo-')) });
   const { db, replies } = await photoBot('{"reply":"東京鐵塔是紅白色的鐵塔","photo":"Tokyo Tower","remember":["阿庭想去東京鐵塔"]}');
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 東京鐵塔長怎樣', replyToken: 'rt', event: {} }))) return;
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 東京鐵塔長怎樣', replyToken: 'rt', event: {} }))) return;
   await waitReply(replies);
   const msgs = replies[0];
   assert.deepEqual(msgs.map(m => m.type).slice(0, 2), ['text', 'flex']);
@@ -1039,7 +1042,7 @@ await test('附圖：特定店家沒圖 → 附 Google 地圖連結', async () =
   const fc = fakeCommons();
   photo.configure({ fetch: fc.f });
   const { replies } = await photoBot('{"reply":"那家的拉麵湯頭很濃","shop":"一蘭 新宿中央東口店"}');
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 一蘭新宿那家長怎樣', replyToken: 'rt', event: {} }))) return;
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 一蘭新宿那家長怎樣', replyToken: 'rt', event: {} }))) return;
   await waitReply(replies);
   assert.deepEqual(replies[0].map(m => m.type), ['text']);
   assert.match(replies[0][0].text, /📍 一蘭 新宿中央東口店 地圖：https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=/);
@@ -1261,7 +1264,7 @@ await test('卡片：送不出去（400）就退回純文字；附圖卡退回�
   const tries = [];
   const orig = replies.push.bind(replies);
   replies.push = (m) => { tries.push(m); if (m.some(x => x.type === 'flex')) throw new Error('LINE reply failed: 400 {"message":"A message (messages[1]) in the request body is invalid"}'); return orig(m); };
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 豐洲吃什麼', replyToken: 'rt', event: {} }))) return;
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 豐洲吃什麼', replyToken: 'rt', event: {} }))) return;
   await waitReply(replies);
   assert.deepEqual(tries.map(t => t.map(m => m.type)), [['text', 'flex'], ['text', 'text']]);
   assert.match(replies[0][1].text, /大和壽司/);
@@ -1271,7 +1274,7 @@ await test('卡片：查太久補貼的答案也帶卡片', async () => {
   const { db, replies } = await photoBot('{"reply":"在喔"}');
   const card = cards.researchFlex([{ title: '營業時間', lines: ['09:00～23:00'] }], []);
   db.run('INSERT INTO held_answers (chat_id, text, at, msgs) VALUES (?, ?, ?, ?)', 'GPB', '🔎 查好了', Date.now(), JSON.stringify([card]));
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return;
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GPB', text: '小帥 你在嗎', replyToken: 'rt', event: {} }))) return;
   await waitReply(replies);
   assert.deepEqual(replies[0].map(m => m.type), ['text', 'flex', 'text']);
   assert.equal(replies[0][1].altText, card.altText);
@@ -1785,7 +1788,7 @@ await test('幽默：被虧時可以只回一張貼圖；不能貼時不硬送',
   await xiaoshuai.init(ctx);
   db.run("INSERT INTO groups (chat_id, enabled) VALUES ('GSTK', 1)");
   await xiaoshuai.init(ctx);
-  if (!(await xiaoshuai.onUnmatched({ chatId: 'GSTK', text: '小帥你是不是只會滑手機', replyToken: 'rt', event: {} }))) return; // 時段外略過
+  if (offHours() || !(await xiaoshuai.onUnmatched({ chatId: 'GSTK', text: '小帥你是不是只會滑手機', replyToken: 'rt', event: {} }))) return; // 時段外略過
   for (let i = 0; i < 60 && !replies.length; i++) await new Promise(r => setTimeout(r, 200));
   assert.deepEqual(replies[0], [{ type: 'sticker', packageId: '11537', stickerId: media.STICKERS['石化'] }]);
   assert.equal(media.STICKERS['被吐槽'], '52002769');
@@ -1986,7 +1989,7 @@ await test('重現 10/29：照片＋「小帥爸工?」→「加到行程裡就�
   };
   await say('U2', '', 'image');
   const r1 = await say('U2', '小帥爸工?');
-  if (!r1 || /休息中/.test(r1[0].text)) return;                                   // 時段外：小帥只回休息中，跳過
+  if (!r1 || offHours()) return;                                                  // 時段外：小帥只回休息中，跳過
   assert.ok(!r1[0].text.includes('用記的幫你存了'), r1[0].text);
   assert.match(r1[0].text, /沒罷工啦[\s\S]*（這次沒有記下來）/);
   const r2 = await say('UADMIN', '加到行程裡就好不用記');
