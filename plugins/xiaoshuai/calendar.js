@@ -507,7 +507,7 @@ export function pageHtml({ title, items, today, updated, legend = false }) {
   .ev .sub { font-size:11.5px; color:var(--sub); margin-top:2px; }
   .go { display:inline-block; margin-top:4px; font-size:12.5px; color:var(--main); text-decoration:none; font-weight:600; }
   .empty { margin:4px 12px 12px; display:flex; gap:12px; align-items:center; background:var(--card); border-radius:14px; padding:12px; font-size:14px; color:var(--sub); }
-  .empty .av { width:64px; height:64px; }
+  .empty .av { width:72px; height:72px; border-radius:16px; background-size:contain; }
   .empty.big { flex-direction:column; text-align:center; padding:20px 12px; }
   .empty.big .av { width:120px; height:120px; border-radius:24px; }
   .foot { display:flex; gap:8px; align-items:center; justify-content:center; padding:18px 16px 8px; font-size:12px; color:var(--sub); }
