@@ -21,6 +21,7 @@ export const TODAY_COLOR = '#c2620a';
 export const MINE_COLOR = '#0f8a6a';
 const POLL_COLOR = '#5b4bb7';
 const PAGE_VOTE = '#8056A8'; // 月曆網頁（手帳配色）的投票紫
+const ASSET_V = 'shiba1';     // 小帥圖換了就改這個，手機才不會沿用快取的舊圖
 export const DIGEST_HOUR = 7;
 export const MAX_FUTURE = 200;     // 每個聊天還沒過的事最多幾件
 export const MAX_ADD_PER_DAY = 30; // 每個聊天每天最多加幾件
@@ -533,8 +534,8 @@ export function pageHtml({ title, items, today, updated, legend = false }) {
 </div>
 <script>
 const D = ${data};
-const AV = '../xiaoshuai/avatar.jpg';
-const NOTE = '../xiaoshuai/note.jpg';
+const AV = '../xiaoshuai/avatar.jpg?v=${ASSET_V}';
+const NOTE = '../xiaoshuai/note.jpg?v=${ASSET_V}';
 const W = '日一二三四五六';
 const TRIP_RE = /^https:\\/\\/badbadted\\.github\\.io\\/temp-reports\\/[a-z0-9-]{1,60}\\.html(#d\\d{1,2})?$/;
 const byDay = {};

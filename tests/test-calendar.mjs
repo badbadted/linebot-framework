@@ -213,7 +213,7 @@ await test('月曆網頁：同一個聊天網址固定、資料當文字（標�
   assert.ok(!html.includes('innerHTML'));
   // 小帥的週末手帳：頭像、空白狀態用同網域的圖（相對路徑、檔案要在 repo 裡），招呼與空白日的話
   for (const f of ['avatar.jpg', 'note.jpg']) {
-    assert.ok(html.includes(`'../xiaoshuai/${f}'`), f);
+    assert.ok(html.includes(`'../xiaoshuai/${f}?v=`), f);
     assert.ok(readFileSync(join(import.meta.dirname, '..', 'public', 'xiaoshuai', f)).length > 1000, f);
   }
   assert.ok(!/url\(\s*['"]?https?:/.test(html));
