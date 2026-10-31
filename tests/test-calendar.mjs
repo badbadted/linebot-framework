@@ -206,6 +206,13 @@ await test('月曆網頁：同一個聊天網址固定、資料當文字（標�
   assert.match(html, /noindex/);
   assert.ok(!/src=["']https?:/.test(html));                    // 不連外部資源
   assert.ok(!html.includes('innerHTML'));
+  // 小帥的週末手帳：頭像、空白狀態用同網域的圖（相對路徑、檔案要在 repo 裡），招呼與空白日的話
+  for (const f of ['avatar.jpg', 'note.jpg']) {
+    assert.ok(html.includes(`'../xiaoshuai/${f}'`), f);
+    assert.ok(readFileSync(join(import.meta.dirname, '..', 'public', 'xiaoshuai', f)).length > 1000, f);
+  }
+  assert.ok(!/url\(\s*['"]?https?:/.test(html));
+  for (const s of ['我幫大家記好了', '這天先留給自由發揮', '這個月，行程還很佛系', '更新好了，有事再叫我', '#FFF9EF', '#287C78']) assert.ok(html.includes(s), s);
 });
 
 await test('早報：7 點後第一次、今天有事才排；一天一次；今天內有效', async () => {

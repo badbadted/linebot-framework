@@ -20,6 +20,7 @@ export const CAL_COLOR = '#2563a8';
 export const TODAY_COLOR = '#c2620a';
 export const MINE_COLOR = '#0f8a6a';
 const POLL_COLOR = '#5b4bb7';
+const PAGE_VOTE = '#8056A8'; // 月曆網頁（手帳配色）的投票紫
 export const DIGEST_HOUR = 7;
 export const MAX_FUTURE = 200;     // 每個聊天還沒過的事最多幾件
 export const MAX_ADD_PER_DAY = 30; // 每個聊天每天最多加幾件
@@ -430,7 +431,10 @@ export function writePage(chatId, sources, { title = '行事曆', now = Date.now
   return pageUrl(chatId, now);
 }
 
-/** 月曆網頁（單檔、不連外部資源；資料放 JSON、用 textContent 畫，標題裡有 HTML 也不會執行） */
+/**
+ * 月曆網頁（2026-11-01 改成「小帥的週末手帳」，版面照 共用/AI產出/mockup/小帥月曆網頁三方向.html 的 A）
+ * 單檔、不連外部資源：小帥的圖是同網域的 /public/xiaoshuai/*.jpg（相對路徑）；資料放 JSON、用 textContent 畫，標題裡有 HTML 也不會執行
+ */
 export function pageHtml({ title, items, today, updated, legend = false }) {
   const data = JSON.stringify({ title, items, today, updated: new Date(updated + TZ).toISOString().slice(5, 16).replace('-', '/').replace('T', ' '), legend })
     .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
@@ -441,100 +445,134 @@ export function pageHtml({ title, items, today, updated, legend = false }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
-<title>行事曆</title>
+<title>小帥的行事曆</title>
 <style>
-  :root { --bg:#ffffff; --s1:#f8fafc; --s2:#e2e8f0; --t1:#1e293b; --t2:#64748b; --cal:${CAL_COLOR}; --today:${TODAY_COLOR}; --poll:${POLL_COLOR}; --mine:${MINE_COLOR}; }
+  :root { --bg:#FFF9EF; --card:#FFFFFF; --main:#287C78; --acc:#E98445; --text:#243B3A; --vote:${PAGE_VOTE}; --sub:#7B8C8A; --we:#C8693A; --line:#287C7822; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--t1); font-family:-apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif; }
-  .top { position:sticky; top:0; background:var(--bg); z-index:2; padding:14px 16px 8px; border-bottom:1px solid var(--s2); }
-  h1 { font-size:17px; margin:0 0 8px; }
-  .nav { display:flex; align-items:center; gap:8px; }
-  .nav b { flex:1; text-align:center; font-size:18px; }
-  .nav button { border:1px solid var(--s2); background:var(--s1); border-radius:8px; padding:6px 12px; font-size:15px; color:var(--t1); }
-  .wrap { max-width:760px; margin:0 auto; padding:0 16px 40px; }
-  .grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; margin-top:10px; }
-  .wd { text-align:center; font-size:12px; color:var(--t2); padding:4px 0; }
-  .cell { min-height:62px; background:var(--s1); border-radius:6px; padding:3px; font-size:11px; overflow:hidden; cursor:pointer; border:2px solid transparent; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:0 0 8px; }
+  .top { display:flex; gap:12px; align-items:center; padding:16px 16px 10px; }
+  .av { flex:none; border-radius:50%; background:#fff center/cover no-repeat; }
+  .top .av { width:52px; height:52px; border:2px solid var(--line); }
+  .top .t { min-width:0; }
+  h1 { font-size:17px; font-weight:800; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .hi { font-size:12.5px; color:var(--sub); margin-top:3px; }
+  .nav { position:sticky; top:0; z-index:2; background:var(--bg); display:flex; align-items:center; gap:8px; padding:6px 16px 8px; }
+  .nav b { flex:1; text-align:center; }
+  .nav .y { font-size:12px; color:var(--sub); font-weight:500; margin-right:6px; }
+  .nav .m { font-size:22px; }
+  .nav button { border:0; width:38px; height:38px; border-radius:50%; background:var(--card); color:var(--main); font-size:20px; box-shadow:0 1px 3px #0000001a; cursor:pointer; }
+  .grid { display:grid; grid-template-columns:repeat(7,1fr); gap:3px; padding:0 10px; }
+  .wd { text-align:center; font-size:11.5px; color:var(--sub); padding:2px 0 4px; }
+  .wd.we { color:var(--we); }
+  .cell { min-height:52px; border-radius:9px; padding:4px 3px; background:var(--card); cursor:pointer; overflow:hidden; }
   .cell.out { background:transparent; cursor:default; }
-  .cell .n { font-size:12px; font-weight:600; }
-  .cell.sun .n, .cell.sat .n { color:#b91c1c; }
-  .cell.today { border-color:var(--today); }
+  .cell .n { font-weight:700; font-size:12.5px; }
+  .cell.we .n { color:var(--we); }
+  .cell.today { box-shadow:inset 0 0 0 2px var(--acc); }
+  .cell.today .n { color:var(--acc); }
   .cell.past { opacity:.55; }
-  .cell.sel { background:#e0ebf8; }
-  .chip { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:var(--cal); color:#fff; border-radius:3px; padding:0 3px; margin-top:2px; line-height:1.5; }
-  .chip.v { background:var(--poll); }
-  .more { color:var(--t2); margin-top:1px; }
-  h2 { font-size:15px; margin:18px 0 6px; }
-  .day { margin:0 0 10px; border:1px solid var(--s2); border-radius:10px; overflow:hidden; }
-  .day .h { background:var(--cal); color:#fff; padding:6px 12px; font-size:14px; font-weight:600; }
-  .day.today .h { background:var(--today); }
-  .ev { display:flex; gap:10px; padding:7px 12px; border-top:1px dashed var(--s2); font-size:14px; }
+  .cell.sel { background:#E6F2F1; }
+  .marks { display:flex; gap:3px; margin-top:5px; flex-wrap:wrap; align-items:center; }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--main); }
+  .dot.v { background:var(--vote); }
+  .more { font-size:10px; color:var(--sub); }
+  .chip { display:none; }
+  h2 { font-size:15px; margin:18px 16px 8px; display:flex; justify-content:space-between; align-items:center; }
+  h2 button { border:0; background:none; color:var(--main); font-size:13px; padding:4px 0; cursor:pointer; }
+  .day { margin:0 12px 10px; background:var(--card); border-radius:14px; overflow:hidden; box-shadow:0 1px 3px #0000000d; }
+  .day .h { padding:8px 12px; font-size:14px; font-weight:700; color:var(--main); border-bottom:2px solid var(--line); }
+  .day.today .h { color:var(--acc); }
+  .ev { display:flex; gap:10px; padding:8px 12px; border-top:1px dashed #0000001a; font-size:14px; }
   .ev:first-of-type { border-top:0; }
-  .ev .tm { width:44px; flex:none; font-weight:700; color:var(--cal); }
-  .ev.v .tm { color:var(--poll); }
-  .ev .sub { font-size:12px; color:var(--t2); }
-  .empty { color:var(--t2); font-size:14px; padding:12px 0; }
-  .foot { color:var(--t2); font-size:12px; margin-top:20px; line-height:1.6; }
-  .chip .ct { display:none; }
-  @media (min-width:600px) { .cell { min-height:84px; font-size:12px; } .chip .ct { display:inline; } }
+  .ev .tm { width:42px; flex:none; font-weight:700; color:var(--main); font-size:13px; padding-top:1px; }
+  .ev.allday .tm { color:var(--sub); font-weight:500; }
+  .ev.v .tm { color:var(--vote); }
+  .ev .sub { font-size:11.5px; color:var(--sub); margin-top:2px; }
+  .empty { margin:4px 12px 12px; display:flex; gap:12px; align-items:center; background:var(--card); border-radius:14px; padding:12px; font-size:14px; color:var(--sub); }
+  .empty .av { width:64px; height:64px; }
+  .empty.big { flex-direction:column; text-align:center; padding:20px 12px; }
+  .empty.big .av { width:120px; height:120px; border-radius:24px; }
+  .foot { display:flex; gap:8px; align-items:center; justify-content:center; padding:18px 16px 8px; font-size:12px; color:var(--sub); }
+  .foot .av { width:28px; height:28px; }
+  .tip { text-align:center; font-size:11.5px; color:var(--sub); padding:0 20px 24px; line-height:1.6; }
+  @media (min-width:600px) {
+    .cell { min-height:86px; font-size:11.5px; }
+    .marks { display:none; }
+    .chip { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:#E6F2F1; color:var(--main); border-radius:4px; padding:0 4px; margin-top:3px; line-height:1.55; }
+    .chip.v { background:#F0E8F7; color:var(--vote); }
+  }
 </style>
 </head>
 <body>
-<div class="top"><h1 id="title"></h1><div class="nav"><button id="prev" aria-label="上個月">‹</button><b id="ym"></b><button id="next" aria-label="下個月">›</button></div></div>
 <div class="wrap">
+  <div class="top"><span class="av" id="av"></span><div class="t"><h1 id="title"></h1><div class="hi">小帥：我幫大家記好了！</div></div></div>
+  <div class="nav"><button id="prev" aria-label="上個月">‹</button><b><span class="y" id="y"></span><span class="m" id="m"></span></b><button id="next" aria-label="下個月">›</button></div>
   <div class="grid" id="grid"></div>
-  <h2 id="listTitle"></h2>
+  <h2><span id="listTitle"></span><button id="all" hidden>看整月</button></h2>
   <div id="list"></div>
-  <div class="foot" id="foot"></div>
+  <div class="foot"><span class="av" id="av2"></span><span id="foot"></span></div>
+  <div class="tip">在 LINE 跟小帥說「11/5 晚上七點 家長會」就會加上來，說「刪掉 家長會」就刪掉。</div>
 </div>
 <script>
 const D = ${data};
+const AV = '../xiaoshuai/avatar.jpg';
+const NOTE = '../xiaoshuai/note.jpg';
 const W = '日一二三四五六';
 const byDay = {};
 for (const i of D.items) (byDay[i.d] = byDay[i.d] || []).push(i);
 const pad = (n) => String(n).padStart(2, '0');
 const key = (y, m, d) => y + '-' + pad(m) + '-' + pad(d);
+const label = (k) => { const [y, m, d] = k.split('-').map(Number); return m + '/' + d + '（' + W[new Date(Date.UTC(y, m - 1, d)).getUTCDay()] + '）'; };
 let [Y, M] = D.today.split('-').map(Number);
 let sel = null;
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-document.getElementById('title').textContent = '📅 ' + D.title;
-document.getElementById('foot').textContent = '更新於 ' + D.updated + '。在 LINE 跟小帥說「11/5 晚上七點 家長會」就會加上來；說「刪掉 家長會」就刪掉。';
+const av = (cls, img) => { const e = el('span', 'av' + (cls ? ' ' + cls : '')); e.style.backgroundImage = 'url(' + img + ')'; return e; };
+document.getElementById('av').style.backgroundImage = 'url(' + AV + ')';
+document.getElementById('av2').style.backgroundImage = 'url(' + AV + ')';
+document.getElementById('title').textContent = D.title;
+document.getElementById('foot').textContent = '更新於 ' + D.updated + '・更新好了，有事再叫我。';
+function empty(text, big) {
+  const box = el('div', 'empty' + (big ? ' big' : ''));
+  box.append(av('', NOTE), el('div', null, text));
+  return box;
+}
 function render() {
-  document.getElementById('ym').textContent = Y + ' 年 ' + M + ' 月';
+  document.getElementById('y').textContent = Y;
+  document.getElementById('m').textContent = M + ' 月';
   const g = document.getElementById('grid');
   g.replaceChildren();
-  for (const w of W) g.append(el('div', 'wd', w));
+  W.split('').forEach((w, i) => g.append(el('div', 'wd' + (i === 0 || i === 6 ? ' we' : ''), w)));
   const first = new Date(Date.UTC(Y, M - 1, 1)).getUTCDay();
   const days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
   for (let i = 0; i < first; i++) g.append(el('div', 'cell out'));
   for (let d = 1; d <= days; d++) {
     const k = key(Y, M, d);
     const dow = (first + d - 1) % 7;
-    const c = el('div', 'cell' + (dow === 0 ? ' sun' : dow === 6 ? ' sat' : '') + (k === D.today ? ' today' : '') + (k < D.today ? ' past' : '') + (k === sel ? ' sel' : ''));
+    const c = el('div', 'cell' + (dow === 0 || dow === 6 ? ' we' : '') + (k === D.today ? ' today' : '') + (k < D.today ? ' past' : '') + (k === sel ? ' sel' : ''));
     c.append(el('div', 'n', String(d)));
     const list = byDay[k] || [];
-    for (const i of list.slice(0, 2)) {
-      // 手機格子窄：只放名稱；寬螢幕才加時間
-      const chip = el('span', 'chip' + (i.v ? ' v' : ''));
-      if (i.t) chip.append(el('span', 'ct', i.t + ' '));
-      chip.append(document.createTextNode(i.n));
-      c.append(chip);
-    }
-    if (list.length > 2) c.append(el('div', 'more', '+' + (list.length - 2)));
-    c.onclick = () => { sel = sel === k ? null : k; render(); if (sel) document.getElementById('listTitle').scrollIntoView({ behavior: 'smooth' }); };
+    // 手機：小圓點；寬螢幕：名稱
+    const marks = el('div', 'marks');
+    for (const i of list.slice(0, 3)) marks.append(el('span', 'dot' + (i.v ? ' v' : '')));
+    if (list.length > 3) marks.append(el('span', 'more', '+' + (list.length - 3)));
+    c.append(marks);
+    for (const i of list.slice(0, 2)) c.append(el('span', 'chip' + (i.v ? ' v' : ''), (i.t ? i.t + ' ' : '') + i.n));
+    if (list.length > 2) c.append(el('span', 'chip', '+' + (list.length - 2)));
+    c.onclick = () => { sel = sel === k ? null : k; render(); if (sel) document.getElementById('listTitle').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
     g.append(c);
   }
   const L = document.getElementById('list');
   L.replaceChildren();
-  const keys = Object.keys(byDay).filter(k => sel ? k === sel : k.startsWith(key(Y, M, 1).slice(0, 8))).sort();
-  document.getElementById('listTitle').textContent = sel ? +sel.slice(5, 7) + '/' + +sel.slice(8) + ' 的事（再點一次看整個月）' : M + ' 月的事（' + keys.reduce((n, k) => n + byDay[k].length, 0) + ' 件）';
-  if (!keys.length) L.append(el('div', 'empty', sel ? '這天沒有排事情' : '這個月沒有排事情'));
+  const keys = Object.keys(byDay).filter(k => (sel ? k === sel : k.startsWith(key(Y, M, 1).slice(0, 8)))).sort();
+  document.getElementById('listTitle').textContent = sel ? label(sel) + ' 的事' : M + ' 月的事（' + keys.reduce((n, k) => n + byDay[k].length, 0) + ' 件）';
+  document.getElementById('all').hidden = !sel;
+  if (!keys.length) L.append(sel ? empty('這天先留給自由發揮。') : empty('這個月，行程還很佛系。', true));
   for (const k of keys) {
-    const [y, m, d] = k.split('-').map(Number);
     const box = el('div', 'day' + (k === D.today ? ' today' : ''));
-    box.append(el('div', 'h', m + '/' + d + '（' + W[new Date(Date.UTC(y, m - 1, d)).getUTCDay()] + '）' + (k === D.today ? '・今天' : '')));
+    box.append(el('div', 'h', label(k) + (k === D.today ? '・今天' : '')));
     for (const i of byDay[k]) {
-      const r = el('div', 'ev' + (i.v ? ' v' : ''));
+      const r = el('div', 'ev' + (i.v ? ' v' : '') + (i.t ? '' : ' allday'));
       r.append(el('div', 'tm', i.t || '全天'));
       const body = el('div', null);
       body.append(el('div', null, (i.v ? '🗳️ ' : '') + i.n));
@@ -548,6 +586,7 @@ function render() {
 }
 document.getElementById('prev').onclick = () => { M--; if (M < 1) { M = 12; Y--; } sel = null; render(); };
 document.getElementById('next').onclick = () => { M++; if (M > 12) { M = 1; Y++; } sel = null; render(); };
+document.getElementById('all').onclick = () => { sel = null; render(); };
 render();
 </script>
 </body>
