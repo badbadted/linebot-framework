@@ -115,6 +115,9 @@ async function main() {
   // Express
   const app = express();
 
+  // 對外公開的 plugin 路由（/x/*）：body 上限 16KB，比全域的早解析（解析過的請求全域那個會跳過）
+  app.use('/x', express.json({ limit: '16kb' }));
+
   // rawBody 保留（LINE 簽章驗證需要）
   app.use(express.json({
     verify: (req, _res, buf) => { req.rawBody = buf; },
@@ -753,6 +756,14 @@ async function main() {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // 錯誤處理：壞掉的 JSON、太大的 body、其他沒接住的錯，一律回固定的 JSON，不回預設錯誤頁（會帶 stack trace 和主機路徑）
+  app.use((err, req, res, _next) => {
+    const status = err?.type === 'entity.too.large' ? 413 : (err?.type === 'entity.parse.failed' || err?.status === 400) ? 400 : 500;
+    if (status === 500) console.error(`[linebot-framework] ${req.method} ${req.path} 出錯：${err?.message || err}`);
+    if (res.headersSent) return;
+    res.status(status).json({ ok: false, error: status === 413 ? '送來的資料太大' : status === 400 ? '格式不對' : '出了點問題' });
+  });
 
   // 啟動
   app.listen(config.server.port, () => {
