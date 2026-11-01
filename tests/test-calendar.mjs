@@ -14,7 +14,8 @@ process.env.XIAOSHUAI_CAL_DIR = PAGE_DIR;
 const TRIP_DIR = mkdtempSync(join(tmpdir(), 'xs-trip-'));
 mkdirSync(join(TRIP_DIR, 'trips'));
 process.env.TRIP_REPO_DIR = TRIP_DIR;
-process.env.XIAOSHUAI_CAL_NO_ENRICH = '1'; // 背景補短標籤／頭像另外測（calmeta），這裡不跑
+process.env.XIAOSHUAI_CAL_NO_ENRICH = '1';
+process.env.BOT_PUBLIC_URL = 'https://bot.example.test'; // 背景補短標籤／頭像另外測（calmeta），這裡不跑
 
 const cal = await import('../plugins/xiaoshuai/calendar.js');
 const polls = await import('../plugins/xiaoshuai/polls.js');
@@ -134,7 +135,7 @@ await test('資料：新增、重複、過去的日子、上限；改（只改�
   assert.match(cal.remove('G2', r.event.id, 'U1', true).error, /找不到/);
   assert.match(cal.remove('G1', r.event.id, 'U2', false).error, /只有加的人/);
   assert.ok(cal.remove('G1', r.event.id, 'U1', false).ok);
-  assert.equal(cal.getEvent(r.event.id), null);
+  assert.ok(cal.getEvent(r.event.id).deleted_at); // 軟刪除，可以還原
   // 每天最多加 30 件
   for (let i = 0; i < cal.MAX_ADD_PER_DAY; i++) cal.add('G3', { day: '2026-11-10', title: `事${i}`, by: 'U1' }, NOW);
   assert.match(cal.add('G3', { day: '2026-11-10', title: '再一件', by: 'U1' }, NOW).error, /今天已經加了/);
@@ -316,7 +317,7 @@ await test('群組：明講要記 → 記好卡（刪掉／這週／整個月）
   assert.ok(cal.getEvent(row.id));
   // 加的人按
   assert.match((await press('U1', `cal:del:${row.id}`)).reply[0].text, /刪掉了：.+ 19:00 家長會/);
-  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 0);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events WHERE deleted_at IS NULL').n, 0);
 });
 
 await test('群組：沒明講要記 → 問 AI 確認是記事；AI 說 none 就照常聊天；問天氣不問 AI', async () => {
@@ -328,13 +329,13 @@ await test('群組：沒明講要記 → 問 AI 確認是記事；AI 說 none �
   assert.equal(asked.length, 1);
   assert.match(asked[0], /今天是 /);
   await say('U1', `小帥 ${md(D4)} 好冷`);          // AI 說不是記事 → 不記
-  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 1);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events WHERE deleted_at IS NULL').n, 1);
   const before = asked.length;
   await say('U1', '小帥 東京明天會下雪嗎');
   assert.equal(asked.length, before);               // 問句不問 AI
   // 沒叫小帥不處理
   assert.equal(await say('U1', `記一下 ${md(D4)} 烤肉`), null);
-  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 1);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events WHERE deleted_at IS NULL').n, 1);
 });
 
 await test('群組：查詢、改時間、刪除（AI 認出要改哪一件）', async () => {
@@ -369,10 +370,10 @@ await test('綁了旅遊行程的群：行事曆帶出行程每天（附連到�
   assert.match(JSON.stringify(bubbles[1].body), /💙 三井 Outlet/);
   assert.deepEqual(bubbles[0].footer.contents[0].action, { type: 'uri', label: '🧳 看這天行程', uri: 'https://badbadted.github.io/temp-reports/ski-2026.html#d1' });
   assert.equal(bubbles[1].footer.contents[0].action.uri, 'https://badbadted.github.io/temp-reports/ski-2026.html#d2');
-  assert.equal(db.get("SELECT COUNT(*) n FROM cal_events WHERE chat_id = 'GTRIP'").n, 0); // 只讀，不另存
+  assert.equal(db.get("SELECT COUNT(*) n FROM cal_events WHERE chat_id = 'GTRIP' AND deleted_at IS NULL").n, 0); // 只讀，不另存
   // 新增：沒講「行事曆」可能是在改旅遊行程，不接；講了才記
   await say('U1', `小帥 記一下 ${md(D3)} 晚上 燒肉`, 'GTRIP');
-  assert.equal(db.get("SELECT COUNT(*) n FROM cal_events WHERE chat_id = 'GTRIP'").n, 0);
+  assert.equal(db.get("SELECT COUNT(*) n FROM cal_events WHERE chat_id = 'GTRIP' AND deleted_at IS NULL").n, 0);
   await say('U1', `小帥 行事曆加 ${md(D3)} 滑雪課`, 'GTRIP');
   assert.equal(db.get("SELECT title FROM cal_events WHERE chat_id = 'GTRIP'").title, '滑雪課');
   // 行程那幾筆刪不掉（不在行事曆的資料裡）
@@ -433,7 +434,7 @@ await test('私訊：只有 TED；跟群組分開存；含群組才一起列', a
   assert.match((await dm('UADMIN', '刪掉 看牙醫')).reply[0].text, /刪掉了/);
   // 不是 TED 的私訊：小帥不接
   assert.equal((await dm('U1', `記一下 ${md(D3)} 看牙醫`)).handled, false);
-  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 1);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events WHERE deleted_at IS NULL').n, 1);
   // 按「這週行程」
   const wk = await press('UADMIN', 'cal:week', 'UADMIN');
   assert.ok(wk.handled && wk.reply);
@@ -493,7 +494,7 @@ await test('多筆：貼一段 → AI 整理好直接全部記，回「記好了
   // 再貼一次：重複的不再記
   const again = await say('U1', `小帥 ${md(D3)} 18:30 家長日\n${md(D4)} 校外教學`);
   assert.match(again[0].text, /已經有了，沒重複記/);
-  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 3);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events WHERE deleted_at IS NULL').n, 3);
 });
 
 await test('多筆：一句講兩件事、混了問句（AI 只列真的事）；全部看不懂就說哪幾筆沒記', async () => {
@@ -507,7 +508,7 @@ await test('多筆：一句講兩件事、混了問句（AI 只列真的事）�
   assert.deepEqual(db.all('SELECT title FROM cal_events ORDER BY day').map(e => e.title), ['家長會', '繳費']);
   const bad = await say('U2', `小帥 ${md(D3)} 亂寫、${md(D4)} 亂寫`);
   assert.equal(bad[0].text, '這幾筆沒記，日期看不懂：亂寫（日期看不懂）、亂寫二（日期看不懂）');
-  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 2);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events WHERE deleted_at IS NULL').n, 2);
 });
 
 await test('多筆：AI 沒回應 → 照規則拆著記（問句跳過）；一筆的就不硬記', async () => {
@@ -516,7 +517,7 @@ await test('多筆：AI 沒回應 → 照規則拆著記（問句跳過）；一
   assert.match(r[0].text, /記好了 2 筆/);
   assert.deepEqual(db.all('SELECT title, place FROM cal_events ORDER BY day').map(e => [e.title, e.place]), [['家長會', ''], ['校外教學', '動物園']]);
   await say('U1', `小帥 ${md(D5)} 牙醫`);
-  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events').n, 2);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events WHERE deleted_at IS NULL').n, 2);
 });
 
 await test('單筆沒明講「記」：AI 判斷是記事就直接記，不問使用者', async () => {
@@ -676,6 +677,226 @@ await test('「小帥 妞家是 葶」：群裡記家庭對應；對不到任何
   // 對不到：不攔
   await say('U1', '小帥 我家是住高雄');
   assert.equal(meta.families('GC').length, 1);
+});
+
+// ── 網頁上直接改（2026-11-01）：LIFF 驗身分、修改紀錄、軟刪除、同時改、手動欄位不給 AI 蓋 ──
+const caledit = await import('../plugins/xiaoshuai/caledit.js');
+const GE = 'C' + 'e'.repeat(32);
+const UA = uid(1), UB = uid(4), UOUT = uid(9);
+async function editBot() {
+  const db = await memDb();
+  const held = [];
+  const member = { [UA]: '葶', [UB]: 'Jasmine' };
+  const lineApi = { reply: async () => ({}), push: async () => { throw new Error('不該推播'); },
+    getGroupMemberProfile: async (_g, u) => (member[u] ? { displayName: member[u] } : null), getProfile: async () => null };
+  const ctx = { db, lineApi, isAdmin: (u) => u === 'UADMIN', providers: { llm: { generate: async () => '{}' } } };
+  await xiaoshuai.init(ctx);
+  db.run('INSERT INTO groups (chat_id, enabled) VALUES (?, 1)', GE);
+  await xiaoshuai.init(ctx);
+  seedMembers(db, GE, SKI);
+  db.run("INSERT INTO trip_binds (chat_id, name) VALUES (?, 'ski-2026')", GE);
+  // 路由：照框架的 http hook 收起來
+  const routes = {};
+  xiaoshuai.http({ get: (p, fn) => { routes[`GET ${p}`] = fn; }, post: (p, fn) => { routes[`POST ${p}`] = fn; } });
+  caledit.setVerifier(async (tok) => ({ 'tok-a': { userId: UA, name: 'A（LINE 名）' }, 'tok-b': { userId: UB, name: 'B' }, 'tok-out': { userId: UOUT, name: '路人' } })[tok] || null);
+  const token = cal.tokenOf(GE);
+  const api = async (action, body, { idt = 'tok-a', origin = 'https://bot.example.test', json = true } = {}) => {
+    let status = 200; let out = null;
+    const req = { body: { t: token, id: idt, ...body }, is: (t) => json && t === 'application/json', get: (h) => (h === 'origin' ? origin : undefined) };
+    const res = { status(s) { status = s; return this; }, set() { return this; }, json(j) { out = j; return this; } };
+    await routes[`POST /cal/${action}`](req, res);
+    return { status, ...out };
+  };
+  return { db, routes, api, token, held };
+}
+const pageData = (token) => JSON.parse(/const D = (.*);\n/.exec(readFileSync(join(PAGE_DIR, `${token}.html`), 'utf8').replace(/\r/g, ''))[1]);
+
+await test('LIFF 沒設定：網頁只能看（edit:false）、API 回 503、卡片連一般網址', async () => {
+  delete process.env.XIAOSHUAI_LIFF_ID; delete process.env.XIAOSHUAI_LIFF_CHANNEL_ID;
+  process.env.XIAOSHUAI_LIFF_FILE = join(PAGE_DIR, 'no-such-liff.json');
+  const { routes, api, token } = await editBot();
+  assert.equal((await api('me', {})).status, 503);
+  let code = 0; routes['GET /cal/config']({}, { status(s) { code = s; return this; }, set() { return this; }, json() { return this; } });
+  assert.equal(code, 404);
+  cal.writePage(GE, [{ chatId: GE, label: '' }], { now: NOW });
+  assert.equal(pageData(token).edit, false);
+  assert.match(cal.pageUrl(GE), /\/public\/cal\/[0-9a-f]{32}\.html\?v=/);
+});
+
+await test('LIFF 設定後：卡片連 LIFF；要 JSON、自己的網域、LINE 驗過的身分、群組成員才能改', async () => {
+  process.env.XIAOSHUAI_LIFF_ID = '1234567890-AbCdEfGh'; process.env.XIAOSHUAI_LIFF_CHANNEL_ID = '2000000000';
+  const { api, token, routes } = await editBot();
+  assert.equal(cal.pageUrl(GE), `https://liff.line.me/1234567890-AbCdEfGh?t=${token}`);
+  let cfg = null; routes['GET /cal/config']({}, { status() { return this; }, set() { return this; }, json(j) { cfg = j; return this; } });
+  assert.deepEqual(cfg, { ok: true, liffId: '1234567890-AbCdEfGh' });
+  assert.equal((await api('me', {}, { json: false })).status, 415);
+  assert.equal((await api('me', {}, { origin: 'https://evil.example' })).status, 403);   // 擋 CSRF
+  assert.equal((await api('me', {}, { idt: 'fake' })).status, 401);                       // LINE 沒驗過
+  assert.equal((await api('me', {}, { idt: 'tok-out' })).status, 403);                    // 不是群組成員
+  assert.equal((await api('me', { t: 'f'.repeat(32) })).status, 404);
+  const me = await api('me', {});
+  assert.equal(me.ok, true);
+  assert.equal(me.me.name, '葶');                    // 用群組裡的名字
+  assert.equal(me.members.length, 7);
+  assert.ok(me.members.every(m => Number.isInteger(m.k) && !('user_id' in m)));  // 不給 LINE userId
+  cal.writePage(GE, [{ chatId: GE, label: '' }], { now: NOW });
+  assert.equal(pageData(token).edit, true);
+});
+
+await test('改自己記的事：每個欄位都能改、記紀錄、手動標記；同時改要先看到「剛被誰改過」', async () => {
+  const { db, api, token } = await editBot();
+  const ev = cal.add(GE, { day: D3, time: '19:00', title: '家長會', by: UA, byName: '葶' }, Date.now()).event;
+  const keys = (names) => names.map(n => db.get('SELECT rowid AS k FROM cal_members WHERE chat_id = ? AND name = ?', GE, n).k);
+  const r = await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { n: '期末家長會', l: '親師會', d: D4, t: '', p: '禮堂', who: keys(['葶', 'Jasmine']) } });
+  assert.equal(r.ok, true, r.error);
+  const e2 = cal.getEvent(ev.id);
+  assert.deepEqual([e2.title, e2.short, e2.day, e2.time, e2.place, e2.version], ['期末家長會', '親師會', D4, null, '禮堂', 1]);
+  assert.deepEqual(JSON.parse(e2.who), [`@${UA}`, `@${UB}`]);
+  assert.deepEqual(Object.keys(JSON.parse(e2.manual)).sort(), ['d', 'l', 'n', 'p', 't', 'who']);
+  const h = (await api('history', { ref: `e${ev.id}` })).list;
+  assert.equal(h.length, 7);                        // 6 欄＋新增
+  assert.ok(h.every(x => x.by === '葶'));
+  assert.ok(h.some(x => x.what === '時間：19:00 → 全天'));
+  assert.ok(h.some(x => x.what === '參加的人：沒有 → 葶、Jasmine'));
+  // 網頁跟著重寫：短名稱、參加的人、版本
+  const it = pageData(token).items.find(i => i.r === `e${ev.id}`);
+  assert.deepEqual([it.l, it.ver, it.x, it.w.length], ['親師會', 1, 1, 2]);
+  // B 拿舊版本（0）來改 → 409，看得到 A 剛改了什麼；選蓋掉才存
+  const c = await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '開會' } }, { idt: 'tok-b' });
+  assert.equal(c.status, 409);
+  assert.equal(c.by, '葶');
+  assert.match(c.what, /新增|：/);
+  assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '開會' }, force: true }, { idt: 'tok-b' })).ok, true);
+  assert.equal(cal.getEvent(ev.id).short, '開會');
+  // 欄位不對
+  assert.match((await api('edit', { ref: `e${ev.id}`, ver: 2, changes: { d: '2026-02-30' } })).error, /日期/);
+  assert.match((await api('edit', { ref: `e${ev.id}`, ver: 2, changes: { t: '25:00' } })).error, /時間/);
+  assert.match((await api('edit', { ref: `e${ev.id}`, ver: 2, changes: { n: '   ' } })).error, /標題/);
+  // 別的聊天的事改不到
+  const other = cal.add('GOTHER', { day: D3, title: '別群的事' }, Date.now()).event;
+  assert.match((await api('edit', { ref: `e${other.id}`, ver: 0, changes: { l: '偷改' } })).error, /不在/);
+  assert.equal(cal.getEvent(other.id).short, null);
+});
+
+await test('刪除是軟刪除：先記紀錄、列在最近刪除、可以還原；聊天裡刪也記是誰', async () => {
+  const { api, token } = await editBot();
+  const ev = cal.add(GE, { day: D3, title: '換日幣', by: UA, byName: '葶' }, Date.now()).event;
+  assert.equal((await api('delete', { ref: `e${ev.id}`, ver: 0 })).ok, true);
+  assert.ok(cal.getEvent(ev.id).deleted_at);
+  assert.ok(!pageData(token).items.some(i => i.r === `e${ev.id}`));
+  assert.deepEqual((await api('me', {})).deleted.map(d => d.title), ['換日幣']);
+  assert.equal((await api('restore', { ref: `e${ev.id}` })).ok, true);
+  assert.ok(pageData(token).items.some(i => i.r === `e${ev.id}`));
+  assert.deepEqual((await api('history', { ref: `e${ev.id}` })).list.map(x => x.what), ['還原了「換日幣」', '刪除了「換日幣」', `新增了「換日幣」（${cal.dayLabel(D3)}）`]);
+  // 旅遊行程不能刪
+  assert.match((await api('delete', { ref: `t|ski-2026|${D3}`, ver: 0 })).error, /行程網頁/);
+  // 聊天裡的刪除也是軟刪除＋記名字
+  const r = cal.remove(GE, ev.id, UA, false, '葶');
+  assert.equal(r.ok, true);
+  assert.equal(caledit.history(GE, `e${ev.id}`)[0].user_name, '葶');
+});
+
+await test('旅遊行程那天：只能改短名稱和參加的人；手動改的 AI 重標不會蓋', async () => {
+  const { db, api, token } = await editBot();
+  const d1 = cal.addDays(cal.todayKey(), 10); const d2 = cal.addDays(d1, 1);
+  writeFileSync(join(TRIP_DIR, 'trips', 'ski-2026.json'), JSON.stringify({ meta: { title: `${d1.slice(0, 4)} 滑雪` }, days: [
+    { glance: { d: md(d1), emoji: '⛷️', place: '神樂' } }, { glance: { d: md(d2), emoji: '🏂', place: '苗場' } }] }));
+  db.run("INSERT INTO cal_trip_meta (chat_id, name, sig, short, who, days) VALUES (?, 'ski-2026', 'x', '日本滑雪', '[\"全員\"]', '{}')", GE);
+  const ref = `t|ski-2026|${d1}`;
+  assert.match((await api('edit', { ref, ver: 0, changes: { n: '改標題' } })).error, /行程網頁/);
+  const kB = db.get('SELECT rowid AS k FROM cal_members WHERE chat_id = ? AND user_id = ?', GE, UB).k;
+  const r = await api('edit', { ref, ver: 0, changes: { l: '東京滑雪', who: [kB] } });
+  assert.equal(r.ok, true, r.error);
+  const D = pageData(token);
+  const a = D.items.find(i => i.r === ref); const b = D.items.find(i => i.r === `t|ski-2026|${d2}`);
+  assert.deepEqual([a.l, a.w.map(x => D.people[x].n), a.m], ['東京滑雪', ['Jasmine'], 'lwho']);
+  assert.deepEqual([b.l, b.w.length], ['日本滑雪', 7]);       // 另一天沒動
+  assert.deepEqual((await api('history', { ref })).list.map(x => x.what), ['參加的人：全員 → Jasmine', '短名稱：日本滑雪 → 東京滑雪']);
+  // AI 重標行程：這天手動改的照舊
+  db.run("UPDATE cal_trip_meta SET short = '冬季旅行', who = '[\"妞家\"]' WHERE chat_id = ?", GE);
+  cal.writePage(GE, [{ chatId: GE, label: '' }], { now: Date.now() });
+  const a2 = pageData(token).items.find(i => i.r === ref);
+  assert.deepEqual([a2.l, a2.w.length], ['東京滑雪', 1]);
+  // 改回自動
+  assert.equal((await api('unpin', { ref, field: 'l' })).ok, true);
+  assert.equal(pageData(token).items.find(i => i.r === ref).l, '冬季旅行');
+  // 沒綁的行程、不存在的那天
+  assert.equal((await api('edit', { ref: `t|nope|${d1}`, ver: 0, changes: { l: 'x' } })).status, 404);
+  // 自己記的事：手動改的參加的人，AI 重標也不蓋
+  const ev = cal.add(GE, { day: D3, title: '聚餐' }, Date.now()).event;
+  await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { who: [kB] } });
+  const llm = { generate: async () => JSON.stringify({ [`e${ev.id}`]: { short: '聚餐', who: ['全員'] } }) };
+  assert.equal(await meta.runLabels(llm, GE, { now: Date.now() + 3600_000 }), 1);
+  assert.deepEqual([cal.getEvent(ev.id).short, JSON.parse(cal.getEvent(ev.id).who)], ['聚餐', [`@${UB}`]]);
+  cal.edit(GE, ev.id, UA, true, { title: '聚餐改名' }, Date.now());   // 聊天裡改名：只重標沒手動改的欄位
+  assert.deepEqual([cal.getEvent(ev.id).short, JSON.parse(cal.getEvent(ev.id).who)], [null, [`@${UB}`]]);
+});
+
+await test('家庭對應、群組通知：網頁上改；預設不在群組說，打開才排進免費回覆', async () => {
+  const { db, api, token } = await editBot();
+  const k = (n) => db.get('SELECT rowid AS k FROM cal_members WHERE chat_id = ? AND name = ?', GE, n).k;
+  const r = await api('families', { families: [{ name: '綸鈞家', keys: [k('陳二銘（綸/鈞)'), k('古嘉文（綸&鈞媽）')] }, { name: '多家', keys: [k('🌟Ying.chen💎')] }, { name: '妞家', keys: [k('葶')] }] });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(meta.families(GE).map(f => [f.family, f.ids.length]), [['多', 1], ['妞', 1], ['綸鈞', 2]]);
+  const D = pageData(token);
+  const fam = D.groups[0].fam.find(f => f.n === '綸鈞家');
+  assert.deepEqual(fam.m.map(x => D.people[x].n), ['陳二銘（綸/鈞)', '古嘉文（綸&鈞媽）']);  // 第一位是代表
+  assert.equal(D.groups[0].all.length, 7);
+  assert.match((await api('families', { families: [{ name: '妞家', keys: [] }, { name: '妞', keys: [] }] })).error, /重複/);
+  assert.ok(caledit.history(GE, 'fam')[0].what.includes('綸鈞家＝陳二銘'));
+  // 通知預設關
+  const ev = cal.add(GE, { day: D3, title: '烤肉' }, Date.now()).event;
+  await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '烤肉趴' } });
+  assert.equal(db.get('SELECT COUNT(*) n FROM held_answers WHERE chat_id = ?', GE).n, 0);
+  assert.equal((await api('settings', { notify: true })).ok, true);
+  assert.equal((await api('me', {})).notify, true);
+  await api('edit', { ref: `e${ev.id}`, ver: 1, changes: { l: '烤肉' } });
+  assert.match(db.get('SELECT text FROM held_answers WHERE chat_id = ?', GE).text, /葶 改了行事曆：「烤肉」/);
+  caledit.setVerifier(null);
+  delete process.env.XIAOSHUAI_LIFF_ID; delete process.env.XIAOSHUAI_LIFF_CHANNEL_ID;
+});
+
+await test('網頁：預設兩週、整月可切；格子頭像規則的資料（全員、家庭代表）都在；只有這個聊天的才給改', async () => {
+  const db = await memDb();
+  cal.initCalendar(db, { dir: PAGE_DIR });
+  seedMembers(db, 'GW', SKI);
+  meta.setFamily('GW', '綸鈞', '陳二銘、古嘉文', NOW);
+  const ev = cal.add('GW', { day: '2026-11-03', title: '大家聚餐' }, NOW).event;
+  db.run("UPDATE cal_events SET who = '[\"全員\"]' WHERE id = ?", ev.id);
+  cal.add('GX', { day: '2026-11-04', title: '別群' }, NOW);
+  cal.writePage('GW', [{ chatId: 'GW', label: '我的' }, { chatId: 'GX', label: '別群' }], { now: NOW });
+  const html = readdirSync(PAGE_DIR).filter(f => f.endsWith('.html')).map(f => readFileSync(join(PAGE_DIR, f), 'utf8')).find(h => h.includes('大家聚餐'));
+  const D = JSON.parse(/const D = (.*);\n/.exec(html.replace(/\r/g, ''))[1]);
+  assert.ok(html.includes("keep('xs-cal-mode') || 'two'"));            // 預設兩週
+  assert.ok(html.includes('data-m="two">兩週') && html.includes('data-m="month">整月'));
+  assert.ok(html.includes("el('span', 'all', '全員')"));
+  const it = D.items.find(i => i.n === '大家聚餐');
+  assert.equal(it.w.length, 7);
+  assert.deepEqual(D.groups[0].all.sort(), it.w.slice().sort());
+  assert.equal(D.items.find(i => i.n === '別群').x, undefined);         // 別的聊天的只能看
+  assert.equal(it.x, 1);
+  assert.ok(!/(src|href)=["']https?:/.test(html));
+});
+
+await test('向 LINE 驗 ID token：只信 LINE 回的 sub、channel 要對、過期不收、LINE 說不行就不行', async () => {
+  const now = Date.now();
+  const sent = [];
+  const fetchFn = (body) => async (url, opt) => { sent.push([url, opt.body]); return { ok: body !== null, json: async () => body }; };
+  const ok = { sub: UA, aud: '2000000000', exp: Math.floor(now / 1000) + 600, name: '葶' };
+  assert.deepEqual(await caledit.verifyIdToken('t1', '2000000000', { fetchFn: fetchFn(ok), now }), { userId: UA, name: '葶' });
+  assert.equal(sent[0][0], 'https://api.line.me/oauth2/v2.1/verify');
+  assert.match(sent[0][1], /id_token=t1&client_id=2000000000/);
+  assert.equal(await caledit.verifyIdToken('t2', '2000000000', { fetchFn: fetchFn({ ...ok, aud: '1999999999' }), now }), null);   // 別的 app 的 token
+  assert.equal(await caledit.verifyIdToken('t3', '2000000000', { fetchFn: fetchFn({ ...ok, exp: Math.floor(now / 1000) - 1 }), now }), null);
+  assert.equal(await caledit.verifyIdToken('t4', '2000000000', { fetchFn: fetchFn({ ...ok, sub: 'Uhacker' }), now }), null);
+  assert.equal(await caledit.verifyIdToken('t5', '2000000000', { fetchFn: fetchFn(null), now }), null);
+  assert.equal(await caledit.verifyIdToken('', '2000000000', { fetchFn: fetchFn(ok), now }), null);
+  // LIFF 設定檔：格式不對當沒設定
+  const f = join(PAGE_DIR, 'liff.json');
+  writeFileSync(f, JSON.stringify({ liffId: '1234567890-AbCdEfGh', channelId: '2000000000' }));
+  assert.deepEqual(caledit.liffConfig(f), { liffId: '1234567890-AbCdEfGh', channelId: '2000000000' });
+  writeFileSync(f, JSON.stringify({ liffId: 'javascript:alert(1)', channelId: '2000000000' }));
+  assert.equal(caledit.liffConfig(f), null);
 });
 
 console.log(`\n${pass} 項全部通過`);

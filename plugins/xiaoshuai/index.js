@@ -41,6 +41,7 @@ import * as polls from './polls.js';
 import * as share from './share.js';
 import * as cal from './calendar.js';
 import * as calmeta from './calmeta.js';
+import * as caledit from './caledit.js';
 import { safeFetch } from '../../src/utils/safe-fetch.js';
 import * as claims from './claims.js';
 import * as social from '../../src/utils/social-preview.js';
@@ -834,7 +835,7 @@ async function calendarIntercept({ chatId, userId, text, replyToken, mention, dm
       return say(`行事曆裡找不到「${cards.clean(it.target, 20)}」${cal.futureEvents(chatId, now).length ? '，說「這週有什麼」可以看有哪些' : ''}`);
     }
     if (it.action === 'delete') {
-      const r = cal.remove(chatId, pick.event.id, userId, admin);
+      const r = cal.remove(chatId, pick.event.id, userId, admin, dm ? '' : await nameOf(chatId, userId));
       if (r.error) return say(r.error);
       console.log(`${tag} 刪除 #${r.event.id}「${r.event.title}」`);
       changed();
@@ -844,7 +845,7 @@ async function calendarIntercept({ chatId, userId, text, replyToken, mention, dm
     const w = it.newWhen ? cal.parseWhen(it.newWhen, now) : null;
     if (w?.error) return say(w.error);
     if (it.newWhen && !w) return say(`「${cards.clean(it.newWhen, 20)}」看不懂，例如「11/6 下午四點」「改到週五」`);
-    const r = cal.edit(chatId, pick.event.id, userId, admin, { w, title: it.newTitle, place: it.place }, now);
+    const r = cal.edit(chatId, pick.event.id, userId, admin, { w, title: it.newTitle, place: it.place, byName: dm ? '' : await nameOf(chatId, userId) }, now);
     if (r.error) return say(r.error);
     console.log(`${tag} 修改 #${r.event.id}「${r.event.title}」`);
     changed();
@@ -872,12 +873,167 @@ async function calPostback({ chatId, userId, data, replyToken }) {
     if (ev) console.warn(`[xiaoshuai-cal] 擋下不屬於這個聊天的刪除 postback：${data}`);
     return say('這件事已經不在行事曆裡了');
   }
-  const r = cal.remove(chatId, ev.id, userId, isAdmin(userId));
+  const r = cal.remove(chatId, ev.id, userId, isAdmin(userId), dm ? '' : await nameOf(chatId, userId));
   if (r.error) return say(r.error);
   console.log(`[xiaoshuai-cal] ${chatId.slice(0, 8)} 按鈕刪除 #${ev.id}「${ev.title}」`);
   if (!dm) calRefreshDmPages();
   await calPage(chatId, dm);
   return say(`好，刪掉了：${cal.whenLabel(ev)} ${ev.title}`);
+}
+
+// ── 行事曆網頁上直接改（2026-11-01）：LINE 裡用 LIFF 打開才能改，主機向 LINE 驗身分＋確認是群組成員 ──
+const CAL_RATE_MAX = 40;          // 一個人一分鐘最多幾次
+const calRate = new Map();        // userId → [時間…]
+const calEditMember = new Map();  // `${chatId}:${userId}` → { ok, name, at }
+const PUBLIC_ORIGIN = new URL(process.env.BOT_PUBLIC_URL || 'https://bot.pushbike-training.app').origin;
+const fmtAt = (ts) => new Date(ts + 8 * 3600_000).toISOString().slice(5, 16).replace('-', '/').replace('T', ' ');
+
+/** 驗身分：回 { chatId, by, dm } 或 { status, error } */
+async function calAuth(req) {
+  const l = cal.liff();
+  if (!l) return { status: 503, error: '網頁上改還沒開（LIFF 還沒設定）' };
+  // 擋 CSRF：身分在 body 的 ID token（不靠 cookie），只收 JSON，有 Origin 的要是自己的網域
+  if (!req.is('application/json')) return { status: 415, error: '格式不對' };
+  const origin = req.get('origin');
+  if (origin && origin !== PUBLIC_ORIGIN) return { status: 403, error: '來源不對' };
+  const chatId = cal.chatOfToken(req.body?.t);
+  if (!chatId) return { status: 404, error: '找不到這個行事曆' };
+  const who = await caledit.verify(req.body?.id, l.channelId);
+  if (!who) return { status: 401, error: '登入過期了，從 LINE 再打開一次' };
+  const now = Date.now();
+  const hits = (calRate.get(who.userId) || []).filter(t => now - t < 60_000);
+  hits.push(now); calRate.set(who.userId, hits);
+  if (hits.length > CAL_RATE_MAX) return { status: 429, error: '改太快了，等一下再試' };
+  let name = who.name;
+  if (/^U/.test(chatId)) { if (who.userId !== chatId) return { status: 403, error: '這是別人的行事曆，只能看' }; }
+  else if (/^C/.test(chatId)) {
+    const k = `${chatId}:${who.userId}`;
+    let c = calEditMember.get(k);
+    if (!c || now - c.at > 10 * 60_000) {
+      let p = null;
+      try { p = await lineApi.getGroupMemberProfile(chatId, who.userId); } catch { p = null; }
+      c = { ok: !!p, name: p?.displayName || '', at: now };
+      calEditMember.set(k, c);
+    }
+    if (!c.ok) return { status: 403, error: '你不在這個群組，只能看' };
+    name = c.name || name;
+  } else return { status: 403, error: '這個行事曆只能看' };
+  return { chatId, dm: /^U/.test(chatId), by: { id: who.userId, name: cards.clean(name, 30) || '某人' } };
+}
+
+/** 改完：重寫網頁；群組設定要說一聲的話，排進下一次免費回覆（不推播） */
+async function calChanged(a, summary) {
+  await calPage(a.chatId, a.dm);
+  if (!a.dm) calRefreshDmPages();
+  if (!a.dm && summary && caledit.notifyOn(a.chatId)) holdAnswer(a.chatId, `✏️ ${a.by.name} 改了行事曆：${summary}`);
+  console.log(`[xiaoshuai-cal] ${a.chatId.slice(0, 8)} 網頁上 ${a.by.name}：${summary}`);
+}
+
+const TRIP_REF_RE = /^t\|([a-z0-9-]{1,60})\|(\d{4}-\d{2}-\d{2})$/;
+/** 旅遊行程那天：要是這個聊天綁的行程、而且有這天；回現在顯示的 { l, who } */
+function calTripDay(chatId, name, day) {
+  if (!tripsOf(chatId).includes(name)) return null;
+  const d = trip.daysOf(name).find(x => x.day === day);
+  if (!d) return null;
+  const m = calmeta.tripMeta(chatId, name);
+  return { title: d.title, l: m?.short || calmeta.fallbackShort(d.title), who: calmeta.tripWho(m, day) };
+}
+
+const calApi = {
+  async me(a) {
+    const members = calmeta.members(a.chatId).map(m => calmeta.personOf(a.chatId, m.user_id)).filter(Boolean);
+    const keyOf = (u) => calmeta.personOf(a.chatId, u)?.k;
+    return {
+      me: { name: a.by.name }, group: !a.dm, members, notify: caledit.notifyOn(a.chatId),
+      families: calmeta.families(a.chatId).map(f => ({ name: `${f.family}家`, keys: f.ids.map(keyOf).filter(x => x != null) })),
+      deleted: caledit.deletedList(a.chatId).map(e => ({ id: e.id, day: e.day, title: e.title })),
+    };
+  },
+  async edit(a, b) {
+    const t = TRIP_REF_RE.exec(b.ref || '');
+    let r; let what;
+    if (t) {
+      const cur = calTripDay(a.chatId, t[1], t[2]);
+      if (!cur) return { status: 404, error: '找不到這天的行程' };
+      r = caledit.editTrip(a.chatId, t[1], t[2], a.by, b.changes, { version: b.ver, force: !!b.force, current: cur });
+      what = `${t[2].slice(5).replace('-', '/')} ${cur.l}`;
+    } else {
+      const m = /^e(\d{1,9})$/.exec(b.ref || '');
+      if (!m) return { status: 400, error: '要改哪一筆？' };
+      r = caledit.editEvent(a.chatId, m[1], a.by, b.changes, { version: b.ver, force: !!b.force });
+      what = r.event ? `「${r.event.title}」` : '';
+    }
+    if (r.conflict) return { status: 409, ...r.conflict, at: r.conflict.at ? fmtAt(r.conflict.at) : '' };
+    if (r.error) return { status: 400, error: r.error };
+    await calChanged(a, what);
+    return {};
+  },
+  async delete(a, b) {
+    const m = /^e(\d{1,9})$/.exec(b.ref || '');
+    if (!m) return { status: 400, error: '旅遊行程要回行程網頁改，這裡不能刪' };
+    const r = caledit.softDelete(a.chatId, m[1], a.by, { version: b.ver ?? null, force: !!b.force });
+    if (r.conflict) return { status: 409, ...r.conflict, at: r.conflict.at ? fmtAt(r.conflict.at) : '' };
+    if (r.error) return { status: 400, error: r.error };
+    await calChanged(a, `刪掉「${r.event.title}」`);
+    return {};
+  },
+  async restore(a, b) {
+    const m = /^e(\d{1,9})$/.exec(b.ref || '');
+    const r = m ? caledit.restore(a.chatId, m[1], a.by) : { error: '要還原哪一筆？' };
+    if (r.error) return { status: 400, error: r.error };
+    await calChanged(a, `還原「${r.event.title}」`);
+    return {};
+  },
+  async unpin(a, b) {
+    const t = TRIP_REF_RE.exec(b.ref || '');
+    if (t && !calTripDay(a.chatId, t[1], t[2])) return { status: 404, error: '找不到這天的行程' };
+    const r = caledit.unpin(a.chatId, String(b.ref || ''), b.field, a.by);
+    if (r.error) return { status: 400, error: r.error };
+    await calChanged(a, '');
+    setImmediate(() => calEnrich(a.chatId, a.dm)); // 改回自動：請 AI 再標一次
+    return {};
+  },
+  async history(a, b) {
+    const ref = String(b.ref || '');
+    if (!/^e\d{1,9}$/.test(ref) && !TRIP_REF_RE.test(ref)) return { status: 400, error: '要看哪一筆？' };
+    return { list: caledit.history(a.chatId, ref).map(h => ({ by: h.user_name, at: fmtAt(h.at), what: h.what })) };
+  },
+  async families(a, b) {
+    if (a.dm) return { status: 400, error: '私訊的行事曆沒有家庭對應' };
+    const r = caledit.setFamilies(a.chatId, b.families, a.by);
+    if (r.error) return { status: 400, error: r.error };
+    await calChanged(a, '');
+    return {};
+  },
+  async settings(a, b) {
+    if (a.dm) return { status: 400, error: '私訊的行事曆沒有群組通知' };
+    caledit.setNotify(a.chatId, !!b.notify, a.by);
+    return {};
+  },
+};
+
+/** /x/xiaoshuai/cal/*：config 公開（給 cal-liff.html 拿 LIFF ID），其他都要驗身分 */
+function calHttp(router) {
+  router.get('/cal/config', (_req, res) => {
+    const l = cal.liff();
+    if (!l) return res.status(404).json({ ok: false, error: '還沒設定' });
+    res.set('Cache-Control', 'no-store').json({ ok: true, liffId: l.liffId });
+  });
+  for (const [name, fn] of Object.entries(calApi)) {
+    router.post(`/cal/${name}`, async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      try {
+        const a = await calAuth(req);
+        if (a.status) return res.status(a.status).json({ ok: false, error: a.error });
+        const r = await fn(a, req.body || {});
+        if (r.status) { const { status, ...rest } = r; return res.status(status).json({ ok: false, ...rest }); }
+        res.json({ ok: true, ...r });
+      } catch (err) {
+        console.warn(`[xiaoshuai-cal] 網頁 ${name} 失敗：${err.message}`);
+        res.status(500).json({ ok: false, error: '出了點問題，等一下再試' });
+      }
+    });
+  }
 }
 
 /** 今天 7:00 後第一個人講話：今天有事就排「今天的行程」，等免費回覆貼（不推播） */
@@ -2211,6 +2367,8 @@ export default {
   },
 
   /** Flex 卡片的 postback：投票按鈕「poll:<id>:<選項>」、看結果「poll:<id>:r」 */
+  http: (router) => calHttp(router),
+
   async onPostback({ chatId, userId, data, replyToken }) {
     if (/^cal:/.test(String(data || ''))) return calPostback({ chatId, userId, data, replyToken });
     const m = /^poll:(\d{1,9}):(\d|r)$/.exec(String(data || ''));

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>小帥的行事曆</title>
+<!--
+  小帥行事曆的 LIFF 入口（2026-11-01）：LINE Developers 的 LIFF Endpoint URL 填這一頁。
+  從 LINE 打開 https://liff.line.me/<LIFF ID>?t=<行事曆 token> → 這頁拿 LINE 的 ID token 放 sessionStorage，
+  再轉到 /public/cal/<token>.html；那頁把 ID token 送給主機驗身分（主機向 LINE 驗，不信這頁），驗過且是群組成員才能改。
+  LIFF SDK 照 LINE 官方寫法載 edge/2：沒加 SRI，因為 LINE 的 CDN 不回 CORS 標頭（加了 integrity 瀏覽器會擋），
+  固定版本的檔案又設了到期日（2026-11 查：versions/2.31.2 標 2026-12-07 到期）。這頁只負責拿 token 轉頁，不碰行事曆資料。
+-->
+<style>
+  body { margin:0; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; background:#FFF9EF; color:#243B3A; font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",sans-serif; font-size:15px; text-align:center; padding:24px; box-sizing:border-box; }
+  .av { width:96px; height:96px; border-radius:50%; background:#fff url(avatar.jpg?v=shiba1) center/cover no-repeat; }
+</style>
+</head>
+<body>
+<div class="av"></div>
+<div id="msg">小帥打開行事曆中…</div>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js" charset="utf-8"></script>
+<script>
+(async () => {
+  const msg = (t) => { document.getElementById('msg').textContent = t; };
+  const token = (q) => { const t = new URLSearchParams(q).get('t') || ''; return /^[0-9a-f]{32}$/.test(t) ? t : ''; };
+  try {
+    const res = await fetch('/x/xiaoshuai/cal/config', { cache: 'no-store' });
+    const cfg = await res.json();
+    if (!cfg.ok) return msg('網頁上改還沒開，先用一般的行事曆網址看就好');
+    await liff.init({ liffId: cfg.liffId });
+    // LIFF 會把 ?t= 放在 liff.state 裡轉過來，init 完通常已還原；兩種都看
+    let t = token(location.search);
+    if (!t) { const st = new URLSearchParams(location.search).get('liff.state') || ''; t = token(st.slice(st.indexOf('?'))); }
+    if (!t) return msg('連結不完整，請從 LINE 群組裡行事曆卡片的「🗓️ 看整個月」打開');
+    if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+    const idt = liff.getIDToken();
+    try { if (idt) sessionStorage.setItem('xs-cal-idt', idt); } catch (e) { /* 存不了就只能看 */ }
+    location.replace('/public/cal/' + t + '.html?v=' + Date.now());
+  } catch (e) {
+    msg('打不開（' + (e && e.message ? e.message : '不明原因') + '），等一下再試一次');
+  }
+})();
+</script>
+</body>
+</html>

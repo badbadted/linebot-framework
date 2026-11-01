@@ -16,6 +16,7 @@ import { join, resolve } from 'node:path';
 import * as cards from './cards.js';
 import * as polls from './polls.js';
 import * as meta from './calmeta.js';
+import * as edits from './caledit.js';
 
 export const CAL_COLOR = '#2563a8';
 export const TODAY_COLOR = '#c2620a';
@@ -69,6 +70,7 @@ export function initCalendar(database, { dir, base, trips } = {}) {
     );
   `);
   meta.initMeta(db, pageDir);
+  edits.initEdit(db);
   prune();
 }
 
@@ -307,11 +309,11 @@ export function looksLikeCalendar(text, now = Date.now()) {
 // ── 資料 ──────────────────────────────────────────
 
 export const getEvent = (id) => db?.get('SELECT * FROM cal_events WHERE id = ?', Number(id)) || null;
-export const futureEvents = (chatId, now = Date.now()) => db.all('SELECT * FROM cal_events WHERE chat_id = ? AND day >= ? ORDER BY day, time IS NOT NULL, time, id', chatId, todayKey(now));
+export const futureEvents = (chatId, now = Date.now()) => db.all('SELECT * FROM cal_events WHERE chat_id = ? AND deleted_at IS NULL AND day >= ? ORDER BY day, time IS NOT NULL, time, id', chatId, todayKey(now));
 export const eventsBetween = (chatIds, from, to) => {
   const ids = [].concat(chatIds);
   if (!ids.length) return [];
-  return db.all(`SELECT * FROM cal_events WHERE chat_id IN (${ids.map(() => '?').join(',')}) AND day >= ? AND day <= ? ORDER BY day, time IS NOT NULL, time, id`, ...ids, from, to);
+  return db.all(`SELECT * FROM cal_events WHERE chat_id IN (${ids.map(() => '?').join(',')}) AND deleted_at IS NULL AND day >= ? AND day <= ? ORDER BY day, time IS NOT NULL, time, id`, ...ids, from, to);
 };
 
 export function prune(now = Date.now()) {
@@ -325,32 +327,33 @@ export function add(chatId, { day, time = null, title, place = '', by = '', byNa
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day || '')) return { error: '要記在哪一天？例如「11/5」「下週六」' };
   if (time != null && !/^\d{2}:\d{2}$/.test(time)) return { error: '時間看不懂' };
   if (day < todayKey(now)) return { error: `${dayLabel(day)} 已經過了，日期要不要再確認一次？` };
-  const dup = db.get('SELECT * FROM cal_events WHERE chat_id = ? AND day = ? AND time IS ? AND title = ?', chatId, day, time, tt);
+  const dup = db.get('SELECT * FROM cal_events WHERE chat_id = ? AND deleted_at IS NULL AND day = ? AND time IS ? AND title = ?', chatId, day, time, tt);
   if (dup) return { dup };
-  if ((db.get('SELECT COUNT(*) n FROM cal_events WHERE chat_id = ? AND day >= ?', chatId, todayKey(now))?.n || 0) >= MAX_FUTURE) return { error: `行事曆已經有 ${MAX_FUTURE} 件還沒到的事，先刪掉一些` };
+  if ((db.get('SELECT COUNT(*) n FROM cal_events WHERE chat_id = ? AND deleted_at IS NULL AND day >= ?', chatId, todayKey(now))?.n || 0) >= MAX_FUTURE) return { error: `行事曆已經有 ${MAX_FUTURE} 件還沒到的事，先刪掉一些` };
   const p = parts(now);
   const start = Date.UTC(p.y, p.m - 1, p.d) - TZ;
   if ((db.get('SELECT COUNT(*) n FROM cal_events WHERE chat_id = ? AND created_at >= ?', chatId, start)?.n || 0) >= MAX_ADD_PER_DAY) return { error: `今天已經加了 ${MAX_ADD_PER_DAY} 件，明天再加` };
   const r = db.run('INSERT INTO cal_events (chat_id, day, time, title, place, created_by, created_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     chatId, day, time, tt, cards.clean(place, 20), by, cards.clean(byName, 20), now);
+  edits.log(chatId, `e${r.lastInsertRowid}`, { id: by, name: byName }, `新增了「${tt}」（${dayLabel(day)}${time ? ` ${time}` : ''}）`, now);
   return { ok: true, event: getEvent(r.lastInsertRowid) };
 }
 
 const canTouch = (ev, userId, admin) => ev.created_by === userId || admin;
 const denied = (ev) => ({ error: `只有加的人（${ev.created_by_name || '加的人'}）或 TED 可以改` });
 
-export function remove(chatId, id, userId, admin) {
+/** 刪除（軟刪除，30 天內可以從網頁還原；記在修改紀錄） */
+export function remove(chatId, id, userId, admin, byName = '', now = Date.now()) {
   const ev = getEvent(id);
-  if (!ev || ev.chat_id !== chatId) return { error: '行事曆裡找不到這件事（可能已經刪了）' };
+  if (!ev || ev.chat_id !== chatId || ev.deleted_at) return { error: '行事曆裡找不到這件事（可能已經刪了）' };
   if (!canTouch(ev, userId, admin)) return denied(ev);
-  db.run('DELETE FROM cal_events WHERE id = ?', ev.id);
-  return { ok: true, event: ev };
+  return edits.softDelete(chatId, ev.id, { id: userId, name: byName }, { now });
 }
 
 /** 改時間、標題或地點；w 是 parseWhen 的結果（只改有講到的那部分） */
-export function edit(chatId, id, userId, admin, { w = null, title = '', place = '' } = {}, now = Date.now()) {
+export function edit(chatId, id, userId, admin, { w = null, title = '', place = '', byName = '' } = {}, now = Date.now()) {
   const ev = getEvent(id);
-  if (!ev || ev.chat_id !== chatId) return { error: '行事曆裡找不到這件事' };
+  if (!ev || ev.chat_id !== chatId || ev.deleted_at) return { error: '行事曆裡找不到這件事' };
   if (!canTouch(ev, userId, admin)) return denied(ev);
   const day = w?.day || ev.day;
   // 只講日期（「改到下週六」）時間不變；明講「全天」才拿掉時間
@@ -361,7 +364,11 @@ export function edit(chatId, id, userId, admin, { w = null, title = '', place = 
   const pl = place ? cards.clean(place, 20) : ev.place;
   if (day < todayKey(now)) return { error: `${dayLabel(day)} 已經過了，日期要不要再確認一次？` };
   if (day === ev.day && time === ev.time && tt === ev.title && pl === ev.place) return { error: '跟原本一樣，沒有要改的' };
-  db.run('UPDATE cal_events SET day = ?, time = ?, title = ?, place = ?, updated_at = ? WHERE id = ?', day, time, tt, pl, now, ev.id);
+  db.run('UPDATE cal_events SET day = ?, time = ?, title = ?, place = ?, updated_at = ?, version = version + 1 WHERE id = ?', day, time, tt, pl, now, ev.id);
+  const by = { id: userId, name: byName };
+  if (day !== ev.day || time !== ev.time) edits.log(chatId, `e${ev.id}`, by, `時間：${whenLabel(ev)} → ${whenLabel({ day, time })}`, now);
+  if (tt !== ev.title) edits.log(chatId, `e${ev.id}`, by, `完整標題：${ev.title} → ${tt}`, now);
+  if (pl !== ev.place) edits.log(chatId, `e${ev.id}`, by, `地點：${ev.place || '空白'} → ${pl || '空白'}`, now);
   if (tt !== ev.title) meta.resetLabel(ev.id); // 名稱改了，短標籤重標
   return { ok: true, before: ev, event: getEvent(ev.id) };
 }
@@ -398,7 +405,7 @@ export function itemsBetween(sources, from, to, now = Date.now()) {
   const byChat = new Map(sources.map(s => [s.chatId, s]));
   const items = eventsBetween([...byChat.keys()], from, to).map(e => ({
     id: e.id, chatId: e.chat_id, day: e.day, time: e.time, title: e.title, place: e.place, by: e.created_by_name, poll: false, src: byChat.get(e.chat_id)?.label || '',
-    short: e.short || meta.fallbackShort(e.title), who: parseWho(e.who),
+    short: e.short || meta.fallbackShort(e.title), who: parseWho(e.who), ref: `e${e.id}`, version: e.version || 0, manual: Object.keys(edits.parseManual(e.manual)),
   }));
   for (const s of sources) {
     for (const p of polls.openPolls(s.chatId, null, now)) {
@@ -416,8 +423,11 @@ export function itemsBetween(sources, from, to, now = Date.now()) {
     for (const d of days) {
       if (d.day < from || d.day > to) continue;
       const m = d.name ? meta.tripMeta(s.chatId, d.name) : null;
+      // 網頁上手動改過的短名稱、參加的人（cal_trip_edits）蓋在 AI 標的上面
+      const ed = d.name ? edits.tripEdit(s.chatId, d.name, d.day) : null;
       items.push({ id: null, chatId: s.chatId, day: d.day, time: null, title: cards.clean(d.title, 30), place: '', by: '', poll: false, trip: true, url: TRIP_URL_RE.test(d.url) ? d.url : null, src: s.label || '',
-        short: m?.short || meta.fallbackShort(d.title), who: meta.tripWho(m, d.day) });
+        short: ed?.short || m?.short || meta.fallbackShort(d.title), who: ed?.who || meta.tripWho(m, d.day),
+        ref: d.name ? edits.tripRef(d.name, d.day) : null, version: ed?.version || 0, manual: Object.keys(ed?.manual || {}) });
     }
   }
   const out = new Map();
@@ -437,7 +447,15 @@ export function tokenOf(chatId) {
   db.run('INSERT INTO cal_pages (chat_id, token) VALUES (?, ?)', chatId, token);
   return token;
 }
-export const pageUrl = (chatId, now = Date.now()) => `${publicBase}/public/cal/${tokenOf(chatId)}.html?v=${Math.floor(now / 1000)}`;
+/** LIFF（從 LINE 打開才能改）有設定就給 LIFF 連結，沒設定給一般網址 */
+export const liff = () => edits.liffConfig(process.env.XIAOSHUAI_LIFF_FILE || join(ROOT, 'data', 'xiaoshuai-liff.json'));
+export const pageUrl = (chatId, now = Date.now()) => {
+  const l = liff();
+  return l ? `https://liff.line.me/${l.liffId}?t=${tokenOf(chatId)}` : `${publicBase}/public/cal/${tokenOf(chatId)}.html?v=${Math.floor(now / 1000)}`;
+};
+const pageUrlOk = (u) => u.startsWith(`${publicBase}/public/cal/`) || (!!liff() && u.startsWith(`https://liff.line.me/${liff().liffId}?t=`));
+/** 網頁 token → 聊天（網頁上改東西時用）；沒有回 null */
+export const chatOfToken = (token) => (/^[0-9a-f]{32}$/.test(token || '') ? db.get('SELECT chat_id FROM cal_pages WHERE token = ?', token)?.chat_id || null : null);
 /** 有開過網頁的聊天（資料改了要重寫） */
 export const pageChats = () => (db?.all('SELECT chat_id FROM cal_pages') || []).map(r => r.chat_id);
 
@@ -448,28 +466,38 @@ export function writePage(chatId, sources, { title = '行事曆', now = Date.now
   const to = addDays(today, 366);
   // 參加的人：稱呼對到成員，網頁只放名字與頭像相對路徑（people），每筆存索引
   const people = []; const at = new Map();
-  const ids = (chat, who) => meta.resolveWho(chat, who).map(uid => {
+  const idx = (chat, uid) => {
     const k = `${chat}:${uid}`;
     if (!at.has(k)) { const p = meta.personOf(chat, uid); if (!p) return -1; at.set(k, people.length); people.push(p); }
     return at.get(k);
-  }).filter(x => x >= 0);
+  };
+  const ids = (chat, who) => meta.resolveWho(chat, who).map(uid => idx(chat, uid)).filter(x => x >= 0);
+  // 每個來源：成員（全員、勾人用）與家庭（排第一的是代表）
+  const groups = sources.map(s => ({
+    all: meta.members(s.chatId).map(m => idx(s.chatId, m.user_id)).filter(x => x >= 0),
+    fam: meta.families(s.chatId).map(f => ({ n: `${f.family}家`, m: f.ids.map(u => idx(s.chatId, u)).filter(x => x >= 0) })),
+  }));
+  const gi = new Map(sources.map((s, i) => [s.chatId, i]));
   const items = [...itemsBetween(sources, from, to, now).values()].flat()
-    .map(i => ({ d: i.day, t: i.time || '', n: i.title, p: i.place || '', b: i.by || '', v: i.poll ? 1 : 0, s: sources.length > 1 ? i.src : '', l: i.short || meta.fallbackShort(i.title), w: ids(i.chatId, i.who), ...(i.trip ? { k: 1, u: i.url || '' } : {}) }));
+    .map(i => ({ d: i.day, t: i.time || '', n: i.title, p: i.place || '', b: i.by || '', v: i.poll ? 1 : 0, s: sources.length > 1 ? i.src : '', l: i.short || meta.fallbackShort(i.title), w: ids(i.chatId, i.who),
+      g: gi.get(i.chatId) ?? 0, ...(i.ref ? { r: i.ref, ver: i.version || 0, m: i.manual?.join('') || '' } : {}), ...(i.ref && i.chatId === chatId ? { x: 1 } : {}),
+      ...(i.trip ? { k: 1, u: i.url || '' } : {}) }));
   if (!existsSync(pageDir)) mkdirSync(pageDir, { recursive: true });
   const file = join(pageDir, `${tokenOf(chatId)}.html`);
-  writeFileSync(`${file}.tmp`, pageHtml({ title: cards.clean(title, 30), items, people, today, updated: now, legend: sources.length > 1 }));
+  writeFileSync(`${file}.tmp`, pageHtml({ title: cards.clean(title, 30), items, people, groups, today, updated: now, legend: sources.length > 1, edit: !!liff() }));
   renameSync(`${file}.tmp`, file);
   return pageUrl(chatId, now);
 }
 
 /**
- * 月曆網頁（2026-11-01 改成「小帥的週末手帳」；同日改格子放大版，照 共用/AI產出/mockup/小帥月曆格子放大預覽.html 的 B）
- * 格子：頁首和月份合成一列、外框留白 3px，格子上放短標籤（AI 給的 2～6 字）；同一個標籤連續好幾天畫成一條橫跨的長條，
- * 標籤和參加的人頭像只寫一次；一天還有其他事就顯示「+N」。點格子看那天的完整標題
- * 單檔、不連外部資源：小帥的圖是 /public/xiaoshuai/*.jpg、頭像是 public/cal/av/（都是相對路徑）；資料放 JSON、用 textContent 畫，標題裡有 HTML 也不會執行
+ * 月曆網頁（2026-11-01：「小帥的週末手帳」→ 格子放大版 → 兩週＋網頁上直接改，照 共用/AI產出/mockup/小帥月曆兩週＋編輯預覽.html）
+ * 預設兩週（本週＋下週 14 格，格子是整月兩倍高），可切整月；同一個短標籤連續好幾天畫成長條
+ * 格子頭像：一整家都到只放代表、全員寫「全員」，兩週最多 3 個、整月最多 2 個，其他寫「+N」
+ * 改：edit（LIFF 有設定）而且從 LINE 打開（cal-liff.html 把 ID token 放 sessionStorage）才出現，送到 /x/xiaoshuai/cal/*，主機驗身分
+ * 單檔、不連外部資源：小帥的圖、頭像都是同網域相對路徑；資料放 JSON、用 textContent 畫，標題裡有 HTML 也不會執行
  */
-export function pageHtml({ title, items, people = [], today, updated, legend = false }) {
-  const data = JSON.stringify({ title, items, people, today, updated: new Date(updated + TZ).toISOString().slice(5, 16).replace('-', '/').replace('T', ' '), legend })
+export function pageHtml({ title, items, people = [], groups = [], today, updated, legend = false, edit = false }) {
+  const data = JSON.stringify({ title, items, people, groups, today, updated: new Date(updated + TZ).toISOString().slice(5, 16).replace('-', '/').replace('T', ' '), legend, edit })
     .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return `<!doctype html>
 <html lang="zh-Hant">
@@ -480,23 +508,32 @@ export function pageHtml({ title, items, people = [], today, updated, legend = f
 <meta name="referrer" content="no-referrer">
 <title>小帥的行事曆</title>
 <style>
-  :root { --bg:#FFF9EF; --card:#FFFFFF; --main:#287C78; --acc:#E98445; --text:#243B3A; --vote:${PAGE_VOTE}; --trip:#3A7CC4; --sub:#7B8C8A; --we:#C8693A; --line:#287C7822; }
+  :root { --bg:#FFF9EF; --card:#FFFFFF; --main:#287C78; --acc:#E98445; --text:#243B3A; --vote:${PAGE_VOTE}; --trip:#3A7CC4; --sub:#7B8C8A; --we:#C8693A; --line:#287C7822; --warn:#B45309; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",sans-serif; }
   .wrap { max-width:760px; margin:0 auto; padding:0 0 8px; }
   .av { flex:none; border-radius:50%; background:#fff center/cover no-repeat; }
-  .bar { position:sticky; top:0; z-index:3; background:var(--bg); display:flex; align-items:center; gap:6px; padding:8px 8px 4px; }
+  .bar { position:sticky; top:0; z-index:3; background:var(--bg); padding:8px 8px 4px; }
+  .r1 { display:flex; align-items:center; gap:6px; }
   .bar .av { width:30px; height:30px; border:1.5px solid var(--line); }
   .bar .t { flex:1; min-width:0; }
-  h1 { font-size:13px; font-weight:700; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .bar .m { font-size:16px; font-weight:800; }
+  h1 { font-size:12.5px; font-weight:700; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bar .m { font-size:15.5px; font-weight:800; }
   .bar .y { font-size:11px; color:var(--sub); font-weight:500; margin-left:4px; }
-  .bar button { border:0; width:34px; height:34px; border-radius:50%; background:var(--card); color:var(--main); font-size:19px; box-shadow:0 1px 2px #0000001a; cursor:pointer; flex:none; }
+  .bar .nav { border:0; width:32px; height:32px; border-radius:50%; background:var(--card); color:var(--main); font-size:18px; box-shadow:0 1px 2px #0000001a; cursor:pointer; flex:none; }
+  .seg { display:flex; background:#fff; border-radius:999px; padding:2px; box-shadow:0 1px 2px #0000001a; flex:none; }
+  .seg button { border:0; background:none; font-size:12px; padding:5px 9px; border-radius:999px; cursor:pointer; color:var(--sub); }
+  .seg button.on { background:var(--main); color:#fff; font-weight:700; }
+  .ro, .ed { margin:6px 0 0; font-size:11.5px; border-radius:8px; padding:4px 8px; }
+  .ro { color:var(--warn); background:#FEF3C7; }
+  .ed { color:#166534; background:#DCFCE7; display:flex; justify-content:space-between; align-items:center; gap:6px; }
+  .ed button { border:0; background:#fff; border-radius:6px; font-size:11.5px; padding:2px 6px; color:var(--main); cursor:pointer; }
   .wds, .wk { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:2px; padding:0 3px; }
   .wd { text-align:center; font-size:10px; color:var(--sub); padding:1px 0 2px; }
   .wd.we { color:var(--we); }
   .wk { position:relative; margin-bottom:2px; }
   .cell { min-height:78px; border-radius:6px; padding:2px 2px 3px; background:var(--card); cursor:pointer; overflow:hidden; display:flex; flex-direction:column; min-width:0; }
+  .two .cell { min-height:156px; }
   .cell.out { background:transparent; cursor:default; }
   .cell.lane { padding-top:21px; }
   .cell .n { font-weight:700; font-size:11px; line-height:14px; display:flex; justify-content:space-between; align-items:center; }
@@ -507,16 +544,21 @@ export function pageHtml({ title, items, people = [], today, updated, legend = f
   .cell.past { opacity:.55; }
   .cell.sel { background:#E6F2F1; }
   .cnt { font-size:9.5px; font-weight:700; color:#fff; background:var(--acc); border-radius:7px; padding:0 4px; line-height:14px; }
+  .chip { margin-top:3px; }
+  .chip .tm { font-size:9.5px; color:var(--main); font-weight:700; line-height:1.1; }
   .lb { margin-top:2px; font-size:10.5px; font-weight:700; line-height:1.18; color:#fff; background:var(--main); border-radius:4px; padding:2px 1px; text-align:center; word-break:break-all; text-wrap:balance; letter-spacing:-.3px; }
   .lb.k, .span.k { background:var(--trip); }
   .lb.v, .span.v { background:var(--vote); }
   .span { position:absolute; top:16px; height:18px; z-index:1; border-radius:5px; background:var(--main); color:#fff; font-size:10.5px; font-weight:700; padding:0 4px; display:flex; align-items:center; gap:4px; white-space:nowrap; overflow:hidden; pointer-events:none; }
-  .ppl { margin-top:auto; display:flex; align-items:center; padding:2px 0 0 4px; }
+  .ppl { display:flex; align-items:center; padding:2px 0 0 4px; }
+  .ppl.bot { margin-top:auto; }
   .ppl .p { width:15px; height:15px; margin-left:-4px; border:1.5px solid #fff; font-size:8px; line-height:12px; }
   .span .ppl { margin:0 0 0 auto; padding:0 0 0 4px; }
   .span .ppl .p { border-color:transparent; }
   .ppl em { font-style:normal; font-size:9px; color:var(--sub); margin-left:2px; font-weight:700; }
   .span .ppl em { color:#fff; }
+  .all { font-size:9px; font-weight:700; color:var(--main); background:#E6F2F1; border-radius:4px; padding:0 3px; line-height:14px; margin-top:2px; align-self:flex-start; }
+  .span .all { background:#ffffff33; color:#fff; margin:0 0 0 auto; }
   .p { display:inline-block; border-radius:50%; background:#94A3B8 center/cover no-repeat; color:#fff; font-weight:700; text-align:center; overflow:hidden; flex:none; }
   h2 { font-size:15px; margin:16px 12px 8px; display:flex; justify-content:space-between; align-items:center; }
   h2 button { border:0; background:none; color:var(--main); font-size:13px; padding:4px 0; cursor:pointer; }
@@ -528,11 +570,18 @@ export function pageHtml({ title, items, people = [], today, updated, legend = f
   .ev .tm { width:42px; flex:none; font-weight:700; color:var(--main); font-size:13px; padding-top:1px; }
   .ev.allday .tm { color:var(--sub); font-weight:500; }
   .ev.v .tm { color:var(--vote); }
+  .ev .body { flex:1; min-width:0; }
   .ev .sub { font-size:11.5px; color:var(--sub); margin-top:2px; }
   .who { display:flex; flex-wrap:wrap; gap:4px 8px; margin-top:5px; font-size:12px; color:var(--sub); }
-  .who span { display:inline-flex; align-items:center; gap:4px; }
+  .who span { display:inline-flex; align-items:center; gap:3px; }
   .who .p { width:20px; height:20px; font-size:10px; line-height:20px; }
-  .go { display:inline-block; margin-top:4px; font-size:12.5px; color:var(--main); text-decoration:none; font-weight:600; }
+  .acts { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; align-items:center; }
+  .acts button { border:1px solid #cbd5e1; background:#fff; border-radius:7px; font-size:12px; padding:3px 8px; color:var(--main); cursor:pointer; }
+  .go { display:inline-block; font-size:12.5px; color:var(--main); text-decoration:none; font-weight:600; }
+  .man { font-size:10px; color:var(--warn); background:#FEF3C7; border-radius:4px; padding:0 4px; margin-left:4px; font-weight:700; }
+  .del { margin:0 8px 8px; background:#f8fafc; border-radius:12px; padding:8px 10px; font-size:12.5px; color:var(--sub); }
+  .del div { display:flex; justify-content:space-between; align-items:center; padding:3px 0; gap:8px; }
+  .del button { border:0; background:#fff; border-radius:6px; padding:2px 8px; color:var(--main); font-size:12px; cursor:pointer; box-shadow:0 0 0 1px #cbd5e1; flex:none; }
   .empty { margin:4px 8px 12px; display:flex; gap:12px; align-items:center; background:var(--card); border-radius:14px; padding:12px; font-size:14px; color:var(--sub); }
   .empty .av { width:72px; height:72px; border-radius:16px; background-size:contain; }
   .empty.big { flex-direction:column; text-align:center; padding:20px 12px; }
@@ -540,22 +589,56 @@ export function pageHtml({ title, items, people = [], today, updated, legend = f
   .foot { display:flex; gap:8px; align-items:center; justify-content:center; padding:18px 16px 8px; font-size:12px; color:var(--sub); }
   .foot .av { width:28px; height:28px; }
   .tip { text-align:center; font-size:11.5px; color:var(--sub); padding:0 20px 24px; line-height:1.6; }
+  .shade { position:fixed; inset:0; background:#0006; z-index:10; display:flex; align-items:flex-end; justify-content:center; }
+  .sheet { background:#fff; width:100%; max-width:560px; max-height:92vh; overflow:auto; border-radius:18px 18px 0 0; padding:14px 14px 22px; font-size:13.5px; }
+  .sheet h3 { margin:0 0 10px; font-size:16px; display:flex; justify-content:space-between; align-items:center; }
+  .sheet h3 button { border:0; background:none; font-size:22px; color:var(--sub); cursor:pointer; }
+  .w { color:var(--sub); font-size:12px; line-height:1.6; }
+  .fl { margin-bottom:10px; }
+  .fl label { display:flex; align-items:center; font-size:12px; color:var(--sub); margin-bottom:3px; gap:4px; }
+  .fl label a, .fam .fh a { margin-left:auto; color:var(--main); font-size:11.5px; cursor:pointer; font-weight:400; }
+  .fl input[type=text], .fl input[type=date], .fl input[type=time] { width:100%; border:1px solid #cbd5e1; border-radius:8px; padding:7px 8px; font-size:16px; font-family:inherit; background:#fff; }
+  .fl input:disabled { background:#f1f5f9; color:#94a3b8; }
+  .row2 { display:flex; gap:8px; } .row2 .fl { flex:1; min-width:0; }
+  .tripnote { background:#EFF6FF; color:#1E40AF; border-radius:8px; padding:7px 9px; font-size:12px; margin-bottom:10px; line-height:1.6; }
+  .fam { border:1px solid #e2e8f0; border-radius:10px; padding:6px 8px; margin-bottom:6px; }
+  .fam .fh { display:flex; align-items:center; gap:6px; font-weight:700; font-size:13px; }
+  .fam .ms { display:flex; flex-wrap:wrap; gap:6px 12px; margin:4px 0 0 22px; align-items:center; }
+  .fam .ms label { display:inline-flex; align-items:center; gap:4px; font-size:12.5px; cursor:pointer; }
+  .fam .ms label a { color:var(--sub); margin-left:2px; }
+  .btns { display:flex; gap:8px; margin-top:12px; }
+  .btns button { flex:1; border:0; border-radius:10px; padding:10px; font-size:14px; font-weight:700; cursor:pointer; }
+  .b1 { background:var(--main); color:#fff; } .b2 { background:#f1f5f9; color:var(--text); } .b3 { background:#FEE2E2; color:#B91C1C; }
+  .dlg { position:fixed; inset:0; z-index:20; background:#0007; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .dlg > div { background:#fff; border-radius:16px; padding:16px; font-size:13.5px; line-height:1.6; max-width:420px; }
+  .dlg h4 { margin:0 0 6px; font-size:15px; }
+  .chg { background:#f8fafc; border-radius:8px; padding:6px 8px; font-size:12.5px; margin:6px 0; }
+  .hist { display:flex; gap:8px; padding:8px 0; border-top:1px dashed #e2e8f0; font-size:12.5px; }
+  .hist:first-of-type { border-top:0; }
+  .toggle { display:flex; justify-content:space-between; align-items:center; gap:8px; background:#f8fafc; border-radius:10px; padding:8px 10px; margin:4px 0 8px; font-size:12.5px; }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#243B3A; color:#fff; border-radius:999px; padding:7px 14px; font-size:12.5px; z-index:30; white-space:nowrap; }
   @media (min-width:600px) {
     .bar { padding:12px 12px 6px; }
     .bar .av { width:40px; height:40px; }
     h1 { font-size:15px; }
     .bar .m { font-size:20px; }
     .cell { min-height:100px; }
+    .two .cell { min-height:170px; }
     .lb, .span { font-size:12px; }
   }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="bar"><span class="av" id="av"></span><div class="t"><h1 id="title"></h1><span class="m" id="m"></span><span class="y" id="y"></span></div><button id="prev" aria-label="上個月">‹</button><button id="next" aria-label="下個月">›</button></div>
+  <div class="bar">
+    <div class="r1"><span class="av" id="av"></span><div class="t"><h1 id="title"></h1><span class="m" id="range"></span><span class="y" id="y"></span></div>
+      <div class="seg" id="seg"><button data-m="two">兩週</button><button data-m="month">整月</button></div>
+      <button class="nav" id="prev" aria-label="往前">‹</button><button class="nav" id="next" aria-label="往後">›</button></div>
+    <div id="mode" class="ro"></div>
+  </div>
   <div class="wds" id="wds"></div>
   <div id="grid"></div>
-  <h2><span id="listTitle"></span><button id="all" hidden>看整月</button></h2>
+  <h2><span id="listTitle"></span><button id="all" hidden>看全部</button></h2>
   <div id="list"></div>
   <div class="foot"><span class="av" id="av2"></span><span id="foot"></span></div>
   <div class="tip">小帥：我幫大家記好了！在 LINE 跟小帥說「11/5 晚上七點 家長會」就會加上來，說「刪掉 家長會」就刪掉；說「妞家是 Jasmine」，小帥就知道誰是哪一家。</div>
@@ -568,56 +651,115 @@ const W = '日一二三四五六';
 const TRIP_RE = /^https:\\/\\/badbadted\\.github\\.io\\/temp-reports\\/[a-z0-9-]{1,60}\\.html(#d\\d{1,2})?$/;
 const AV_RE = /^av\\/[0-9a-f]{24}\\.(jpg|png)\\?v=[0-9a-z]{1,12}$/;
 const COLORS = ['#D97757', '#3A7CC4', '#2E9E6E', '#8056A8', '#C2620A', '#0F766E', '#BE4B76'];
+const API = '/x/xiaoshuai/cal/';
+const TOKEN = (/([0-9a-f]{32})\\.html$/.exec(location.pathname) || [])[1] || '';
+const store = (k, v) => { try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { return null; } return null; };
+const keep = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } return null; };
 const byDay = {};
 for (const i of D.items) (byDay[i.d] = byDay[i.d] || []).push(i);
 const pad = (n) => String(n).padStart(2, '0');
-const key = (y, m, d) => y + '-' + pad(m) + '-' + pad(d);
-const label = (k) => { const [y, m, d] = k.split('-').map(Number); return m + '/' + d + '（' + W[new Date(Date.UTC(y, m - 1, d)).getUTCDay()] + '）'; };
-let [Y, M] = D.today.split('-').map(Number);
-let sel = null;
+const keyOf = (x) => x.getUTCFullYear() + '-' + pad(x.getUTCMonth() + 1) + '-' + pad(x.getUTCDate());
+const parse = (k) => { const a = k.split('-').map(Number); return new Date(Date.UTC(a[0], a[1] - 1, a[2])); };
+const addD = (k, n) => { const x = parse(k); x.setUTCDate(x.getUTCDate() + n); return keyOf(x); };
+const md = (k) => { const x = parse(k); return (x.getUTCMonth() + 1) + '/' + x.getUTCDate(); };
+const label = (k) => md(k) + '（' + W[parse(k).getUTCDay()] + '）';
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const av = (cls, img) => { const e = el('span', 'av' + (cls ? ' ' + cls : '')); e.style.backgroundImage = 'url(' + img + ')'; return e; };
-// 參加的人：有頭像用頭像，沒有就用名字第一個字
-function face(i) {
+const $ = (id) => document.getElementById(id);
+// 畫面狀態：兩週（預設）／整月；重新整理後留在原本看的地方
+const saved = (() => { try { return JSON.parse(store('xs-cal-view') || 'null'); } catch (e) { return null; } })();
+let mode = (saved && saved.mode) || keep('xs-cal-mode') || 'two';
+const weekStart = (k) => addD(k, -parse(k).getUTCDay());
+let start = (saved && saved.start) || weekStart(D.today);
+let Y = +((saved && saved.ym) || D.today).slice(0, 4), M = +((saved && saved.ym) || D.today).slice(5, 7);
+let sel = null;
+store('xs-cal-view', null);
+// 編輯：從 LINE（LIFF）打開時 cal-liff.html 會把 ID token 放在 sessionStorage
+const IDT = D.edit ? store('xs-cal-idt') : null;
+let ME = null; // { me, members, families, notify, deleted }
+
+function face(i, size) {
   const p = D.people[i] || { n: '?' };
   const e = el('span', 'p');
   if (AV_RE.test(p.a || '')) e.style.backgroundImage = 'url(' + p.a + ')';
   else { e.textContent = Array.from(p.n.replace(/[^\\p{L}\\p{N}]/gu, '') || '?')[0]; e.style.background = COLORS[i % COLORS.length]; }
+  if (size) { e.style.width = e.style.height = size + 'px'; e.style.lineHeight = size + 'px'; }
   e.title = p.n;
   return e;
 }
-function ppl(ids, max) {
+// 格子上放誰：全員 → 「全員」；一整家都到 → 只放代表（家庭對應裡排第一的）
+function faces(who, g) {
+  const G = D.groups[g || 0] || { all: [], fam: [] };
+  if (G.all.length > 1 && G.all.every(x => who.includes(x))) return { all: true, ids: [] };
+  const out = []; const used = new Set();
+  for (const f of G.fam) if (f.m.length > 1 && f.m.every(x => who.includes(x))) { out.push(f.m[0]); f.m.forEach(x => used.add(x)); }
+  for (const x of who) if (!used.has(x)) out.push(x);
+  return { all: false, ids: out };
+}
+function ppl(list, max) {
+  const g = list.length ? list[0].g : 0;
+  const who = [...new Set(list.flatMap(i => i.w || []))];
+  if (!who.length) return null;
+  const f = faces(who, g);
+  if (f.all) return el('span', 'all', '全員');
   const box = el('div', 'ppl');
-  for (const i of ids.slice(0, max)) box.append(face(i));
-  if (ids.length > max) box.append(el('em', null, '+' + (ids.length - max)));
+  for (const x of f.ids.slice(0, max)) box.append(face(x));
+  if (f.ids.length > max) box.append(el('em', null, '+' + (f.ids.length - max)));
   return box;
 }
-const uniq = (list) => [...new Set(list.flatMap(i => i.w || []))];
 const kind = (i) => (i.v ? ' v' : i.k ? ' k' : '');
-document.getElementById('av').style.backgroundImage = 'url(' + AV + ')';
-document.getElementById('av2').style.backgroundImage = 'url(' + AV + ')';
-document.getElementById('title').textContent = D.title;
-document.getElementById('foot').textContent = '更新於 ' + D.updated + '・更新好了，有事再叫我。';
-W.split('').forEach((w, i) => document.getElementById('wds').append(el('div', 'wd' + (i === 0 || i === 6 ? ' we' : ''), w)));
+
+$('av').style.backgroundImage = 'url(' + AV + ')';
+$('av2').style.backgroundImage = 'url(' + AV + ')';
+$('title').textContent = D.title;
+$('foot').textContent = '更新於 ' + D.updated + '・更新好了，有事再叫我。';
+W.split('').forEach((w, i) => $('wds').append(el('div', 'wd' + (i === 0 || i === 6 ? ' we' : ''), w)));
 function empty(text, big) {
   const box = el('div', 'empty' + (big ? ' big' : ''));
   box.append(av('', NOTE), el('div', null, text));
   return box;
 }
-function render() {
-  document.getElementById('y').textContent = Y;
-  document.getElementById('m').textContent = M + ' 月';
-  const g = document.getElementById('grid');
-  g.replaceChildren();
+function weeks() {
+  if (mode === 'two') return [0, 7].map(o => Array.from({ length: 7 }, (_, i) => addD(start, o + i)));
   const first = new Date(Date.UTC(Y, M - 1, 1)).getUTCDay();
   const days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
   const slots = [];
-  for (let i = 0; i < first; i++) slots.push(0);
-  for (let d = 1; d <= days; d++) slots.push(d);
-  while (slots.length % 7) slots.push(0);
-  for (let w = 0; w < slots.length / 7; w++) {
-    const wk = el('div', 'wk');
-    const row = slots.slice(w * 7, w * 7 + 7).map((d, i) => (d ? { d, i, k: key(Y, M, d), list: byDay[key(Y, M, d)] || [] } : null));
+  for (let i = 0; i < first; i++) slots.push(null);
+  for (let d = 1; d <= days; d++) slots.push(Y + '-' + pad(M) + '-' + pad(d));
+  while (slots.length % 7) slots.push(null);
+  return Array.from({ length: slots.length / 7 }, (_, w) => slots.slice(w * 7, w * 7 + 7));
+}
+function move(n) {
+  if (mode === 'two') start = addD(start, 14 * n);
+  else { M += n; if (M < 1) { M = 12; Y--; } if (M > 12) { M = 1; Y++; } }
+  sel = null; render();
+}
+function setMode(m) {
+  if (m === mode) return;
+  if (m === 'month') { const k = sel || addD(start, 7); Y = +k.slice(0, 4); M = +k.slice(5, 7); }
+  else start = weekStart(sel || (Y + '-' + pad(M) + '-01' <= D.today && D.today.slice(0, 7) === Y + '-' + pad(M) ? D.today : Y + '-' + pad(M) + '-01'));
+  mode = m; keep('xs-cal-mode', m); sel = null; render();
+}
+document.querySelectorAll('#seg button').forEach(b => { b.onclick = () => setMode(b.dataset.m); });
+$('prev').onclick = () => move(-1);
+$('next').onclick = () => move(1);
+$('all').onclick = () => { sel = null; render(); };
+let tx = null;
+$('grid').addEventListener('touchstart', (e) => { tx = e.touches[0].clientX; }, { passive: true });
+$('grid').addEventListener('touchend', (e) => { if (tx != null) { const dx = e.changedTouches[0].clientX - tx; if (Math.abs(dx) > 60) move(dx < 0 ? 1 : -1); } tx = null; });
+
+function render() {
+  const ws = weeks();
+  document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
+  $('range').textContent = mode === 'two' ? md(ws[0][0]) + '～' + md(ws[1][6]) : M + ' 月';
+  $('y').textContent = mode === 'two' ? '' : Y;
+  const g = $('grid');
+  g.replaceChildren();
+  g.className = mode === 'two' ? 'two' : '';
+  const maxChip = mode === 'two' ? 3 : 1;
+  const maxFace = mode === 'two' ? 3 : 2;
+  for (const wk of ws) {
+    const row = wk.map((k, i) => (k ? { k, i, list: byDay[k] || [] } : null));
     // 同一個標籤連續兩天以上：畫成一條（一週一條線道，先到先畫）
     const spans = [];
     for (let i = 0; i < 7;) {
@@ -629,28 +771,39 @@ function render() {
       }
       if (!best) { i++; continue; }
       const covered = [];
-      for (let x = i; x <= best.j; x++) { row[x].lane = best.l; covered.push(...row[x].list.filter(it => it.l === best.l)); }
-      spans.push({ i, j: best.j, l: best.l, cls: kind(best.it), who: uniq(covered) });
+      for (let x = i; x <= best.j; x++) {
+        row[x].lane = best.l;
+        // 長條代表的那筆：先挑旅遊行程
+        row[x].lead = row[x].list.find(it => it.l === best.l && it.k) || row[x].list.find(it => it.l === best.l);
+        covered.push(...(mode === 'two' ? [row[x].lead] : row[x].list.filter(it => it.l === best.l)));
+      }
+      spans.push({ i, j: best.j, l: best.l, cls: kind(best.it), covered });
       i = best.j + 1;
     }
+    const w = el('div', 'wk');
     for (const r of row) {
-      if (!r) { wk.append(el('div', 'cell out')); continue; }
-      const { d, i, k } = r;
+      if (!r) { w.append(el('div', 'cell out')); continue; }
+      const { k, i } = r;
+      const dn = parse(k).getUTCDate();
       const c = el('div', 'cell' + (i === 0 || i === 6 ? ' we' : '') + (k === D.today ? ' today' : '') + (k < D.today ? ' past' : '') + (k === sel ? ' sel' : '') + (r.lane ? ' lane' : ''));
       const n = el('div', 'n');
-      n.append(el('span', null, String(d)));
+      n.append(el('span', null, (mode === 'two' && dn === 1 ? (parse(k).getUTCMonth() + 1) + '/' : '') + dn));
       c.append(n);
-      const rest = r.list.filter(it => it.l !== r.lane);
-      if (rest.length) {
-        c.append(el('div', 'lb' + kind(rest[0]), rest[0].l));
-        const who = uniq(rest);
-        if (who.length) c.append(ppl(who, 3));
+      // 整月：同標籤的都算進長條；兩週：長條只算一筆，同標籤的其他事（例如機票確認）照樣列出來
+      const rest = mode === 'two' ? r.list.filter(it => it !== r.lead) : r.list.filter(it => it.l !== r.lane);
+      for (const it of rest.slice(0, maxChip)) {
+        const ch = el('div', 'chip');
+        if (mode === 'two' && it.t) ch.append(el('div', 'tm', it.t));
+        ch.append(el('div', 'lb' + kind(it), it.l));
+        if (mode === 'two') { const p = ppl([it], maxFace); if (p) ch.append(p); }
+        c.append(ch);
       }
-      // 格子上沒寫出來的還有幾件（長條算一件、下面的標籤算一件）
-      const more = r.list.length - (r.lane ? 1 : 0) - (rest.length ? 1 : 0);
+      if (mode !== 'two' && rest.length) { const p = ppl(rest, maxFace); if (p) { p.classList.add('bot'); c.append(p); } }
+      // 格子上沒寫出來的還有幾件
+      const more = r.list.length - (r.lane ? 1 : 0) - Math.min(rest.length, maxChip);
       if (more > 0) n.append(el('span', 'cnt', '+' + more));
-      c.onclick = () => { sel = sel === k ? null : k; render(); if (sel) document.getElementById('listTitle').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
-      wk.append(c);
+      c.onclick = () => { sel = sel === k ? null : k; render(); if (sel) $('listTitle').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+      w.append(c);
     }
     for (const s of spans) {
       const b = el('div', 'span' + s.cls);
@@ -658,43 +811,266 @@ function render() {
       b.style.left = 'calc(3px + (100% - 18px) / 7 * ' + s.i + ' + ' + (s.i * 2) + 'px)';
       b.style.width = 'calc((100% - 18px) / 7 * ' + len + ' + ' + ((len - 1) * 2) + 'px)';
       b.append(el('span', null, s.l));
-      if (s.who.length) b.append(ppl(s.who, len > 2 ? 4 : 2));
-      wk.append(b);
+      const p = ppl(s.covered, len > 2 ? maxFace : 1);
+      if (p) b.append(p);
+      w.append(b);
     }
-    g.append(wk);
+    g.append(w);
   }
-  const L = document.getElementById('list');
+  const L = $('list');
   L.replaceChildren();
-  const keys = Object.keys(byDay).filter(k => (sel ? k === sel : k.startsWith(key(Y, M, 1).slice(0, 8)))).sort();
-  document.getElementById('listTitle').textContent = sel ? label(sel) + ' 的事' : M + ' 月的事（' + keys.reduce((n, k) => n + byDay[k].length, 0) + ' 件）';
-  document.getElementById('all').hidden = !sel;
-  if (!keys.length) L.append(sel ? empty('這天先留給自由發揮。') : empty('這個月，行程還很佛系。', true));
+  const inView = new Set(ws.flat().filter(Boolean));
+  const keys = Object.keys(byDay).filter(k => (sel ? k === sel : inView.has(k))).sort();
+  $('listTitle').textContent = sel ? label(sel) + ' 的事' : (mode === 'two' ? '這兩週' : M + ' 月') + '的事（' + keys.reduce((n, k) => n + byDay[k].length, 0) + ' 件）';
+  $('all').hidden = !sel;
+  if (!keys.length) L.append(sel ? empty('這天先留給自由發揮。') : empty(mode === 'two' ? '這兩週，行程還很佛系。' : '這個月，行程還很佛系。', true));
   for (const k of keys) {
     const box = el('div', 'day' + (k === D.today ? ' today' : ''));
     box.append(el('div', 'h', label(k) + (k === D.today ? '・今天' : '')));
-    for (const i of byDay[k]) {
-      const r = el('div', 'ev' + (i.v ? ' v' : '') + (i.t ? '' : ' allday'));
-      r.append(el('div', 'tm', i.t || '全天'));
-      const body = el('div', null);
-      body.append(el('div', null, (i.v ? '🗳️ ' : '') + i.n));
-      const sub = [i.k ? '🧳 旅遊行程' : '', i.p ? '📍 ' + i.p : '', i.s ? '👥 ' + i.s : '', i.b && !i.v ? i.b + ' 加的' : ''].filter(Boolean).join('・');
-      if (sub) body.append(el('div', 'sub', sub));
-      if (i.w && i.w.length) {
-        const who = el('div', 'who');
-        for (const x of i.w) { const s = el('span'); s.append(face(x), document.createTextNode((D.people[x] || { n: '' }).n)); who.append(s); }
-        body.append(who);
-      }
-      if (i.k && TRIP_RE.test(i.u || '')) { const a = el('a', 'go', '看行程 ›'); a.href = i.u; a.target = '_blank'; a.rel = 'noopener'; body.append(a); }
-      r.append(body);
-      box.append(r);
-    }
+    for (const i of byDay[k]) box.append(evRow(i));
     L.append(box);
   }
+  if (ME && ME.deleted.length) {
+    const d = el('div', 'del');
+    d.append(el('b', null, '🗑️ 最近刪除（可以還原）'));
+    for (const x of ME.deleted) {
+      const r = el('div');
+      r.append(el('span', null, label(x.day) + ' ' + x.title));
+      const b = el('button', null, '還原');
+      b.onclick = () => call('restore', { ref: 'e' + x.id }).then(ok => ok && done('還原了'));
+      r.append(b); d.append(r);
+    }
+    L.append(d);
+  }
 }
-document.getElementById('prev').onclick = () => { M--; if (M < 1) { M = 12; Y--; } sel = null; render(); };
-document.getElementById('next').onclick = () => { M++; if (M > 12) { M = 1; Y++; } sel = null; render(); };
-document.getElementById('all').onclick = () => { sel = null; render(); };
-render();
+function whoLine(i) {
+  const G = D.groups[i.g || 0] || { all: [], fam: [] };
+  const who = el('div', 'who');
+  if (G.all.length > 1 && G.all.every(x => i.w.includes(x))) { who.append(el('span', null, '👥 全員（' + i.w.length + ' 位）')); return who; }
+  const used = new Set();
+  for (const f of G.fam) {
+    const m = f.m.filter(x => i.w.includes(x));
+    if (!m.length) continue;
+    const s = el('span');
+    m.forEach(x => { s.append(face(x)); used.add(x); });
+    s.append(document.createTextNode(f.n + (m.length < f.m.length ? '（' + m.map(x => D.people[x].n).join('、') + '）' : '')));
+    who.append(s);
+  }
+  for (const x of i.w) if (!used.has(x)) { const s = el('span'); s.append(face(x), document.createTextNode(D.people[x].n)); who.append(s); }
+  return who;
+}
+function evRow(i) {
+  const r = el('div', 'ev' + (i.v ? ' v' : '') + (i.t ? '' : ' allday'));
+  r.append(el('div', 'tm', i.t || '全天'));
+  const body = el('div', 'body');
+  body.append(el('div', null, (i.v ? '🗳️ ' : '') + i.n));
+  const sub = [i.k ? '🧳 旅遊行程' : '', '格子上叫「' + i.l + '」' + ((i.m || '').includes('l') ? '✋' : ''), i.p ? '📍 ' + i.p : '', i.s ? '👥 ' + i.s : '', i.b && !i.v ? i.b + ' 加的' : ''].filter(Boolean).join('・');
+  body.append(el('div', 'sub', sub));
+  if (i.w && i.w.length) body.append(whoLine(i));
+  const acts = el('div', 'acts');
+  if (ME && i.x) {
+    const e = el('button', null, '✏️ 改'); e.onclick = () => editSheet(i); acts.append(e);
+    const h = el('button', null, '🕘 紀錄'); h.onclick = () => histSheet(i); acts.append(h);
+  }
+  if (i.k && TRIP_RE.test(i.u || '')) { const a = el('a', 'go', '看行程 ›'); a.href = i.u; a.target = '_blank'; a.rel = 'noopener'; acts.append(a); }
+  if (acts.childNodes.length) body.append(acts);
+  r.append(body);
+  return r;
+}
+
+// ── 編輯（只有從 LINE 打開、驗過是群組成員才有） ──
+function toast(t) { const e = el('div', 'toast', t); document.body.append(e); setTimeout(() => e.remove(), 2400); }
+async function call(action, body) {
+  try {
+    const res = await fetch(API + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ t: TOKEN, id: IDT }, body)) });
+    const j = await res.json().catch(() => ({}));
+    if (res.status === 409) return { conflict: j };
+    if (res.status === 401) { store('xs-cal-idt', null); toast('登入過期了，從 LINE 再打開一次'); setTimeout(() => location.reload(), 1500); return null; }
+    if (!res.ok || !j.ok) { toast(j.error || '沒存成功，等一下再試'); return null; }
+    return j;
+  } catch (e) { toast('連不上，等一下再試'); return null; }
+}
+function done(msg) {
+  store('xs-cal-view', JSON.stringify({ mode, start, ym: Y + '-' + pad(M) }));
+  toast(msg);
+  setTimeout(() => location.replace(location.pathname + '?v=' + Date.now()), 700);
+}
+function shade(build) {
+  const s = el('div', 'shade'); const sh = el('div', 'sheet'); s.append(sh);
+  s.onclick = (e) => { if (e.target === s) s.remove(); };
+  const close = () => s.remove();
+  build(sh, close);
+  document.body.append(s);
+}
+function head(sh, text, close) { const h = el('h3', null, text); const x = el('button', null, '×'); x.onclick = close; h.append(x); sh.append(h); }
+function dialog(title, lines, buttons) {
+  const d = el('div', 'dlg'); const bx = el('div'); d.append(bx);
+  bx.append(el('h4', null, title));
+  for (const l of lines) bx.append(typeof l === 'string' ? el('div', null, l) : l);
+  const b = el('div', 'btns');
+  for (const [t, cls, fn] of buttons) { const x = el('button', cls, t); x.onclick = () => { d.remove(); fn && fn(); }; b.append(x); }
+  bx.append(b); document.body.append(d);
+}
+const membersOf = () => (ME ? ME.members : []);
+function editSheet(i) {
+  shade((sh, close) => {
+    head(sh, '改這一筆', close);
+    if (i.k) sh.append(el('div', 'tripnote', '🧳 這筆是從旅遊行程網頁讀進來的：標題、日期、時間、地點要回行程網頁改。這裡只能改「格子上的短名稱」和「參加的人」。'));
+    const man = i.m || '';
+    const v = { n: i.n, l: i.l, d: i.d, t: i.t, p: i.p };
+    // 參加的人：畫面用成員編號（k）
+    let who = (i.w || []).map(x => D.people[x] && D.people[x].k).filter(x => x != null);
+    const field = (k, lab, type, dis, max) => {
+      const f = el('div', 'fl'); const lb = el('label', null, lab);
+      if (man.includes(k)) {
+        lb.append(el('span', 'man', '✋ 手動，AI 不會蓋掉'));
+        if (k === 'l') { const a = el('a', null, '改回自動'); a.onclick = () => call('unpin', { ref: i.r, field: 'l' }).then(ok => ok && done('改回自動了')); lb.append(a); }
+      }
+      const inp = el('input'); inp.type = type; inp.value = v[k] || ''; inp.disabled = !!dis; if (max) inp.maxLength = max;
+      inp.oninput = () => { v[k] = inp.value; };
+      f.append(lb, inp); return f;
+    };
+    sh.append(field('n', '完整標題', 'text', i.k, 30), field('l', '格子上的短名稱（最多 6 個字）', 'text', false, 6));
+    const r2 = el('div', 'row2'); r2.append(field('d', '日期', 'date', i.k), field('t', '時間（空白＝全天）', 'time', i.k)); sh.append(r2);
+    sh.append(field('p', '地點', 'text', i.k, 20));
+    const wl = el('div', 'fl'); const lb = el('label', null, '參加的人');
+    if (man.includes('w')) {
+      lb.append(el('span', 'man', '✋ 手動'));
+      const a = el('a', null, '改回自動'); a.onclick = () => call('unpin', { ref: i.r, field: 'who' }).then(ok => ok && done('改回自動了')); lb.append(a);
+    }
+    const allA = el('a', null, '全員／清空'); allA.onclick = () => { const all = membersOf().map(m => m.k); who = who.length === all.length ? [] : all; drawWho(); }; lb.append(allA);
+    wl.append(lb); const box = el('div'); wl.append(box); sh.append(wl);
+    function drawWho() {
+      box.replaceChildren();
+      const mem = membersOf(); const inFam = new Set();
+      const groups = ME.families.map(f => ({ n: f.name, ks: f.keys })).concat([{ n: '還沒分家的', ks: mem.map(m => m.k).filter(k => !ME.families.some(f => f.keys.includes(k))) }]);
+      for (const f of groups) {
+        if (!f.ks.length) continue;
+        const d = el('div', 'fam'); const fh = el('div', 'fh'); const cb = el('input'); cb.type = 'checkbox';
+        cb.checked = f.ks.every(k => who.includes(k)); cb.indeterminate = !cb.checked && f.ks.some(k => who.includes(k));
+        cb.onchange = () => { who = cb.checked ? [...new Set(who.concat(f.ks))] : who.filter(k => !f.ks.includes(k)); drawWho(); };
+        fh.append(cb, f.n); d.append(fh);
+        const ms = el('div', 'ms');
+        for (const k of f.ks) {
+          const m = mem.find(x => x.k === k); if (!m) continue; inFam.add(k);
+          const l = el('label'); const c = el('input'); c.type = 'checkbox'; c.checked = who.includes(k);
+          c.onchange = () => { who = c.checked ? who.concat([k]) : who.filter(x => x !== k); drawWho(); };
+          l.append(c, memFace(m), m.n); ms.append(l);
+        }
+        d.append(ms); box.append(d);
+      }
+    }
+    drawWho();
+    const bt = el('div', 'btns');
+    const save = el('button', 'b1', '儲存'); const cancel = el('button', 'b2', '取消'); cancel.onclick = close;
+    bt.append(save, cancel);
+    if (!i.k) { const del = el('button', 'b3', '🗑️ 刪除'); del.onclick = () => dialog('刪掉「' + i.n + '」？', ['刪了會放進「最近刪除」，30 天內可以還原。'], [['刪掉', 'b3', () => send('delete', {})], ['不要', 'b2']]); bt.append(del); }
+    sh.append(bt);
+    const orig = (i.w || []).map(x => D.people[x] && D.people[x].k).filter(x => x != null).sort().join();
+    function changes() {
+      const ch = {};
+      for (const k of ['n', 'l', 'd', 't', 'p']) if ((v[k] || '') !== (i[k] || '') && !(i.k && k !== 'l')) ch[k] = v[k] || '';
+      if (who.slice().sort().join() !== orig) ch.who = who;
+      return ch;
+    }
+    async function send(action, extra) {
+      const body = Object.assign({ ref: i.r, ver: i.ver || 0 }, extra);
+      const j = await call(action, body);
+      if (!j) return;
+      if (j.conflict) {
+        const c = j.conflict;
+        dialog('⚠️ 這筆剛被 ' + (c.by || '別人') + ' 改過', ['你打開之後，' + (c.by || '別人') + ' 改了：', el('div', 'chg', c.what || '（看不到細節）'), action === 'delete' ? '還是要刪掉嗎？' : '要用你的版本蓋掉嗎？'],
+          [[action === 'delete' ? '還是刪掉' : '用我的蓋掉', 'b1', () => send(action, Object.assign({}, extra, { force: true }))], ['先看最新的', 'b2', () => done('換成最新的了，你的修改沒存')]]);
+        return;
+      }
+      close(); done(action === 'delete' ? '刪掉了，可以從「最近刪除」還原' : '存好了');
+    }
+    save.onclick = () => { const ch = changes(); if (!Object.keys(ch).length) { close(); return; } send('edit', { changes: ch }); };
+  });
+}
+function memFace(m) {
+  const e = el('span', 'p'); e.style.width = e.style.height = '20px'; e.style.lineHeight = '20px';
+  if (AV_RE.test(m.a || '')) e.style.backgroundImage = 'url(' + m.a + ')';
+  else { e.textContent = Array.from(m.n.replace(/[^\\p{L}\\p{N}]/gu, '') || '?')[0]; e.style.background = COLORS[m.k % COLORS.length]; }
+  return e;
+}
+function histSheet(i) {
+  shade(async (sh, close) => {
+    head(sh, '修改紀錄：' + i.l, close);
+    const box = el('div', 'w', '載入中…'); sh.append(box);
+    const j = await call('history', { ref: i.r });
+    box.replaceChildren();
+    if (!j) return;
+    if (!j.list.length) box.textContent = i.k ? '這筆來自旅遊行程，還沒有人在這裡改過。' : '還沒有紀錄。';
+    for (const h of j.list) {
+      const r = el('div', 'hist'); const m = membersOf().find(x => x.n === h.by);
+      r.append(m ? memFace(m) : el('span', 'p', '・'));
+      const b = el('div'); b.append(el('div', null, (h.by || '小帥') + '　' + h.what), el('div', 'w', h.at)); r.append(b); box.append(r);
+    }
+  });
+}
+function famSheet() {
+  shade((sh, close) => {
+    head(sh, '⚙️ 家庭對應', close);
+    sh.append(el('div', 'w', '★ 是代表：一整家都參加時，格子上只放他的頭像。點名字設成代表、點 × 移出這家。用 LINE 成員編號存，改暱稱也對得上。'));
+    const fams = ME.families.map(f => ({ name: f.name, keys: f.keys.slice() }));
+    const list = el('div'); sh.append(list);
+    const draw = () => {
+      list.replaceChildren();
+      for (const f of fams) {
+        const d = el('div', 'fam'); const fh = el('div', 'fh', f.name);
+        const rm = el('a', null, '刪掉這家'); rm.onclick = () => { fams.splice(fams.indexOf(f), 1); draw(); }; fh.append(rm); d.append(fh);
+        const ms = el('div', 'ms');
+        f.keys.forEach((k, ix) => {
+          const m = membersOf().find(x => x.k === k); if (!m) return;
+          const l = el('label'); l.append(memFace(m), (ix === 0 ? '★ ' : '') + m.n);
+          l.onclick = () => { f.keys = [k].concat(f.keys.filter(x => x !== k)); draw(); };
+          const x = el('a', null, '×'); x.onclick = (e) => { e.stopPropagation(); f.keys = f.keys.filter(y => y !== k); draw(); };
+          l.append(x); ms.append(l);
+        });
+        const add = el('select'); add.append(new Option('＋ 加人', ''));
+        for (const m of membersOf()) if (!f.keys.includes(m.k)) add.append(new Option(m.n, m.k));
+        add.onchange = () => { const k = +add.value; if (!k) return; fams.forEach(g => { g.keys = g.keys.filter(y => y !== k); }); f.keys.push(k); draw(); };
+        ms.append(add); d.append(ms); list.append(d);
+      }
+    };
+    draw();
+    const bt = el('div', 'btns');
+    const nf = el('button', 'b2', '＋ 新增一家');
+    nf.onclick = () => { const n = (prompt('家的名稱（例如「阿明家」）') || '').trim(); if (n) { fams.push({ name: /家$/.test(n) ? n : n + '家', keys: [] }); draw(); } };
+    const sv = el('button', 'b1', '儲存');
+    sv.onclick = () => call('families', { families: fams }).then(ok => { if (ok) { close(); done('家庭對應存好了'); } });
+    bt.append(sv, nf); sh.append(bt);
+  });
+}
+function setSheet() {
+  shade((sh, close) => {
+    head(sh, '⚙️ 設定', close);
+    const t = el('div', 'toggle'); t.append(el('span', null, '有人改了，要不要在群組說一聲「XX 改了 YY」'));
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!ME.notify;
+    cb.onchange = () => call('settings', { notify: cb.checked }).then(ok => { if (ok) { ME.notify = cb.checked; toast(cb.checked ? '之後有人改，小帥會在群組說一聲' : '之後不在群組說了'); } else cb.checked = !cb.checked; });
+    t.append(cb); sh.append(t);
+    sh.append(el('div', 'w', '預設關：常常改會洗版。打開的話，小帥會在下一次有人講話時順便說（不推播、不扣額度）。'));
+  });
+}
+async function boot() {
+  const bar = $('mode');
+  if (!D.edit) { bar.hidden = true; render(); return; }
+  if (!IDT) { bar.className = 'ro'; bar.textContent = '👀 只能看。要改的話，從 LINE 群組裡點「🗓️ 看整個月」打開。'; render(); return; }
+  bar.className = 'ed'; bar.textContent = '確認身分中…';
+  render();
+  const j = await call('me', {});
+  if (!j) { bar.className = 'ro'; bar.textContent = '👀 只能看（' + (navigator.onLine ? '沒辦法確認你是這個群的成員' : '沒有網路') + '）'; return; }
+  ME = j;
+  bar.replaceChildren(el('span', null, '✏️ ' + j.me.name + '，你可以改'));
+  const g = el('span');
+  const b1 = el('button', null, '⚙️ 家庭對應'); b1.onclick = famSheet;
+  const b2 = el('button', null, '⚙️ 設定'); b2.onclick = setSheet;
+  if (j.group) g.append(b1, ' ', b2);
+  bar.append(g);
+  render();
+}
+boot();
 </script>
 </body>
 </html>
@@ -726,7 +1102,7 @@ export function eventsFlex(list, opts = {}) {
 
 function eventBubble(ev, { dm = false, url = null, verb = '加的' } = {}) {
   const footer = [{ type: 'box', layout: 'horizontal', spacing: 'sm', contents: [pb('🗑️ 刪掉', `cal:del:${ev.id}`, `🗑️ 刪掉 ${cards.clean(ev.title, 20)}`), pb('📅 這週行程', 'cal:week', '📅 這週行程', true)] }];
-  const safe = url && cards.safeUri(url, (u) => u.startsWith(`${publicBase}/public/cal/`));
+  const safe = url && cards.safeUri(url, pageUrlOk);
   if (safe) footer.push(monthBtn(safe));
   const bubble = {
     type: 'bubble', size: 'kilo',
@@ -761,7 +1137,7 @@ function dayBubble(day, items, { sub, today, url, showSrc }) {
     header: header(isToday ? TODAY_COLOR : CAL_COLOR, sub, `${dayLabel(day)}${isToday ? '・今天' : ''}`),
     body: { type: 'box', layout: 'vertical', paddingAll: '12px', spacing: 'none', contents: rows },
   };
-  const safe = url && cards.safeUri(url, (u) => u.startsWith(`${publicBase}/public/cal/`));
+  const safe = url && cards.safeUri(url, pageUrlOk);
   const tripLink = items.map(i => i.trip && i.url && cards.safeUri(i.url, (u) => TRIP_URL_RE.test(u))).find(Boolean);
   const btns = [tripLink && { type: 'button', style: 'link', height: 'sm', action: { type: 'uri', label: '🧳 看這天行程', uri: tripLink } }, safe && monthBtn(safe)].filter(Boolean);
   if (btns.length) b.footer = { type: 'box', layout: 'vertical', paddingAll: '6px', contents: btns };

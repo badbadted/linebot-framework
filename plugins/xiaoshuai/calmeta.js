@@ -83,13 +83,14 @@ export const tripWho = (meta, day) => (meta ? (Array.isArray(meta.days?.[day]) ?
 
 /** 還沒標的：近期的事（前 2 個月起）＋內容變過的行程；trips 是 trip.detailOf 的結果 */
 export function pending(chatId, trips = [], fromDay = '') {
-  const events = db.all('SELECT id, day, time, title, place FROM cal_events WHERE chat_id = ? AND short IS NULL AND day >= ? ORDER BY day LIMIT ?', chatId, fromDay, MAX_LABEL_BATCH);
+  const events = db.all('SELECT id, day, time, title, place FROM cal_events WHERE chat_id = ? AND short IS NULL AND deleted_at IS NULL AND day >= ? ORDER BY day LIMIT ?', chatId, fromDay, MAX_LABEL_BATCH);
   const tr = trips.filter(t => t && t.days?.length && tripMeta(chatId, t.name)?.sig !== t.sig);
   return { events, trips: tr };
 }
 
-/** 標籤要重算（標題改了） */
-export const resetLabel = (id) => db?.run('UPDATE cal_events SET short = NULL, who = NULL WHERE id = ?', Number(id));
+/** 標籤要重算（標題改了）；網頁上手動改過的欄位不動 */
+export const resetLabel = (id) => db?.run(`UPDATE cal_events SET short = CASE WHEN json_extract(COALESCE(manual, '{}'), '$.l') THEN short ELSE NULL END,
+  who = CASE WHEN json_extract(COALESCE(manual, '{}'), '$.who') THEN who ELSE NULL END WHERE id = ?`, Number(id));
 
 /**
  * 請 AI 標一批（一個聊天一次呼叫）；回存了幾筆。沒有要標的回 0、AI 失敗回 0 並記失敗時間（10 分鐘內不再試）
@@ -116,7 +117,7 @@ export async function runLabels(llm, chatId, { trips = [], fromDay = '', now = D
 要處理的（一行一筆）：
 ${lines.join('\n')}
 只回 JSON，key 照上面的：{"e12":{"short":"東京滑雪","who":["全員"]},"t:xxx":{"short":"東京滑雪","who":["品岑家","葶家"],"days":{"2027-02-07":["妞家"]}}}
-規則：short 2～6 個字、一看就知道是什麼事，不要日期、時間、emoji；同一趟旅行和它的準備（機票、住宿、換錢、行李）用同一個短標籤，已經用過的短標籤合適就沿用，同類型的旅行（例如都是去日本滑雪）也用同一個。who 照內容寫的稱呼抄（「妞家」「陳二銘家」「全員」「大家」或人名），內容沒寫誰就給空陣列，不要猜。旅行的 who 填整趟有寫到的家庭（不要寫「多家」這種不是稱呼的字）；days 只寫「那天只剩部分的人」的日子（例如「大部分 2/6 回，妞家留到 2/9」→ 2/7～2/9 寫妞家），那天只是有人出發、加入或先走，大家還在，就不要寫進 days。` }], maxTokens: 3000, timeoutMs: 40_000 });
+規則：short 2～6 個字、一看就知道是什麼事，不要日期、時間、emoji；同一趟旅行和它的準備（機票、住宿、換錢、行李）用同一個短標籤，已經用過的短標籤合適就沿用，同類型的旅行（例如都是去日本滑雪）也用同一個。who 照內容寫的稱呼抄（「妞家」「陳二銘家」「全員」「大家」或人名），內容沒寫誰就給空陣列，不要猜。旅行的 who 填整趟有寫到的家庭；days 只寫「那天只剩部分的人」的日子（例如「大部分 2/6 回，妞家留到 2/9」→ 2/7～2/9 寫妞家），那天只是有人出發、加入或先走，大家還在，就不要寫進 days。` }], maxTokens: 3000, timeoutMs: 40_000 });
     o = parseLlmJson(String(raw || '')).obj;
     if (!o) why = `回的不是 JSON（${String(raw || '').length} 字）`;
   } catch (err) { o = null; why = err.message; }
@@ -131,7 +132,8 @@ ${lines.join('\n')}
     const x = o[`e${e.id}`];
     const short = cleanShort(x?.short);
     if (!short) continue;
-    db.run('UPDATE cal_events SET short = ?, who = ? WHERE id = ? AND chat_id = ?', short, JSON.stringify(cleanWho(x.who)), e.id, chatId);
+    // 手動改過的參加的人不蓋（短名稱手動改過的不會在待標清單裡）
+    db.run(`UPDATE cal_events SET short = ?, who = CASE WHEN json_extract(COALESCE(manual, '{}'), '$.who') THEN who ELSE ? END WHERE id = ? AND chat_id = ?`, short, JSON.stringify(cleanWho(x.who)), e.id, chatId);
     n++;
   }
   for (const t of p.trips) {
@@ -169,6 +171,8 @@ const kidsOf = (name) => {
 export function resolveName(chatId, token, list = members(chatId), fams = families(chatId)) {
   const t = String(token || '').normalize('NFKC').replace(/\s+/g, '');
   if (!t) return [];
+  // 網頁上手動勾的人：直接是成員編號
+  if (/^@U[0-9a-f]{32}$/.test(t)) return list.some(m => m.user_id === t.slice(1)) ? [t.slice(1)] : [];
   if (ALL_RE.test(t)) return list.map(m => m.user_id);
   const base = baseOf(t).toLowerCase();
   const fam = fams.find(f => f.family.toLowerCase() === base);
@@ -277,6 +281,7 @@ export async function syncMembers(chatId, speakers, { profile, fetchImg, now = D
 
 /** 網頁用：成員的名字與頭像相對路徑（頁面在 public/cal/，頭像在 public/cal/av/） */
 export function personOf(chatId, userId) {
-  const m = db.get('SELECT name, pic, fetched_at FROM cal_members WHERE chat_id = ? AND user_id = ?', chatId, userId);
-  return m ? { n: m.name, a: m.pic ? `av/${m.pic}?v=${Math.floor(m.fetched_at / 1000).toString(36)}` : '' } : null;
+  const m = db.get('SELECT rowid AS k, name, pic, fetched_at FROM cal_members WHERE chat_id = ? AND user_id = ?', chatId, userId);
+  // k：成員編號（網頁上勾參加的人時送回來的，不是 LINE 的 userId）
+  return m ? { n: m.name, a: m.pic ? `av/${m.pic}?v=${Math.floor(m.fetched_at / 1000).toString(36)}` : '', k: m.k } : null;
 }
