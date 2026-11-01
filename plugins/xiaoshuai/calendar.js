@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import * as cards from './cards.js';
 import * as polls from './polls.js';
+import * as meta from './calmeta.js';
 
 export const CAL_COLOR = '#2563a8';
 export const TODAY_COLOR = '#c2620a';
@@ -36,6 +37,7 @@ let publicBase = (process.env.BOT_PUBLIC_URL || 'https://bot.pushbike-training.a
 
 /** 綁了旅遊行程的聊天：行程每天的摘要（index.js 給；行程網頁是正本，行事曆只讀不存） */
 let tripDays = () => [];
+const parseWho = (s) => { try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
 export const TRIP_URL_RE = /^https:\/\/badbadted\.github\.io\/temp-reports\/[a-z0-9-]{1,60}\.html(?:#d\d{1,2})?$/;
 
 export function initCalendar(database, { dir, base, trips } = {}) {
@@ -66,6 +68,7 @@ export function initCalendar(database, { dir, base, trips } = {}) {
       day TEXT NOT NULL
     );
   `);
+  meta.initMeta(db, pageDir);
   prune();
 }
 
@@ -359,6 +362,7 @@ export function edit(chatId, id, userId, admin, { w = null, title = '', place = 
   if (day < todayKey(now)) return { error: `${dayLabel(day)} 已經過了，日期要不要再確認一次？` };
   if (day === ev.day && time === ev.time && tt === ev.title && pl === ev.place) return { error: '跟原本一樣，沒有要改的' };
   db.run('UPDATE cal_events SET day = ?, time = ?, title = ?, place = ?, updated_at = ? WHERE id = ?', day, time, tt, pl, now, ev.id);
+  if (tt !== ev.title) meta.resetLabel(ev.id); // 名稱改了，短標籤重標
   return { ok: true, before: ev, event: getEvent(ev.id) };
 }
 
@@ -394,6 +398,7 @@ export function itemsBetween(sources, from, to, now = Date.now()) {
   const byChat = new Map(sources.map(s => [s.chatId, s]));
   const items = eventsBetween([...byChat.keys()], from, to).map(e => ({
     id: e.id, chatId: e.chat_id, day: e.day, time: e.time, title: e.title, place: e.place, by: e.created_by_name, poll: false, src: byChat.get(e.chat_id)?.label || '',
+    short: e.short || meta.fallbackShort(e.title), who: parseWho(e.who),
   }));
   for (const s of sources) {
     for (const p of polls.openPolls(s.chatId, null, now)) {
@@ -401,7 +406,7 @@ export function itemsBetween(sources, from, to, now = Date.now()) {
       const pt = parts(p.closes_at);
       const day = keyOf(pt.y, pt.m, pt.d);
       if (day < from || day > to) continue;
-      items.push({ id: null, chatId: s.chatId, day, time: `${pad(pt.h)}:${pad(pt.mi)}`, title: `${p.title} ${p.kind === 'vote' ? '投票' : '報名'}截止`, place: '', by: p.created_by_name, poll: true, src: s.label || '' });
+      items.push({ id: null, chatId: s.chatId, day, time: `${pad(pt.h)}:${pad(pt.mi)}`, title: `${p.title} ${p.kind === 'vote' ? '投票' : '報名'}截止`, place: '', by: p.created_by_name, poll: true, src: s.label || '', short: `${[...meta.fallbackShort(p.title)].slice(0, 4).join('')}截止`, who: [] });
     }
   }
   // 旅遊行程：一天一筆全天，附連到行程網頁那一天（網址只收行程網頁的網域）
@@ -410,7 +415,9 @@ export function itemsBetween(sources, from, to, now = Date.now()) {
     try { days = tripDays(s.chatId) || []; } catch { days = []; }
     for (const d of days) {
       if (d.day < from || d.day > to) continue;
-      items.push({ id: null, chatId: s.chatId, day: d.day, time: null, title: cards.clean(d.title, 30), place: '', by: '', poll: false, trip: true, url: TRIP_URL_RE.test(d.url) ? d.url : null, src: s.label || '' });
+      const m = d.name ? meta.tripMeta(s.chatId, d.name) : null;
+      items.push({ id: null, chatId: s.chatId, day: d.day, time: null, title: cards.clean(d.title, 30), place: '', by: '', poll: false, trip: true, url: TRIP_URL_RE.test(d.url) ? d.url : null, src: s.label || '',
+        short: m?.short || meta.fallbackShort(d.title), who: meta.tripWho(m, d.day) });
     }
   }
   const out = new Map();
@@ -439,21 +446,30 @@ export function writePage(chatId, sources, { title = '行事曆', now = Date.now
   const today = todayKey(now);
   const from = addDays(today.slice(0, 8) + '01', -62);
   const to = addDays(today, 366);
+  // 參加的人：稱呼對到成員，網頁只放名字與頭像相對路徑（people），每筆存索引
+  const people = []; const at = new Map();
+  const ids = (chat, who) => meta.resolveWho(chat, who).map(uid => {
+    const k = `${chat}:${uid}`;
+    if (!at.has(k)) { const p = meta.personOf(chat, uid); if (!p) return -1; at.set(k, people.length); people.push(p); }
+    return at.get(k);
+  }).filter(x => x >= 0);
   const items = [...itemsBetween(sources, from, to, now).values()].flat()
-    .map(i => ({ d: i.day, t: i.time || '', n: i.title, p: i.place || '', b: i.by || '', v: i.poll ? 1 : 0, s: sources.length > 1 ? i.src : '', ...(i.trip ? { k: 1, u: i.url || '' } : {}) }));
+    .map(i => ({ d: i.day, t: i.time || '', n: i.title, p: i.place || '', b: i.by || '', v: i.poll ? 1 : 0, s: sources.length > 1 ? i.src : '', l: i.short || meta.fallbackShort(i.title), w: ids(i.chatId, i.who), ...(i.trip ? { k: 1, u: i.url || '' } : {}) }));
   if (!existsSync(pageDir)) mkdirSync(pageDir, { recursive: true });
   const file = join(pageDir, `${tokenOf(chatId)}.html`);
-  writeFileSync(`${file}.tmp`, pageHtml({ title: cards.clean(title, 30), items, today, updated: now, legend: sources.length > 1 }));
+  writeFileSync(`${file}.tmp`, pageHtml({ title: cards.clean(title, 30), items, people, today, updated: now, legend: sources.length > 1 }));
   renameSync(`${file}.tmp`, file);
   return pageUrl(chatId, now);
 }
 
 /**
- * 月曆網頁（2026-11-01 改成「小帥的週末手帳」，版面照 共用/AI產出/mockup/小帥月曆網頁三方向.html 的 A）
- * 單檔、不連外部資源：小帥的圖是同網域的 /public/xiaoshuai/*.jpg（相對路徑）；資料放 JSON、用 textContent 畫，標題裡有 HTML 也不會執行
+ * 月曆網頁（2026-11-01 改成「小帥的週末手帳」；同日改格子放大版，照 共用/AI產出/mockup/小帥月曆格子放大預覽.html 的 B）
+ * 格子：頁首和月份合成一列、外框留白 3px，格子上放短標籤（AI 給的 2～6 字）；同一個標籤連續好幾天畫成一條橫跨的長條，
+ * 標籤和參加的人頭像只寫一次；一天還有其他事就顯示「+N」。點格子看那天的完整標題
+ * 單檔、不連外部資源：小帥的圖是 /public/xiaoshuai/*.jpg、頭像是 public/cal/av/（都是相對路徑）；資料放 JSON、用 textContent 畫，標題裡有 HTML 也不會執行
  */
-export function pageHtml({ title, items, today, updated, legend = false }) {
-  const data = JSON.stringify({ title, items, today, updated: new Date(updated + TZ).toISOString().slice(5, 16).replace('-', '/').replace('T', ' '), legend })
+export function pageHtml({ title, items, people = [], today, updated, legend = false }) {
+  const data = JSON.stringify({ title, items, people, today, updated: new Date(updated + TZ).toISOString().slice(5, 16).replace('-', '/').replace('T', ' '), legend })
     .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return `<!doctype html>
 <html lang="zh-Hant">
@@ -464,40 +480,47 @@ export function pageHtml({ title, items, today, updated, legend = false }) {
 <meta name="referrer" content="no-referrer">
 <title>小帥的行事曆</title>
 <style>
-  :root { --bg:#FFF9EF; --card:#FFFFFF; --main:#287C78; --acc:#E98445; --text:#243B3A; --vote:${PAGE_VOTE}; --sub:#7B8C8A; --we:#C8693A; --line:#287C7822; }
+  :root { --bg:#FFF9EF; --card:#FFFFFF; --main:#287C78; --acc:#E98445; --text:#243B3A; --vote:${PAGE_VOTE}; --trip:#3A7CC4; --sub:#7B8C8A; --we:#C8693A; --line:#287C7822; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",sans-serif; }
   .wrap { max-width:760px; margin:0 auto; padding:0 0 8px; }
-  .top { display:flex; gap:12px; align-items:center; padding:16px 16px 10px; }
   .av { flex:none; border-radius:50%; background:#fff center/cover no-repeat; }
-  .top .av { width:52px; height:52px; border:2px solid var(--line); }
-  .top .t { min-width:0; }
-  h1 { font-size:17px; font-weight:800; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .hi { font-size:12.5px; color:var(--sub); margin-top:3px; }
-  .nav { position:sticky; top:0; z-index:2; background:var(--bg); display:flex; align-items:center; gap:8px; padding:6px 16px 8px; }
-  .nav b { flex:1; text-align:center; }
-  .nav .y { font-size:12px; color:var(--sub); font-weight:500; margin-right:6px; }
-  .nav .m { font-size:22px; }
-  .nav button { border:0; width:38px; height:38px; border-radius:50%; background:var(--card); color:var(--main); font-size:20px; box-shadow:0 1px 3px #0000001a; cursor:pointer; }
-  .grid { display:grid; grid-template-columns:repeat(7,1fr); gap:3px; padding:0 10px; }
-  .wd { text-align:center; font-size:11.5px; color:var(--sub); padding:2px 0 4px; }
+  .bar { position:sticky; top:0; z-index:3; background:var(--bg); display:flex; align-items:center; gap:6px; padding:8px 8px 4px; }
+  .bar .av { width:30px; height:30px; border:1.5px solid var(--line); }
+  .bar .t { flex:1; min-width:0; }
+  h1 { font-size:13px; font-weight:700; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bar .m { font-size:16px; font-weight:800; }
+  .bar .y { font-size:11px; color:var(--sub); font-weight:500; margin-left:4px; }
+  .bar button { border:0; width:34px; height:34px; border-radius:50%; background:var(--card); color:var(--main); font-size:19px; box-shadow:0 1px 2px #0000001a; cursor:pointer; flex:none; }
+  .wds, .wk { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:2px; padding:0 3px; }
+  .wd { text-align:center; font-size:10px; color:var(--sub); padding:1px 0 2px; }
   .wd.we { color:var(--we); }
-  .cell { min-height:52px; border-radius:9px; padding:4px 3px; background:var(--card); cursor:pointer; overflow:hidden; }
+  .wk { position:relative; margin-bottom:2px; }
+  .cell { min-height:78px; border-radius:6px; padding:2px 2px 3px; background:var(--card); cursor:pointer; overflow:hidden; display:flex; flex-direction:column; min-width:0; }
   .cell.out { background:transparent; cursor:default; }
-  .cell .n { font-weight:700; font-size:12.5px; }
+  .cell.lane { padding-top:21px; }
+  .cell .n { font-weight:700; font-size:11px; line-height:14px; display:flex; justify-content:space-between; align-items:center; }
+  .cell.lane .n { margin-top:-19px; margin-bottom:5px; }
   .cell.we .n { color:var(--we); }
   .cell.today { box-shadow:inset 0 0 0 2px var(--acc); }
   .cell.today .n { color:var(--acc); }
   .cell.past { opacity:.55; }
   .cell.sel { background:#E6F2F1; }
-  .marks { display:flex; gap:3px; margin-top:5px; flex-wrap:wrap; align-items:center; }
-  .dot { width:7px; height:7px; border-radius:50%; background:var(--main); }
-  .dot.v { background:var(--vote); }
-  .more { font-size:10px; color:var(--sub); }
-  .chip { display:none; }
-  h2 { font-size:15px; margin:18px 16px 8px; display:flex; justify-content:space-between; align-items:center; }
+  .cnt { font-size:9.5px; font-weight:700; color:#fff; background:var(--acc); border-radius:7px; padding:0 4px; line-height:14px; }
+  .lb { margin-top:2px; font-size:10.5px; font-weight:700; line-height:1.18; color:#fff; background:var(--main); border-radius:4px; padding:2px 1px; text-align:center; word-break:break-all; text-wrap:balance; letter-spacing:-.3px; }
+  .lb.k, .span.k { background:var(--trip); }
+  .lb.v, .span.v { background:var(--vote); }
+  .span { position:absolute; top:16px; height:18px; z-index:1; border-radius:5px; background:var(--main); color:#fff; font-size:10.5px; font-weight:700; padding:0 4px; display:flex; align-items:center; gap:4px; white-space:nowrap; overflow:hidden; pointer-events:none; }
+  .ppl { margin-top:auto; display:flex; align-items:center; padding:2px 0 0 4px; }
+  .ppl .p { width:15px; height:15px; margin-left:-4px; border:1.5px solid #fff; font-size:8px; line-height:12px; }
+  .span .ppl { margin:0 0 0 auto; padding:0 0 0 4px; }
+  .span .ppl .p { border-color:transparent; }
+  .ppl em { font-style:normal; font-size:9px; color:var(--sub); margin-left:2px; font-weight:700; }
+  .span .ppl em { color:#fff; }
+  .p { display:inline-block; border-radius:50%; background:#94A3B8 center/cover no-repeat; color:#fff; font-weight:700; text-align:center; overflow:hidden; flex:none; }
+  h2 { font-size:15px; margin:16px 12px 8px; display:flex; justify-content:space-between; align-items:center; }
   h2 button { border:0; background:none; color:var(--main); font-size:13px; padding:4px 0; cursor:pointer; }
-  .day { margin:0 12px 10px; background:var(--card); border-radius:14px; overflow:hidden; box-shadow:0 1px 3px #0000000d; }
+  .day { margin:0 8px 8px; background:var(--card); border-radius:14px; overflow:hidden; box-shadow:0 1px 3px #0000000d; }
   .day .h { padding:8px 12px; font-size:14px; font-weight:700; color:var(--main); border-bottom:2px solid var(--line); }
   .day.today .h { color:var(--acc); }
   .ev { display:flex; gap:10px; padding:8px 12px; border-top:1px dashed #0000001a; font-size:14px; }
@@ -506,8 +529,11 @@ export function pageHtml({ title, items, today, updated, legend = false }) {
   .ev.allday .tm { color:var(--sub); font-weight:500; }
   .ev.v .tm { color:var(--vote); }
   .ev .sub { font-size:11.5px; color:var(--sub); margin-top:2px; }
+  .who { display:flex; flex-wrap:wrap; gap:4px 8px; margin-top:5px; font-size:12px; color:var(--sub); }
+  .who span { display:inline-flex; align-items:center; gap:4px; }
+  .who .p { width:20px; height:20px; font-size:10px; line-height:20px; }
   .go { display:inline-block; margin-top:4px; font-size:12.5px; color:var(--main); text-decoration:none; font-weight:600; }
-  .empty { margin:4px 12px 12px; display:flex; gap:12px; align-items:center; background:var(--card); border-radius:14px; padding:12px; font-size:14px; color:var(--sub); }
+  .empty { margin:4px 8px 12px; display:flex; gap:12px; align-items:center; background:var(--card); border-radius:14px; padding:12px; font-size:14px; color:var(--sub); }
   .empty .av { width:72px; height:72px; border-radius:16px; background-size:contain; }
   .empty.big { flex-direction:column; text-align:center; padding:20px 12px; }
   .empty.big .av { width:120px; height:120px; border-radius:24px; }
@@ -515,22 +541,24 @@ export function pageHtml({ title, items, today, updated, legend = false }) {
   .foot .av { width:28px; height:28px; }
   .tip { text-align:center; font-size:11.5px; color:var(--sub); padding:0 20px 24px; line-height:1.6; }
   @media (min-width:600px) {
-    .cell { min-height:86px; font-size:11.5px; }
-    .marks { display:none; }
-    .chip { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:#E6F2F1; color:var(--main); border-radius:4px; padding:0 4px; margin-top:3px; line-height:1.55; }
-    .chip.v { background:#F0E8F7; color:var(--vote); }
+    .bar { padding:12px 12px 6px; }
+    .bar .av { width:40px; height:40px; }
+    h1 { font-size:15px; }
+    .bar .m { font-size:20px; }
+    .cell { min-height:100px; }
+    .lb, .span { font-size:12px; }
   }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="top"><span class="av" id="av"></span><div class="t"><h1 id="title"></h1><div class="hi">小帥：我幫大家記好了！</div></div></div>
-  <div class="nav"><button id="prev" aria-label="上個月">‹</button><b><span class="y" id="y"></span><span class="m" id="m"></span></b><button id="next" aria-label="下個月">›</button></div>
-  <div class="grid" id="grid"></div>
+  <div class="bar"><span class="av" id="av"></span><div class="t"><h1 id="title"></h1><span class="m" id="m"></span><span class="y" id="y"></span></div><button id="prev" aria-label="上個月">‹</button><button id="next" aria-label="下個月">›</button></div>
+  <div class="wds" id="wds"></div>
+  <div id="grid"></div>
   <h2><span id="listTitle"></span><button id="all" hidden>看整月</button></h2>
   <div id="list"></div>
   <div class="foot"><span class="av" id="av2"></span><span id="foot"></span></div>
-  <div class="tip">在 LINE 跟小帥說「11/5 晚上七點 家長會」就會加上來，說「刪掉 家長會」就刪掉。</div>
+  <div class="tip">小帥：我幫大家記好了！在 LINE 跟小帥說「11/5 晚上七點 家長會」就會加上來，說「刪掉 家長會」就刪掉；說「妞家是 Jasmine」，小帥就知道誰是哪一家。</div>
 </div>
 <script>
 const D = ${data};
@@ -538,6 +566,8 @@ const AV = '../xiaoshuai/avatar.jpg?v=${ASSET_V}';
 const NOTE = '../xiaoshuai/note.jpg?v=${ASSET_V}';
 const W = '日一二三四五六';
 const TRIP_RE = /^https:\\/\\/badbadted\\.github\\.io\\/temp-reports\\/[a-z0-9-]{1,60}\\.html(#d\\d{1,2})?$/;
+const AV_RE = /^av\\/[0-9a-f]{24}\\.(jpg|png)\\?v=[0-9a-z]{1,12}$/;
+const COLORS = ['#D97757', '#3A7CC4', '#2E9E6E', '#8056A8', '#C2620A', '#0F766E', '#BE4B76'];
 const byDay = {};
 for (const i of D.items) (byDay[i.d] = byDay[i.d] || []).push(i);
 const pad = (n) => String(n).padStart(2, '0');
@@ -547,10 +577,28 @@ let [Y, M] = D.today.split('-').map(Number);
 let sel = null;
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const av = (cls, img) => { const e = el('span', 'av' + (cls ? ' ' + cls : '')); e.style.backgroundImage = 'url(' + img + ')'; return e; };
+// 參加的人：有頭像用頭像，沒有就用名字第一個字
+function face(i) {
+  const p = D.people[i] || { n: '?' };
+  const e = el('span', 'p');
+  if (AV_RE.test(p.a || '')) e.style.backgroundImage = 'url(' + p.a + ')';
+  else { e.textContent = Array.from(p.n.replace(/[^\\p{L}\\p{N}]/gu, '') || '?')[0]; e.style.background = COLORS[i % COLORS.length]; }
+  e.title = p.n;
+  return e;
+}
+function ppl(ids, max) {
+  const box = el('div', 'ppl');
+  for (const i of ids.slice(0, max)) box.append(face(i));
+  if (ids.length > max) box.append(el('em', null, '+' + (ids.length - max)));
+  return box;
+}
+const uniq = (list) => [...new Set(list.flatMap(i => i.w || []))];
+const kind = (i) => (i.v ? ' v' : i.k ? ' k' : '');
 document.getElementById('av').style.backgroundImage = 'url(' + AV + ')';
 document.getElementById('av2').style.backgroundImage = 'url(' + AV + ')';
 document.getElementById('title').textContent = D.title;
 document.getElementById('foot').textContent = '更新於 ' + D.updated + '・更新好了，有事再叫我。';
+W.split('').forEach((w, i) => document.getElementById('wds').append(el('div', 'wd' + (i === 0 || i === 6 ? ' we' : ''), w)));
 function empty(text, big) {
   const box = el('div', 'empty' + (big ? ' big' : ''));
   box.append(av('', NOTE), el('div', null, text));
@@ -561,25 +609,59 @@ function render() {
   document.getElementById('m').textContent = M + ' 月';
   const g = document.getElementById('grid');
   g.replaceChildren();
-  W.split('').forEach((w, i) => g.append(el('div', 'wd' + (i === 0 || i === 6 ? ' we' : ''), w)));
   const first = new Date(Date.UTC(Y, M - 1, 1)).getUTCDay();
   const days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
-  for (let i = 0; i < first; i++) g.append(el('div', 'cell out'));
-  for (let d = 1; d <= days; d++) {
-    const k = key(Y, M, d);
-    const dow = (first + d - 1) % 7;
-    const c = el('div', 'cell' + (dow === 0 || dow === 6 ? ' we' : '') + (k === D.today ? ' today' : '') + (k < D.today ? ' past' : '') + (k === sel ? ' sel' : ''));
-    c.append(el('div', 'n', String(d)));
-    const list = byDay[k] || [];
-    // 手機：小圓點；寬螢幕：名稱
-    const marks = el('div', 'marks');
-    for (const i of list.slice(0, 3)) marks.append(el('span', 'dot' + (i.v ? ' v' : '')));
-    if (list.length > 3) marks.append(el('span', 'more', '+' + (list.length - 3)));
-    c.append(marks);
-    for (const i of list.slice(0, 2)) c.append(el('span', 'chip' + (i.v ? ' v' : ''), (i.t ? i.t + ' ' : '') + i.n));
-    if (list.length > 2) c.append(el('span', 'chip', '+' + (list.length - 2)));
-    c.onclick = () => { sel = sel === k ? null : k; render(); if (sel) document.getElementById('listTitle').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
-    g.append(c);
+  const slots = [];
+  for (let i = 0; i < first; i++) slots.push(0);
+  for (let d = 1; d <= days; d++) slots.push(d);
+  while (slots.length % 7) slots.push(0);
+  for (let w = 0; w < slots.length / 7; w++) {
+    const wk = el('div', 'wk');
+    const row = slots.slice(w * 7, w * 7 + 7).map((d, i) => (d ? { d, i, k: key(Y, M, d), list: byDay[key(Y, M, d)] || [] } : null));
+    // 同一個標籤連續兩天以上：畫成一條（一週一條線道，先到先畫）
+    const spans = [];
+    for (let i = 0; i < 7;) {
+      let best = null;
+      for (const it of row[i] ? row[i].list : []) {
+        let j = i;
+        while (j + 1 < 7 && row[j + 1] && row[j + 1].list.some(x => x.l === it.l)) j++;
+        if (j > i && (!best || j > best.j)) best = { l: it.l, j, it };
+      }
+      if (!best) { i++; continue; }
+      const covered = [];
+      for (let x = i; x <= best.j; x++) { row[x].lane = best.l; covered.push(...row[x].list.filter(it => it.l === best.l)); }
+      spans.push({ i, j: best.j, l: best.l, cls: kind(best.it), who: uniq(covered) });
+      i = best.j + 1;
+    }
+    for (const r of row) {
+      if (!r) { wk.append(el('div', 'cell out')); continue; }
+      const { d, i, k } = r;
+      const c = el('div', 'cell' + (i === 0 || i === 6 ? ' we' : '') + (k === D.today ? ' today' : '') + (k < D.today ? ' past' : '') + (k === sel ? ' sel' : '') + (r.lane ? ' lane' : ''));
+      const n = el('div', 'n');
+      n.append(el('span', null, String(d)));
+      c.append(n);
+      const rest = r.list.filter(it => it.l !== r.lane);
+      if (rest.length) {
+        c.append(el('div', 'lb' + kind(rest[0]), rest[0].l));
+        const who = uniq(rest);
+        if (who.length) c.append(ppl(who, 3));
+      }
+      // 格子上沒寫出來的還有幾件（長條算一件、下面的標籤算一件）
+      const more = r.list.length - (r.lane ? 1 : 0) - (rest.length ? 1 : 0);
+      if (more > 0) n.append(el('span', 'cnt', '+' + more));
+      c.onclick = () => { sel = sel === k ? null : k; render(); if (sel) document.getElementById('listTitle').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+      wk.append(c);
+    }
+    for (const s of spans) {
+      const b = el('div', 'span' + s.cls);
+      const len = s.j - s.i + 1;
+      b.style.left = 'calc(3px + (100% - 18px) / 7 * ' + s.i + ' + ' + (s.i * 2) + 'px)';
+      b.style.width = 'calc((100% - 18px) / 7 * ' + len + ' + ' + ((len - 1) * 2) + 'px)';
+      b.append(el('span', null, s.l));
+      if (s.who.length) b.append(ppl(s.who, len > 2 ? 4 : 2));
+      wk.append(b);
+    }
+    g.append(wk);
   }
   const L = document.getElementById('list');
   L.replaceChildren();
@@ -597,6 +679,11 @@ function render() {
       body.append(el('div', null, (i.v ? '🗳️ ' : '') + i.n));
       const sub = [i.k ? '🧳 旅遊行程' : '', i.p ? '📍 ' + i.p : '', i.s ? '👥 ' + i.s : '', i.b && !i.v ? i.b + ' 加的' : ''].filter(Boolean).join('・');
       if (sub) body.append(el('div', 'sub', sub));
+      if (i.w && i.w.length) {
+        const who = el('div', 'who');
+        for (const x of i.w) { const s = el('span'); s.append(face(x), document.createTextNode((D.people[x] || { n: '' }).n)); who.append(s); }
+        body.append(who);
+      }
       if (i.k && TRIP_RE.test(i.u || '')) { const a = el('a', 'go', '看行程 ›'); a.href = i.u; a.target = '_blank'; a.rel = 'noopener'; body.append(a); }
       r.append(body);
       box.append(r);

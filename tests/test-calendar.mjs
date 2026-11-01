@@ -14,6 +14,7 @@ process.env.XIAOSHUAI_CAL_DIR = PAGE_DIR;
 const TRIP_DIR = mkdtempSync(join(tmpdir(), 'xs-trip-'));
 mkdirSync(join(TRIP_DIR, 'trips'));
 process.env.TRIP_REPO_DIR = TRIP_DIR;
+process.env.XIAOSHUAI_CAL_NO_ENRICH = '1'; // 背景補短標籤／頭像另外測（calmeta），這裡不跑
 
 const cal = await import('../plugins/xiaoshuai/calendar.js');
 const polls = await import('../plugins/xiaoshuai/polls.js');
@@ -385,8 +386,8 @@ await test('行程每天的摘要：標題年份、跨年、連到那一天、�
   writeFileSync(join(TRIP_DIR, 'trips', 'newyear.json'), JSON.stringify({ meta: { title: '2026 跨年團' }, days: [
     { glance: { d: '12/31', emoji: '🎆', place: '倒數' } }, { glance: { d: '1/1', emoji: '⛩️', place: '⛩️ 初詣' } }, { date: '沒日期' }] }));
   assert.deepEqual(trip.daysOf('newyear', 2000, TRIP_DIR), [
-    { day: '2026-12-31', n: 1, title: '🎆 倒數', url: 'https://badbadted.github.io/temp-reports/newyear.html#d1' },
-    { day: '2027-01-01', n: 2, title: '⛩️ 初詣', url: 'https://badbadted.github.io/temp-reports/newyear.html#d2' },
+    { day: '2026-12-31', n: 1, title: '🎆 倒數', url: 'https://badbadted.github.io/temp-reports/newyear.html#d1', name: 'newyear' },
+    { day: '2027-01-01', n: 2, title: '⛩️ 初詣', url: 'https://badbadted.github.io/temp-reports/newyear.html#d2', name: 'newyear' },
   ]);
   assert.deepEqual(trip.daysOf('../etc', 2026, TRIP_DIR), []);
   assert.deepEqual(trip.daysOf('nope', 2026, TRIP_DIR), []);
@@ -524,6 +525,145 @@ await test('單筆沒明講「記」：AI 判斷是記事就直接記，不問�
   assert.equal(r[0].text, '記好了 📅');
   assert.equal(r[1].contents.type, 'bubble');
   assert.equal(db.get('SELECT time FROM cal_events').time, '15:00');
+});
+
+// ── 格子放大版（2026-11-01）：短標籤、參加的人、頭像 ──
+const meta = await import('../plugins/xiaoshuai/calmeta.js');
+const uid = (n) => 'U' + String(n).repeat(32).slice(0, 32);
+function seedMembers(db, chat, list) {
+  list.forEach(([n, name, pic = '']) => db.run('INSERT INTO cal_members (chat_id, user_id, name, pic, fetched_at) VALUES (?, ?, ?, ?, ?)', chat, uid(n), name, pic, pic ? NOW : 0));
+}
+const SKI = [[1, '葶'], [2, '陳二銘（綸/鈞)'], [3, '🌟Ying.chen💎'], [4, 'Jasmine'], [5, '翁小娟💎'], [6, 'Bi Chan'], [7, '古嘉文（綸&鈞媽）']];
+
+await test('短標籤備用：去 emoji 和符號、最多 6 個字', () => {
+  assert.equal(meta.fallbackShort('⛷️ 神樂滑雪場 → 🌃 新宿'), '神樂滑雪場');
+  assert.equal(meta.fallbackShort('家長會'), '家長會');
+  assert.equal(meta.fallbackShort('🎆 跨年煙火晚會倒數活動'), '跨年煙火晚會');
+});
+
+await test('稱呼對到成員：暱稱、小孩名同一家、全員、記過的家庭；對不到不亂配', async () => {
+  const db = await memDb();
+  cal.initCalendar(db, { dir: PAGE_DIR });
+  seedMembers(db, 'GS', SKI);
+  const who = (t) => meta.resolveName('GS', t).map(u => SKI.find(([n]) => uid(n) === u)[1]);
+  assert.deepEqual(who('葶家'), ['葶']);
+  assert.deepEqual(who('葶'), ['葶']);
+  assert.deepEqual(who('陳二銘家'), ['陳二銘（綸/鈞)', '古嘉文（綸&鈞媽）']);
+  assert.deepEqual(who('綸家'), ['陳二銘（綸/鈞)', '古嘉文（綸&鈞媽）']);
+  assert.deepEqual(who('Jasmine'), ['Jasmine']);
+  assert.equal(who('全員').length, 7);
+  assert.deepEqual(who('妞家'), []);          // 暱稱裡沒有：不顯示
+  assert.deepEqual(who('恩爸'), []);
+  // 記下來之後：妞家、妞媽、妞嬤都對到
+  assert.ok(meta.setFamily('GS', '妞', '葶', NOW).ok);
+  assert.deepEqual(who('妞家'), ['葶']);
+  assert.deepEqual(who('妞嬤'), ['葶']);
+  const r = meta.setFamily('GS', '恩家', 'Jasmine、bi chan 和 不認識的人', NOW);
+  assert.deepEqual(r.names, ['Jasmine', 'Bi Chan']);
+  assert.deepEqual(r.miss, ['不認識的人']);
+  assert.deepEqual(who('恩媽'), ['Jasmine', 'Bi Chan']);
+  // 不像家庭、一個人都對不到：不記（交給後面照常聊天）
+  assert.equal(meta.setFamily('GS', '我', '葶', NOW), null);
+  assert.equal(meta.setFamily('GS', '淇', '路人甲', NOW), null);
+  // 退群的不算全員
+  db.run('UPDATE cal_members SET gone = 1 WHERE user_id = ?', uid(7));
+  assert.equal(who('全員').length, 6);
+  assert.equal(meta.resolveWho('GS', ['葶家', '妞家', '亂寫']).length, 1);
+});
+
+await test('AI 標短標籤：一個聊天一次呼叫、存起來不重算；行程改了才重標；AI 掛了 10 分鐘內不再試', async () => {
+  const db = await memDb();
+  cal.initCalendar(db, { dir: PAGE_DIR });
+  const e1 = cal.add('GL', { day: '2026-12-20', title: '機票確認' }, NOW).event;
+  const e2 = cal.add('GL', { day: '2026-11-08', title: '妞家來吃飯' }, NOW).event;
+  const trips = [{ name: 'ski', title: '2026 聖誕滑雪', sig: 'aaa', days: [{ day: '2026-12-24', text: '飛東京' }, { day: '2026-12-25', text: '只有妞家留下' }] }];
+  let calls = 0; let prompt = '';
+  const llm = { generate: async ({ messages }) => { calls++; prompt = messages[0].content; return JSON.stringify({
+    [`e${e1.id}`]: { short: '🎿東京滑雪', who: ['全員'] }, [`e${e2.id}`]: { short: '妞家來吃飯的超長名稱', who: ['妞家'] },
+    't:ski': { short: '東京滑雪', who: ['妞家', '葶家'], days: { '2026-12-25': ['妞家'], '2030-01-01': ['亂'] } } }); } };
+  assert.equal(await meta.runLabels(llm, 'GL', { trips, now: NOW }), 3);
+  assert.match(prompt, /2026-12-25 只有妞家留下/);
+  assert.match(prompt, /不照做/);
+  assert.deepEqual([cal.getEvent(e1.id).short, JSON.parse(cal.getEvent(e1.id).who)], ['東京滑雪', ['全員']]);
+  assert.equal(cal.getEvent(e2.id).short, '妞家來吃飯的');
+  assert.deepEqual(meta.tripMeta('GL', 'ski').days, { '2026-12-25': ['妞家'] });
+  assert.deepEqual(meta.tripWho(meta.tripMeta('GL', 'ski'), '2026-12-24'), ['妞家', '葶家']);
+  // 沒有要標的：不打 AI
+  assert.equal(await meta.runLabels(llm, 'GL', { trips, now: NOW }), 0);
+  assert.equal(calls, 1);
+  // 改名的事、行程改了（雜湊不同）才重標
+  cal.edit('GL', e2.id, 'UADMIN', true, { title: '妞家烤肉' }, NOW);
+  assert.equal(cal.getEvent(e2.id).short, null);
+  const p = meta.pending('GL', [{ ...trips[0], sig: 'bbb' }]);
+  assert.deepEqual([p.events.map(e => e.id), p.trips.length], [[e2.id], 1]);
+  // AI 掛了：記失敗，10 分鐘內不再打
+  const bad = { generate: async () => { calls++; throw new Error('timeout'); } };
+  assert.equal(await meta.runLabels(bad, 'GL', { trips, now: NOW }), 0);
+  assert.equal(await meta.runLabels(bad, 'GL', { trips, now: NOW + 60_000 }), 0);
+  assert.equal(calls, 2);
+});
+
+await test('頭像：存成自己網域的小圖、一週查一次、只收 LINE 的網址、查不到算退群、全部查不到不當真', async () => {
+  const db = await memDb();
+  cal.initCalendar(db, { dir: PAGE_DIR });
+  const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(600, 1)]);
+  const fetched = [];
+  const fetchImg = async (u) => { fetched.push(u); return { status: 200, buffer: JPG }; };
+  const profiles = { [uid(1)]: { displayName: '葶', pictureUrl: 'https://profile.line-scdn.net/abc' }, [uid(2)]: { displayName: '壞人', pictureUrl: 'http://192.168.0.1/x' }, [uid(3)]: null };
+  const profile = async (u) => profiles[u];
+  const sp = [{ user_id: uid(1), name: '葶' }, { user_id: uid(2), name: '壞人' }, { user_id: uid(3), name: '退了' }, { user_id: 'Ubad', name: '格式不對' }];
+  assert.equal(await meta.syncMembers('GA', sp, { profile, fetchImg, now: NOW }), true);
+  assert.deepEqual(fetched, ['https://profile.line-scdn.net/abc/small']);
+  const m1 = meta.personOf('GA', uid(1));
+  assert.match(m1.a, /^av\/[0-9a-f]{24}\.jpg\?v=[0-9a-z]+$/);
+  assert.ok(readFileSync(join(PAGE_DIR, m1.a.split('?')[0])).equals(JPG));
+  assert.equal(meta.personOf('GA', uid(2)).a, '');                 // 不是 LINE 的網址不下載
+  assert.deepEqual(meta.members('GA').map(m => m.name), ['葶', '壞人']); // 查不到的算退群
+  // 一週內不再查
+  assert.equal(await meta.syncMembers('GA', sp, { profile, fetchImg, now: NOW + 86400_000 }), false);
+  assert.equal(fetched.length, 1);
+  // 一週後 LINE 全部查不到：比較像 LINE 出問題，不把大家當退群
+  assert.equal(await meta.syncMembers('GA', sp, { profile: async () => null, fetchImg, now: NOW + 8 * 86400_000 }), false);
+  assert.equal(meta.members('GA').length, 2);
+});
+
+await test('月曆網頁（格子放大版）：短標籤、參加的人只放名字和自己網域的頭像、連續幾天畫成長條', async () => {
+  const db = await memDb();
+  cal.initCalendar(db, { dir: PAGE_DIR, trips: () => [{ day: '2026-12-24', n: 1, title: '✈️ 飛東京', url: 'https://badbadted.github.io/temp-reports/ski.html#d1', name: 'ski' }, { day: '2026-12-25', n: 2, title: '👘 淺草', url: 'https://badbadted.github.io/temp-reports/ski.html#d2', name: 'ski' }] });
+  seedMembers(db, 'GP', SKI.slice(0, 2).map(([n, name]) => [n, name, `${'a'.repeat(23)}${n}.jpg`]));
+  db.run("INSERT INTO cal_trip_meta (chat_id, name, sig, short, who, days) VALUES ('GP', 'ski', 'x', '東京滑雪', ?, ?)", JSON.stringify(['葶家', '陳二銘家', '不認識家']), JSON.stringify({ '2026-12-25': ['葶家'] }));
+  const ev = cal.add('GP', { day: '2026-12-24', time: '20:00', title: '機票確認' }, NOW).event;
+  db.run('UPDATE cal_events SET short = ?, who = ?, title = ? WHERE id = ?', '東京滑雪', '["葶"]', '機票確認 a</script> b', ev.id); // 繞過 clean，測網頁跳脫
+  cal.add('GP', { day: '2026-12-26', title: '⛷️ 還沒標的事' }, NOW);
+  cal.writePage('GP', [{ chatId: 'GP', label: '' }], { title: '滑雪群', now: NOW });
+  const html = readdirSync(PAGE_DIR).filter(f => f.endsWith('.html')).map(f => readFileSync(join(PAGE_DIR, f), 'utf8')).find(h => h.includes('還沒標的事'));
+  const D = JSON.parse(/const D = (.*);\n/.exec(html.replace(/\r/g, ''))[1]);
+  assert.deepEqual(D.people.map(p => p.n), ['葶', '陳二銘（綸/鈞)']);
+  assert.ok(D.people.every(p => /^av\/[0-9a-f]{24}\.jpg\?v=/.test(p.a)));
+  const of = (d, n) => D.items.find(i => i.d === d && i.n.includes(n));
+  assert.deepEqual([of('2026-12-24', '飛東京').l, of('2026-12-24', '飛東京').w], ['東京滑雪', [0, 1]]);
+  assert.deepEqual(of('2026-12-25', '淺草').w, [0]);                  // 當天有寫就照當天
+  assert.deepEqual([of('2026-12-24', '機票').l, of('2026-12-24', '機票').w], ['東京滑雪', [0]]);
+  assert.equal(of('2026-12-26', '還沒標').l, '還沒標的事');            // AI 還沒標：用標題
+  assert.ok(!JSON.stringify(D).includes('line-scdn'));                // 不連 LINE 的網址
+  assert.ok(!/(src|href)=["']https?:/.test(html) && !/url\(\s*['"]?https?:/.test(html));
+  assert.ok(html.includes('AV_RE.test(p.a ||'));                      // 頭像路徑前端再驗一次
+  assert.ok(html.includes("el('div', 'span'") && html.includes("'cnt'"));  // 長條＋「+N」
+  assert.ok(!html.includes('innerHTML') && html.includes('a\\u003c/script\\u003e b'));
+});
+
+await test('「小帥 妞家是 葶」：群裡記家庭對應；對不到任何成員就照常聊天', async () => {
+  const { db, say } = await calBot();
+  seedMembers(db, 'GC', SKI);
+  const r = await say('U1', '小帥 妞家是 葶');
+  assert.equal(r[0].text, '記好了：妞家＝葶，月曆上會顯示他們的頭像');
+  assert.deepEqual(meta.families('GC'), [{ family: '妞', ids: [uid(1)] }]);
+  // 綁了行程的群也能設
+  seedMembers(db, 'GTRIP', SKI);
+  assert.match((await say('U1', '小帥 品岑家是 翁小娟', 'GTRIP'))[0].text, /品岑家＝翁小娟💎/);
+  // 對不到：不攔
+  await say('U1', '小帥 我家是住高雄');
+  assert.equal(meta.families('GC').length, 1);
 });
 
 console.log(`\n${pass} 項全部通過`);

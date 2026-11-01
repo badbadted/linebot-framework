@@ -40,6 +40,8 @@ import * as kb from './kb.js';
 import * as polls from './polls.js';
 import * as share from './share.js';
 import * as cal from './calendar.js';
+import * as calmeta from './calmeta.js';
+import { safeFetch } from '../../src/utils/safe-fetch.js';
 import * as claims from './claims.js';
 import * as social from '../../src/utils/social-preview.js';
 import { join as pathJoin, resolve as pathResolve } from 'node:path';
@@ -665,14 +667,52 @@ async function calSources(chatId, { dm = false, withGroups = false } = {}) {
   return out;
 }
 
-/** 重寫月曆網頁並回網址（私訊的一律含群組；寫不出來回 null，卡片就不放「看整個月」） */
-async function calPage(chatId, dm) {
+/** 重寫月曆網頁並回網址（私訊的一律含群組；寫不出來回 null，卡片就不放「看整個月」）；寫完在背景補短標籤與頭像 */
+async function calPage(chatId, dm, { enrich = true } = {}) {
+  let url = null;
   try {
     const sources = await calSources(chatId, { dm, withGroups: dm });
     const name = dm ? '' : cards.clean((await botGroups()).find(x => x.id === chatId)?.name, 20);
-    return cal.writePage(chatId, sources, { title: dm ? '我的行事曆（含群組）' : `${name || '群組'} 行事曆` });
-  } catch (err) { console.warn(`[xiaoshuai-cal] 月曆網頁寫不出來：${err.message}`); return null; }
+    url = cal.writePage(chatId, sources, { title: dm ? '我的行事曆（含群組）' : `${name || '群組'} 行事曆` });
+  } catch (err) { console.warn(`[xiaoshuai-cal] 月曆網頁寫不出來：${err.message}`); }
+  if (enrich) setImmediate(() => calEnrich(chatId, dm));
+  return url;
 }
+
+// 月曆格子的短標籤、參加的人、頭像（2026-11-01）：背景做，做完有變才重寫網頁；同一個聊天一次只跑一個
+const calEnriching = new Map();
+const CAL_ENRICH_EVERY_MS = 30 * 60_000; // 行程網頁改了（小帥改或從電腦改）：每 30 分鐘看一次要不要重標
+let calEnrichTimer = null;
+function calEnrich(chatId, dm = /^U/.test(chatId)) {
+  if (!llm?.generate || process.env.XIAOSHUAI_CAL_NO_ENRICH || calEnriching.has(chatId)) return calEnriching.get(chatId); // 測試關掉
+  const job = (async () => {
+    let changed = false;
+    if (/^C/.test(chatId) && lineApi?.getGroupMemberProfile) {
+      // 在群裡講過話的人（chat_log 只留最近的，成員表會一直累積）
+      const speakers = db.all("SELECT user_id, name FROM chat_log WHERE chat_id = ? AND self = 0 AND user_id LIKE 'U%' GROUP BY user_id", chatId);
+      changed = await calmeta.syncMembers(chatId, speakers, {
+        profile: (uid) => lineApi.getGroupMemberProfile(chatId, uid),
+        fetchImg: (url) => safeFetch(url, { timeoutMs: 8000, maxBytes: 400_000 }),
+      }) || changed;
+    }
+    const trips = tripsOf(chatId).map(n => trip.detailOf(n)).filter(Boolean);
+    const n = await calmeta.runLabels(llm, chatId, { trips, fromDay: cal.addDays(cal.todayKey(), -62) });
+    if (n) console.log(`[xiaoshuai-cal] ${chatId.slice(0, 8)} 短標籤標好 ${n} 筆`);
+    if (changed || n) {
+      await calPage(chatId, dm, { enrich: false });
+      if (!dm) for (const id of cal.pageChats()) if (/^U/.test(id)) await calPage(id, true, { enrich: false });
+    }
+  })().catch(err => console.warn(`[xiaoshuai-cal] 短標籤／頭像沒做完：${err.message}`)).finally(() => calEnriching.delete(chatId));
+  calEnriching.set(chatId, job);
+  return job;
+}
+/** 開過月曆網頁、記過事或綁了行程的聊天：一個一個補（啟動後、之後每 30 分鐘） */
+async function calEnrichAll() {
+  const ids = new Set([...cal.pageChats(), ...db.all('SELECT DISTINCT chat_id FROM cal_events').map(r => r.chat_id), ...db.all('SELECT DISTINCT chat_id FROM trip_binds').map(r => r.chat_id)]);
+  for (const id of ids) if (/^U/.test(id) || enabled.has(id)) await calEnrich(id);
+}
+
+const CAL_FAMILY_RE = /^(?:@?小帥[，,、\s]*)?(\S{1,6}?)(?:一家|家)\s*(?:是|就是|=|＝)\s*(.{1,80}?)\s*[。!！]?$/;
 /** 群組的事變了：開過網頁的私訊（TED）也要重寫，那邊含群組 */
 function calRefreshDmPages() {
   for (const id of cal.pageChats()) if (/^U/.test(id)) calPage(id, true).catch(() => {});
@@ -705,6 +745,17 @@ async function calendarIntercept({ chatId, userId, text, replyToken, mention, dm
   if (!userId || (!dm && !mention)) return false;
   const t = String(text || '').normalize('NFKC').trim();
   const now = Date.now();
+  // 「小帥 妞家是 Jasmine、Bi Chan」：記下這家是誰（月曆格子上顯示頭像用）；對不到任何成員就交給後面照常聊
+  const fm = !dm && CAL_FAMILY_RE.exec(t);
+  if (fm) {
+    const r = calmeta.setFamily(chatId, fm[1], fm[2], now);
+    if (r) {
+      console.log(`[xiaoshuai-cal] ${chatId.slice(0, 8)} ${r.family}家＝${r.names.join('、')}`);
+      calPage(chatId, false).then(() => calRefreshDmPages()).catch(() => {});
+      try { await replyMsgs(replyToken, [{ type: 'text', text: `記好了：${r.family}家＝${r.names.join('、')}，月曆上會顯示他們的頭像${r.miss.length ? `\n（${r.miss.join('、')} 找不到是誰，要他先在群裡講句話）` : ''}` }]); } catch (err) { console.warn(`[xiaoshuai-cal] 回覆失敗：${err.message}`); }
+      return true;
+    }
+  }
   let it = cal.ruleIntent(t, now);
   // 綁了旅遊行程的群（2026-11-01）：行事曆會帶出行程每天，「明天行程」「這週有什麼」照樣查；
   // 新增、改、刪可能是在改旅遊行程（「12/26 晚上加燒肉」），要講「行事曆」才算
@@ -2084,6 +2135,11 @@ export default {
     polls.initPolls(db);
     // 綁了旅遊行程的群：行事曆直接讀行程每天的摘要（行程網頁是正本，不另存）
     cal.initCalendar(db, { dir: process.env.XIAOSHUAI_CAL_DIR, trips: (chatId) => tripsOf(chatId).flatMap(n => trip.daysOf(n)) });
+    if (!calEnrichTimer && !process.env.XIAOSHUAI_CAL_NO_ENRICH) {
+      setTimeout(() => calEnrichAll().catch(() => {}), 30_000).unref?.();
+      calEnrichTimer = setInterval(() => calEnrichAll().catch(() => {}), CAL_ENRICH_EVERY_MS);
+      calEnrichTimer.unref?.();
+    }
     kb.initKb(db, { backups: process.env.XIAOSHUAI_KB_BACKUPS || pathJoin(pathResolve(import.meta.dirname, '..', '..'), 'data', 'backups', 'xiaoshuai-kb') });
     if (!kbTimer) { kbTimer = setInterval(() => kb.backupDaily(), 3600_000); kbTimer.unref?.(); }
     photo.initPhotos(db);

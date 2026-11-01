@@ -6,6 +6,7 @@
  */
 
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
 import { promisify } from 'util';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
@@ -31,17 +32,13 @@ export function info(name) {
 }
 export const validName = (name) => /^[a-z0-9-]{1,60}$/.test(name || '');
 
-/**
- * 行程每天的摘要（行事曆用，2026-11-01：行程網頁是正本，行事曆直接讀，不另存）
- * 年份：標題裡的 20xx，沒有就用 fallbackYear；日期往回跳（12/31 → 1/1）就跨年
- * @returns [{ day: 'YYYY-MM-DD', n, title, url }]（讀不到回 []）
- */
-export function daysOf(name, fallbackYear = new Date().getFullYear(), repo = TRIP_REPO) {
-  if (!validName(name)) return [];
-  let t;
-  try { t = JSON.parse(readFileSync(join(repo, 'trips', `${name}.json`), 'utf8')); } catch { return []; }
+/** 讀行程檔並算出每天的日期（年份：標題裡的 20xx，沒有就用 fallbackYear；日期往回跳 12/31 → 1/1 就跨年）；讀不到回 null */
+function readDays(name, fallbackYear, repo) {
+  if (!validName(name)) return null;
+  let raw, t;
+  try { raw = readFileSync(join(repo, 'trips', `${name}.json`), 'utf8'); t = JSON.parse(raw); } catch { return null; }
   let year = Number(/20\d\d/.exec(String(t.meta?.title || t.title || ''))?.[0]) || fallbackYear;
-  const out = [];
+  const days = [];
   let prev = 0;
   (t.days || []).forEach((d, i) => {
     const md = /^(\d{1,2})\/(\d{1,2})/.exec(d.glance?.d || d.date || '');
@@ -49,12 +46,40 @@ export function daysOf(name, fallbackYear = new Date().getFullYear(), repo = TRI
     const ord = +md[1] * 100 + +md[2];
     if (prev && ord < prev) year += 1;
     prev = ord;
+    days.push({ day: `${year}-${String(+md[1]).padStart(2, '0')}-${String(+md[2]).padStart(2, '0')}`, n: i + 1, d });
+  });
+  return { raw, t, days };
+}
+
+/**
+ * 行程每天的摘要（行事曆用，2026-11-01：行程網頁是正本，行事曆直接讀，不另存）
+ * @returns [{ day: 'YYYY-MM-DD', n, title, url, name }]（讀不到回 []）
+ */
+export function daysOf(name, fallbackYear = new Date().getFullYear(), repo = TRIP_REPO) {
+  const r = readDays(name, fallbackYear, repo);
+  if (!r) return [];
+  const out = [];
+  for (const { day, n, d } of r.days) {
     const place = String(d.glance?.place || d.title || '').replace(/^\p{Extended_Pictographic}️?\s*/u, '');
     const title = [d.glance?.emoji, place].filter(Boolean).join(' ').trim();
-    if (!title) return;
-    out.push({ day: `${year}-${String(+md[1]).padStart(2, '0')}-${String(+md[2]).padStart(2, '0')}`, n: i + 1, title, url: `${tripUrl(name)}#d${i + 1}` });
-  });
+    if (title) out.push({ day, n, title, url: `${tripUrl(name)}#d${n}`, name });
+  }
   return out;
+}
+
+/**
+ * 給 AI 取短標籤、抄參加的人用：標題、內容雜湊（行程改了才重標）、每天的文字（每天最多 240 字）
+ * @returns { name, title, sig, days: [{ day, text }] } 或 null
+ */
+export function detailOf(name, fallbackYear = new Date().getFullYear(), repo = TRIP_REPO) {
+  const r = readDays(name, fallbackYear, repo);
+  if (!r) return null;
+  const strip = (x) => String(x ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  const days = r.days.map(({ day, d }) => {
+    const items = (Array.isArray(d.items) ? d.items : []).map(it => [it.when, it.title, it.text, it.sub].map(strip).filter(Boolean).join(' '));
+    return { day, text: [strip(d.date), strip(d.place || d.glance?.place), ...items].filter(Boolean).join('；').slice(0, 240) };
+  });
+  return { name, title: strip(r.t.meta?.title || r.t.title || name).slice(0, 60), sig: createHash('sha1').update(r.raw).digest('hex').slice(0, 16), days };
 }
 
 let queue = Promise.resolve();
