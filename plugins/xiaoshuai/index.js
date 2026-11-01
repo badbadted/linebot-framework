@@ -46,6 +46,7 @@ import { safeFetch } from '../../src/utils/safe-fetch.js';
 import * as claims from './claims.js';
 import * as social from '../../src/utils/social-preview.js';
 import { join as pathJoin, resolve as pathResolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 
 const MEMORY_MAX = 30;      // 每群最多記幾條
 const MEMORY_PER_REPLY = 2; // 每次最多新增幾條
@@ -719,6 +720,8 @@ async function calEnrichAll() {
   for (const id of ids) if (/^U/.test(id) || enabled.has(id)) await calEnrich(id);
 }
 
+const CAL_ROTATE_RE = /^(?:@?小帥[，,、\s]*)?(?:行事曆\s*(?:換|重發|更新)(?:網址|連結)|(?:換|重發)行事曆(?:網址|連結))\s*(\S{0,20})\s*$/;
+const CAL_RESTORE_RE = /^(?:@?小帥[，,、\s]*)?行事曆\s*還原(?:到)?\s*(?:(\d{1,2})\/(\d{1,2})\s*)?(\d{1,2})[:：](\d{2})\s*$/;
 const CAL_FAMILY_RE = /^(?:@?小帥[，,、\s]*)?(\S{1,6}?)(?:一家|家)\s*(?:是|就是|=|＝)\s*(.{1,80}?)\s*[。!！]?$/;
 /** 群組的事變了：開過網頁的私訊（TED）也要重寫，那邊含群組 */
 function calRefreshDmPages() {
@@ -752,6 +755,44 @@ async function calendarIntercept({ chatId, userId, text, replyToken, mention, dm
   if (!userId || (!dm && !mention)) return false;
   const t = String(text || '').normalize('NFKC').trim();
   const now = Date.now();
+  // 「行事曆 換網址」：重發編輯碼，舊的連結立刻不能改（群組：群組成員都能下；私訊：TED，帶群名可以換那個群的）
+  const rot = CAL_ROTATE_RE.exec(t);
+  if (rot) {
+    const sayNow = async (x) => { try { await replyMsgs(replyToken, [{ type: 'text', text: x }]); } catch (err) { console.warn(`[xiaoshuai-cal] 回覆失敗：${err.message}`); } return true; };
+    let target = chatId;
+    if (dm) {
+      if (!isAdmin(userId)) return false;
+      const kw = cards.clean(rot[1] || '', 20);
+      if (kw) {
+        const gs = (await botGroups()).filter(g => enabled.has(g.id) && cards.clean(g.name, 60).includes(kw));
+        if (gs.length !== 1) return sayNow(gs.length ? `名字有「${kw}」的群有好幾個：${gs.map(g => cards.clean(g.name, 20)).join('、')}，再說清楚一點` : `找不到名字有「${kw}」的群`);
+        target = gs[0].id;
+      }
+    }
+    cal.tokenOf(target);
+    const r = caledit.rotateKey(target, { id: userId, name: dm ? 'TED' : await nameOf(chatId, userId), via: 'chat' }, now);
+    if (r.error) return sayNow(r.error);
+    console.log(`[xiaoshuai-cal] ${target.slice(0, 8)} 換了編輯連結`);
+    const url = await calPage(target, /^U/.test(target));
+    if (!/^U/.test(target)) calRefreshDmPages();
+    return sayNow(`換好了，舊的行事曆連結已經不能改。\n新的連結（點開可以看也可以改，只給群組裡的人）：\n${url}${dm && target !== chatId ? '\n\n請把這個連結貼到群組裡' : ''}`);
+  }
+  // 「行事曆 還原到 11/1 15:30」：整個行事曆改回那個時間點的樣子（只有 TED）
+  const rs = CAL_RESTORE_RE.exec(t);
+  if (rs) {
+    const sayNow = async (x) => { try { await replyMsgs(replyToken, [{ type: 'text', text: x }]); } catch (err) { console.warn(`[xiaoshuai-cal] 回覆失敗：${err.message}`); } return true; };
+    if (!isAdmin(userId)) return sayNow('只有 TED 可以把整個行事曆還原到某個時間點；刪錯一筆的話，網頁上的「最近刪除」可以自己還原');
+    const tp = new Date(now + 8 * 3600_000);
+    let y = tp.getUTCFullYear(); const mo = rs[1] ? +rs[1] : tp.getUTCMonth() + 1; const d = rs[2] ? +rs[2] : tp.getUTCDate();
+    let ts = Date.UTC(y, mo - 1, d, +rs[3], +rs[4]) - 8 * 3600_000;
+    if (ts > now && rs[1]) { y -= 1; ts = Date.UTC(y, mo - 1, d, +rs[3], +rs[4]) - 8 * 3600_000; }
+    if (!(+rs[3] < 24 && +rs[4] < 60) || ts > now || Number.isNaN(ts)) return sayNow('時間看不懂，例如「小帥 行事曆 還原到 11/1 15:30」');
+    const r = caledit.restoreTo(chatId, ts, { id: userId, name: 'TED', via: 'chat' }, now);
+    console.log(`[xiaoshuai-cal] ${chatId.slice(0, 8)} 還原到 ${fmtAt(ts)}（${r.n} 筆）`);
+    await calPage(chatId, dm);
+    if (!dm) calRefreshDmPages();
+    return sayNow(r.n ? `還原好了：改回 ${fmtAt(ts)} 的樣子（${r.n} 筆）。還原錯了，再說一次「還原到」剛剛之前的時間就能改回來` : `${fmtAt(ts)} 之後沒有人改過，不用還原`);
+  }
   // 「小帥 妞家是 Jasmine、Bi Chan」：記下這家是誰（月曆格子上顯示頭像用）；對不到任何成員就交給後面照常聊
   const fm = !dm && CAL_FAMILY_RE.exec(t);
   if (fm) {
@@ -887,44 +928,106 @@ async function calPostback({ chatId, userId, data, replyToken }) {
   return say(`好，刪掉了：${cal.whenLabel(ev)} ${ev.title}`);
 }
 
-// ── 行事曆網頁上直接改（2026-11-01）：LINE 裡用 LIFF 打開才能改，主機向 LINE 驗身分＋確認是群組成員 ──
-const CAL_RATE_MAX = 40;          // 一個人一分鐘最多幾次
-const calRate = new Map();        // userId → [時間…]
-const calEditMember = new Map();  // `${chatId}:${userId}` → { ok, name, at }
+// ── 行事曆網頁上直接改（2026-11-01）──
+// 先開放免登入：帶編輯碼（#k=）的網址就能改，身分自報；LIFF 有設定時也收 LINE 驗過的身分
+// 防亂改全在主機這邊：同源＋自訂標頭＋JSON、16KB 上限、頻率限制（編輯碼、IP 各算）、大量刪除自動停用並通知 TED
+const CAL_BODY_MAX = 16 * 1024;
+const CAL_RATE = { write: [[60_000, 10], [3600_000, 60]], read: [[60_000, 60]] }; // [時間窗, 次數]
+const CAL_BURST = { deletes: 5, edits: 30, suspendMs: 3600_000 };                 // 10 分鐘內
+const CAL_WRITES = new Set(['edit', 'delete', 'restore', 'unpin', 'families', 'settings']);
+const calHits = new Map();        // 計數用的 key → [時間…]
+const calEditMember = new Map();  // `${chatId}:${userId}` → { ok, name, at }（LIFF 身分查群組成員的快取）
 const PUBLIC_ORIGIN = new URL(process.env.BOT_PUBLIC_URL || 'https://bot.pushbike-training.app').origin;
 const fmtAt = (ts) => new Date(ts + 8 * 3600_000).toISOString().slice(5, 16).replace('-', '/').replace('T', ' ');
 
-/** 驗身分：回 { chatId, by, dm } 或 { status, error } */
-async function calAuth(req) {
-  const l = cal.liff();
-  if (!l) return { status: 503, error: '網頁上改還沒開（LIFF 還沒設定）' };
-  // 擋 CSRF：身分在 body 的 ID token（不靠 cookie），只收 JSON，有 Origin 的要是自己的網域
-  if (!req.is('application/json')) return { status: 415, error: '格式不對' };
-  const origin = req.get('origin');
-  if (origin && origin !== PUBLIC_ORIGIN) return { status: 403, error: '來源不對' };
-  const chatId = cal.chatOfToken(req.body?.t);
-  if (!chatId) return { status: 404, error: '找不到這個行事曆' };
-  const who = await caledit.verify(req.body?.id, l.channelId);
-  if (!who) return { status: 401, error: '登入過期了，從 LINE 再打開一次' };
+/** 這個 key 在每個時間窗裡超過次數了嗎（沒超過就記一次） */
+function calOver(key, rules, now) {
+  const longest = Math.max(...rules.map(r => r[0]));
+  const hits = (calHits.get(key) || []).filter(t => now - t < longest);
+  const over = rules.some(([win, max]) => hits.filter(t => now - t < win).length >= max);
+  if (!over) hits.push(now);
+  calHits.set(key, hits);
+  if (calHits.size > 5000) for (const [k, v] of calHits) if (!v.length || now - v[v.length - 1] > 3600_000) calHits.delete(k);
+  return over;
+}
+
+/** 管理員（config/admin.json；XIAOSHUAI_CAL_ALERT_TO 可指定，逗號分隔）：有異常才推播給他們 */
+function calAdmins() {
+  if (process.env.XIAOSHUAI_CAL_ALERT_TO) return process.env.XIAOSHUAI_CAL_ALERT_TO.split(',').map(s => s.trim()).filter(Boolean);
+  try { return JSON.parse(readFileSync(pathJoin(pathResolve(import.meta.dirname, '..', '..'), 'config', 'admin.json'), 'utf8')).adminUserIds || []; } catch { return []; }
+}
+async function calAlert(text) {
+  for (const id of calAdmins()) {
+    try { await lineApi.push(id, [{ type: 'text', text }]); } catch (err) { console.warn(`[xiaoshuai-cal] 異常通知推不出去：${err.message}`); }
+  }
+}
+
+/** 驗：回 { chatId, by, dm, via } 或 { status, error }（錯誤訊息不帶內部細節） */
+async function calAuth(req, action) {
   const now = Date.now();
-  const hits = (calRate.get(who.userId) || []).filter(t => now - t < 60_000);
-  hits.push(now); calRate.set(who.userId, hits);
-  if (hits.length > CAL_RATE_MAX) return { status: 429, error: '改太快了，等一下再試' };
-  let name = who.name;
-  if (/^U/.test(chatId)) { if (who.userId !== chatId) return { status: 403, error: '這是別人的行事曆，只能看' }; }
-  else if (/^C/.test(chatId)) {
-    const k = `${chatId}:${who.userId}`;
-    let c = calEditMember.get(k);
-    if (!c || now - c.at > 10 * 60_000) {
-      let p = null;
-      try { p = await lineApi.getGroupMemberProfile(chatId, who.userId); } catch { p = null; }
-      c = { ok: !!p, name: p?.displayName || '', at: now };
-      calEditMember.set(k, c);
-    }
-    if (!c.ok) return { status: 403, error: '你不在這個群組，只能看' };
-    name = c.name || name;
-  } else return { status: 403, error: '這個行事曆只能看' };
-  return { chatId, dm: /^U/.test(chatId), by: { id: who.userId, name: cards.clean(name, 30) || '某人' } };
+  const ip = String(req.get('cf-connecting-ip') || req.ip || '');
+  const iph = caledit.hashOf(ip);
+  const len = Number(req.get('content-length') || 0);
+  if (len > CAL_BODY_MAX || JSON.stringify(req.body ?? {}).length > CAL_BODY_MAX) return { status: 413, error: '送來的資料太大' };
+  // 擋 CSRF：只收同源（Origin 一定要有、要是自己的網域）、JSON、自訂標頭（跨站表單送不出這種請求）
+  if (req.get('origin') !== PUBLIC_ORIGIN) { caledit.anomaly('', 'origin', String(req.get('origin') || '（沒有）').slice(0, 80), iph, now); return { status: 403, error: '來源不對' }; }
+  if (!req.is('application/json') || req.get('x-cal-client') !== '1') return { status: 400, error: '格式不對' };
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+  const chatId = cal.chatOfToken(body.t);
+  if (!chatId) return { status: 404, error: '找不到這個行事曆' };
+  const write = CAL_WRITES.has(action);
+  if (calOver(`ip:${iph}:${write ? 'w' : 'r'}`, write ? CAL_RATE.write : CAL_RATE.read, now) || (write && calOver(`chat:${chatId}:w`, CAL_RATE.write, now))) {
+    caledit.anomaly(chatId, 'rate', action, iph, now);
+    return { status: 429, error: '改太快了，等一下再試' };
+  }
+  const dm = /^U/.test(chatId);
+  const l = cal.liff();
+  if (l && body.id) {
+    // LINE 登入（LIFF）：向 LINE 驗 ID token，再確認是群組成員
+    const who = await caledit.verify(body.id, l.channelId);
+    if (!who) return { status: 401, error: '登入過期了，從 LINE 再打開一次' };
+    let name = who.name;
+    if (dm) { if (who.userId !== chatId) return { status: 403, error: '這是別人的行事曆，只能看' }; }
+    else if (/^C/.test(chatId)) {
+      const k = `${chatId}:${who.userId}`;
+      let c = calEditMember.get(k);
+      if (!c || now - c.at > 10 * 60_000) {
+        let p = null;
+        try { p = await lineApi.getGroupMemberProfile(chatId, who.userId); } catch { p = null; }
+        c = { ok: !!p, name: p?.displayName || '', at: now };
+        calEditMember.set(k, c);
+      }
+      if (!c.ok) return { status: 403, error: '你不在這個群組，只能看' };
+      name = c.name || name;
+    } else return { status: 403, error: '這個行事曆只能看' };
+    return { chatId, dm, via: 'liff', by: { id: who.userId, name: cards.clean(name, 30) || '某人', via: 'liff', iph } };
+  }
+  // 編輯連結：碼要對、沒有被暫停；身分自報（只能選這個群的成員）
+  if (!caledit.keyOk(chatId, body.k)) { caledit.anomaly(chatId, 'key', action, iph, now); return { status: 403, error: '這個編輯連結不能用了，請用群組裡最新的行事曆連結' }; }
+  if (caledit.suspendedUntil(chatId) > now) return { status: 423, error: '網頁編輯暫停中（偵測到短時間大量刪除），晚點再試或請 TED 處理' };
+  const fp = caledit.hashOf(`${String(body.dev || '').slice(0, 64)}|${String(req.get('user-agent') || '').slice(0, 200)}`);
+  let by = { id: '', name: '', via: 'key', fp, iph };
+  if (dm) by = { ...by, id: chatId, name: '本人（自報）' };
+  else if (body.who != null) {
+    const m = db.get('SELECT user_id, name FROM cal_members WHERE chat_id = ? AND rowid = ? AND gone = 0', chatId, Number(body.who));
+    if (m) by = { ...by, id: m.user_id, name: `${cards.clean(m.name, 24)}（自報）` };
+  }
+  if (write && !by.id) return { status: 400, error: '先選「我是誰」' };
+  return { chatId, dm, via: 'key', by };
+}
+
+/** 編輯連結短時間大量刪除／修改：暫停 1 小時、記異常、推播通知 TED（有異常才推） */
+async function calBurstCheck(a, now = Date.now()) {
+  if (a.via !== 'key' || caledit.suspendedUntil(a.chatId) > now) return;
+  const dels = caledit.recentDeletes(a.chatId, now);
+  const edits = caledit.recentEdits(a.chatId, now);
+  if (dels < CAL_BURST.deletes && edits < CAL_BURST.edits) return;
+  caledit.suspend(a.chatId, now + CAL_BURST.suspendMs);
+  caledit.anomaly(a.chatId, 'burst', `10 分鐘內刪 ${dels} 筆、改 ${edits} 次，最後是 ${a.by.name}`, a.by.iph, now);
+  caledit.log(a.chatId, 'sys', { name: '小帥', via: 'chat' }, `偵測到大量${dels >= CAL_BURST.deletes ? '刪除' : '修改'}，網頁編輯暫停 1 小時`, now);
+  const group = cards.clean((await botGroups()).find(x => x.id === a.chatId)?.name, 20) || '群組';
+  console.warn(`[xiaoshuai-cal] ${a.chatId.slice(0, 8)} 網頁編輯暫停：10 分鐘內刪 ${dels}、改 ${edits}`);
+  await calAlert(`⚠️ 行事曆異常：「${group}」10 分鐘內被用編輯連結刪了 ${dels} 筆、改了 ${edits} 次（最後一次：${a.by.name}），網頁編輯已暫停 1 小時。\n要還原：在群組說「小帥 行事曆 還原到 ${fmtAt(now - 15 * 60_000).slice(6)}」\n要換掉連結：在群組說「小帥 行事曆 換網址」`);
 }
 
 /** 改完：重寫網頁；群組設定要說一聲的話，排進下一次免費回覆（不推播） */
@@ -950,7 +1053,7 @@ const calApi = {
     const members = calmeta.members(a.chatId).map(m => calmeta.personOf(a.chatId, m.user_id)).filter(Boolean);
     const keyOf = (u) => calmeta.personOf(a.chatId, u)?.k;
     return {
-      me: { name: a.by.name }, group: !a.dm, members, notify: caledit.notifyOn(a.chatId),
+      me: { name: a.by.name, self: a.via === 'key' }, via: a.via, group: !a.dm, members, notify: caledit.notifyOn(a.chatId),
       families: calmeta.families(a.chatId).map(f => ({ name: `${f.family}家`, keys: f.ids.map(keyOf).filter(x => x != null) })),
       deleted: caledit.deletedList(a.chatId).map(e => ({ id: e.id, day: e.day, title: e.title })),
     };
@@ -1002,7 +1105,7 @@ const calApi = {
   async history(a, b) {
     const ref = String(b.ref || '');
     if (!/^e\d{1,9}$/.test(ref) && !TRIP_REF_RE.test(ref)) return { status: 400, error: '要看哪一筆？' };
-    return { list: caledit.history(a.chatId, ref).map(h => ({ by: h.user_name, at: fmtAt(h.at), what: h.what })) };
+    return { list: caledit.history(a.chatId, ref).map(h => ({ by: h.user_name, at: fmtAt(h.at), what: h.what, self: h.via === 'key' })) };
   },
   async families(a, b) {
     if (a.dm) return { status: 400, error: '私訊的行事曆沒有家庭對應' };
@@ -1018,7 +1121,7 @@ const calApi = {
   },
 };
 
-/** /x/xiaoshuai/cal/*：config 公開（給 cal-liff.html 拿 LIFF ID），其他都要驗身分 */
+/** /x/xiaoshuai/cal/*：config 公開（給 cal-liff.html 拿 LIFF ID），其他都要驗（編輯碼或 LINE 登入） */
 function calHttp(router) {
   router.get('/cal/config', (_req, res) => {
     const l = cal.liff();
@@ -1029,10 +1132,11 @@ function calHttp(router) {
     router.post(`/cal/${name}`, async (req, res) => {
       res.set('Cache-Control', 'no-store');
       try {
-        const a = await calAuth(req);
+        const a = await calAuth(req, name);
         if (a.status) return res.status(a.status).json({ ok: false, error: a.error });
         const r = await fn(a, req.body || {});
         if (r.status) { const { status, ...rest } = r; return res.status(status).json({ ok: false, ...rest }); }
+        if (CAL_WRITES.has(name)) await calBurstCheck(a);
         res.json({ ok: true, ...r });
       } catch (err) {
         console.warn(`[xiaoshuai-cal] 網頁 ${name} 失敗：${err.message}`);
@@ -2374,6 +2478,8 @@ export default {
 
   /** Flex 卡片的 postback：投票按鈕「poll:<id>:<選項>」、看結果「poll:<id>:r」 */
   http: (router) => calHttp(router),
+  /** 測試用：清掉頻率限制的計數 */
+  _calResetRate: () => calHits.clear(),
 
   async onPostback({ chatId, userId, data, replyToken }) {
     if (/^cal:/.test(String(data || ''))) return calPostback({ chatId, userId, data, replyToken });

@@ -335,7 +335,7 @@ export function add(chatId, { day, time = null, title, place = '', by = '', byNa
   if ((db.get('SELECT COUNT(*) n FROM cal_events WHERE chat_id = ? AND created_at >= ?', chatId, start)?.n || 0) >= MAX_ADD_PER_DAY) return { error: `今天已經加了 ${MAX_ADD_PER_DAY} 件，明天再加` };
   const r = db.run('INSERT INTO cal_events (chat_id, day, time, title, place, created_by, created_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     chatId, day, time, tt, cards.clean(place, 20), by, cards.clean(byName, 20), now);
-  edits.log(chatId, `e${r.lastInsertRowid}`, { id: by, name: byName }, `新增了「${tt}」（${dayLabel(day)}${time ? ` ${time}` : ''}）`, now);
+  edits.log(chatId, `e${r.lastInsertRowid}`, { id: by, name: byName }, `新增了「${tt}」（${dayLabel(day)}${time ? ` ${time}` : ''}）`, now, edits.snapEvent(null));
   return { ok: true, event: getEvent(r.lastInsertRowid) };
 }
 
@@ -366,9 +366,11 @@ export function edit(chatId, id, userId, admin, { w = null, title = '', place = 
   if (day === ev.day && time === ev.time && tt === ev.title && pl === ev.place) return { error: '跟原本一樣，沒有要改的' };
   db.run('UPDATE cal_events SET day = ?, time = ?, title = ?, place = ?, updated_at = ?, version = version + 1 WHERE id = ?', day, time, tt, pl, now, ev.id);
   const by = { id: userId, name: byName };
-  if (day !== ev.day || time !== ev.time) edits.log(chatId, `e${ev.id}`, by, `時間：${whenLabel(ev)} → ${whenLabel({ day, time })}`, now);
-  if (tt !== ev.title) edits.log(chatId, `e${ev.id}`, by, `完整標題：${ev.title} → ${tt}`, now);
-  if (pl !== ev.place) edits.log(chatId, `e${ev.id}`, by, `地點：${ev.place || '空白'} → ${pl || '空白'}`, now);
+  let snap = edits.snapEvent(ev); // 改之前的樣子只記在第一行（還原到某個時間點用）
+  const lg = (what) => { edits.log(chatId, `e${ev.id}`, by, what, now, snap); snap = undefined; };
+  if (day !== ev.day || time !== ev.time) lg(`時間：${whenLabel(ev)} → ${whenLabel({ day, time })}`);
+  if (tt !== ev.title) lg(`完整標題：${ev.title} → ${tt}`);
+  if (pl !== ev.place) lg(`地點：${ev.place || '空白'} → ${pl || '空白'}`);
   if (tt !== ev.title) meta.resetLabel(ev.id); // 名稱改了，短標籤重標
   return { ok: true, before: ev, event: getEvent(ev.id) };
 }
@@ -449,9 +451,17 @@ export function tokenOf(chatId) {
 }
 /** LIFF（從 LINE 打開才能改）有設定就給 LIFF 連結，沒設定給一般網址 */
 export const liff = () => edits.liffConfig(process.env.XIAOSHUAI_LIFF_FILE || join(ROOT, 'data', 'xiaoshuai-liff.json'));
-export const pageUrl = (chatId, now = Date.now()) => {
+/**
+ * 卡片上的網址：LIFF 有設定就給 LIFF（LINE 驗身分）；沒有就給帶編輯碼的網址（#k= 在 fragment，不會送到主機、不進 Referer）
+ * readOnly：只要看的網址（不帶編輯碼）
+ */
+export const pageUrl = (chatId, now = Date.now(), { readOnly = false } = {}) => {
   const l = liff();
-  return l ? `https://liff.line.me/${l.liffId}?t=${tokenOf(chatId)}` : `${publicBase}/public/cal/${tokenOf(chatId)}.html?v=${Math.floor(now / 1000)}`;
+  const token = tokenOf(chatId);
+  if (l && !readOnly) return `https://liff.line.me/${l.liffId}?t=${token}`;
+  const base = `${publicBase}/public/cal/${token}.html?v=${Math.floor(now / 1000)}`;
+  const key = readOnly ? null : edits.editKey(chatId);
+  return key ? `${base}#k=${key}` : base;
 };
 const pageUrlOk = (u) => u.startsWith(`${publicBase}/public/cal/`) || (!!liff() && u.startsWith(`https://liff.line.me/${liff().liffId}?t=`));
 /** 網頁 token → 聊天（網頁上改東西時用）；沒有回 null */
@@ -493,7 +503,7 @@ export function writePage(chatId, sources, { title = '行事曆', now = Date.now
  * 月曆網頁（2026-11-01：「小帥的週末手帳」→ 格子放大版 → 兩週＋網頁上直接改，照 共用/AI產出/mockup/小帥月曆兩週＋編輯預覽.html）
  * 預設兩週（本週＋下週 14 格，格子是整月兩倍高），可切整月；同一個短標籤連續好幾天畫成長條
  * 格子頭像：一整家都到只放代表、全員寫「全員」，兩週最多 3 個、整月最多 2 個，其他寫「+N」
- * 改：edit（LIFF 有設定）而且從 LINE 打開（cal-liff.html 把 ID token 放 sessionStorage）才出現，送到 /x/xiaoshuai/cal/*，主機驗身分
+ * 改：網址帶編輯碼（#k=，群組卡片給的）或從 LINE 用 LIFF 打開才出現，送到 /x/xiaoshuai/cal/*，主機驗編輯碼或 LINE 身分
  * 單檔、不連外部資源：小帥的圖、頭像都是同網域相對路徑；資料放 JSON、用 textContent 畫，標題裡有 HTML 也不會執行
  */
 export function pageHtml({ title, items, people = [], groups = [], today, updated, legend = false, edit = false }) {
@@ -674,9 +684,16 @@ let start = (saved && saved.start) || weekStart(D.today);
 let Y = +((saved && saved.ym) || D.today).slice(0, 4), M = +((saved && saved.ym) || D.today).slice(5, 7);
 let sel = null;
 store('xs-cal-view', null);
-// 編輯：從 LINE（LIFF）打開時 cal-liff.html 會把 ID token 放在 sessionStorage
+// 編輯：①群組卡片的連結帶 #k=<編輯碼>（fragment 不會送到主機），存在這台裝置；②LIFF 打開時 cal-liff.html 放的 ID token
 const IDT = D.edit ? store('xs-cal-idt') : null;
-let ME = null; // { me, members, families, notify, deleted }
+const fromHash = (/[#&]k=([A-Za-z0-9_-]{20,80})/.exec(location.hash) || [])[1] || '';
+if (fromHash) keep('xs-cal-k:' + TOKEN, fromHash);
+let K = IDT ? '' : (fromHash || keep('xs-cal-k:' + TOKEN) || '');
+// 自報身分（選群組成員）與這台裝置的隨機編號（主機只存雜湊，當裝置指紋）
+let MEK = +(keep('xs-cal-me:' + TOKEN) || 0) || null;
+let DEV = keep('xs-cal-dev');
+if (!DEV) { const a = new Uint8Array(16); crypto.getRandomValues(a); DEV = Array.from(a, b => b.toString(16).padStart(2, '0')).join(''); keep('xs-cal-dev', DEV); }
+let ME = null; // { me, members, families, notify, deleted, via }
 
 function face(i, size) {
   const p = D.people[i] || { n: '?' };
@@ -837,7 +854,7 @@ function render() {
       const r = el('div');
       r.append(el('span', null, label(x.day) + ' ' + x.title));
       const b = el('button', null, '還原');
-      b.onclick = () => call('restore', { ref: 'e' + x.id }).then(ok => ok && done('還原了'));
+      b.onclick = () => { if (!needMe(() => b.onclick())) call('restore', { ref: 'e' + x.id }).then(ok => ok && done('還原了')); };
       r.append(b); d.append(r);
     }
     L.append(d);
@@ -882,10 +899,11 @@ function evRow(i) {
 function toast(t) { const e = el('div', 'toast', t); document.body.append(e); setTimeout(() => e.remove(), 2400); }
 async function call(action, body) {
   try {
-    const res = await fetch(API + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ t: TOKEN, id: IDT }, body)) });
+    const res = await fetch(API + action, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Cal-Client': '1' }, body: JSON.stringify(Object.assign({ t: TOKEN, id: IDT || undefined, k: K || undefined, who: MEK || undefined, dev: DEV }, body)) });
     const j = await res.json().catch(() => ({}));
     if (res.status === 409) return { conflict: j };
     if (res.status === 401) { store('xs-cal-idt', null); toast('登入過期了，從 LINE 再打開一次'); setTimeout(() => location.reload(), 1500); return null; }
+    if (res.status === 403 && K) { keep('xs-cal-k:' + TOKEN, ''); K = ''; ME = null; boot(); toast(j.error || '這個編輯連結不能用了'); return null; }
     if (!res.ok || !j.ok) { toast(j.error || '沒存成功，等一下再試'); return null; }
     return j;
   } catch (e) { toast('連不上，等一下再試'); return null; }
@@ -893,7 +911,7 @@ async function call(action, body) {
 function done(msg) {
   store('xs-cal-view', JSON.stringify({ mode, start, ym: Y + '-' + pad(M) }));
   toast(msg);
-  setTimeout(() => location.replace(location.pathname + '?v=' + Date.now()), 700);
+  setTimeout(() => location.replace(location.pathname + '?v=' + Date.now() + (K ? '#k=' + K : '')), 700);
 }
 function shade(build) {
   const s = el('div', 'shade'); const sh = el('div', 'sheet'); s.append(sh);
@@ -912,7 +930,24 @@ function dialog(title, lines, buttons) {
   bx.append(b); document.body.append(d);
 }
 const membersOf = () => (ME ? ME.members : []);
+function needMe(then) {
+  if (ME && ME.via === 'key' && ME.group && !MEK) { whoSheet(then); return true; }
+  return false;
+}
+function whoSheet(then) {
+  shade((sh, close) => {
+    head(sh, '我是誰？', close);
+    sh.append(el('div', 'w', '選你自己（自報身分，修改紀錄會寫你的名字並標「自報」）。只會記在這台手機。'));
+    const box = el('div', 'fam'); const ms = el('div', 'ms'); box.append(ms); sh.append(box);
+    for (const m of membersOf()) {
+      const l = el('label'); l.append(memFace(m), m.n);
+      l.onclick = () => { MEK = m.k; keep('xs-cal-me:' + TOKEN, String(m.k)); close(); meBar(); if (then) then(); };
+      ms.append(l);
+    }
+  });
+}
 function editSheet(i) {
+  if (needMe(() => editSheet(i))) return;
   shade((sh, close) => {
     head(sh, '改這一筆', close);
     if (i.k) sh.append(el('div', 'tripnote', '🧳 這筆是從旅遊行程網頁讀進來的：標題、日期、時間、地點要回行程網頁改。這裡只能改「格子上的短名稱」和「參加的人」。'));
@@ -1010,6 +1045,7 @@ function histSheet(i) {
   });
 }
 function famSheet() {
+  if (needMe(famSheet)) return;
   shade((sh, close) => {
     head(sh, '⚙️ 家庭對應', close);
     sh.append(el('div', 'w', '★ 是代表：一整家都參加時，格子上只放他的頭像。點名字設成代表、點 × 移出這家。用 LINE 成員編號存，改暱稱也對得上。'));
@@ -1044,6 +1080,7 @@ function famSheet() {
   });
 }
 function setSheet() {
+  if (needMe(setSheet)) return;
   shade((sh, close) => {
     head(sh, '⚙️ 設定', close);
     const t = el('div', 'toggle'); t.append(el('span', null, '有人改了，要不要在群組說一聲「XX 改了 YY」'));
@@ -1053,21 +1090,28 @@ function setSheet() {
     sh.append(el('div', 'w', '預設關：常常改會洗版。打開的話，小帥會在下一次有人講話時順便說（不推播、不扣額度）。'));
   });
 }
-async function boot() {
+function meBar() {
   const bar = $('mode');
-  if (!D.edit) { bar.hidden = true; render(); return; }
-  if (!IDT) { bar.className = 'ro'; bar.textContent = '👀 只能看。要改的話，從 LINE 群組裡點「🗓️ 看整個月」打開。'; render(); return; }
-  bar.className = 'ed'; bar.textContent = '確認身分中…';
-  render();
-  const j = await call('me', {});
-  if (!j) { bar.className = 'ro'; bar.textContent = '👀 只能看（' + (navigator.onLine ? '沒辦法確認你是這個群的成員' : '沒有網路') + '）'; return; }
-  ME = j;
-  bar.replaceChildren(el('span', null, '✏️ ' + j.me.name + '，你可以改'));
+  bar.hidden = false; bar.className = 'ed';
+  const me = ME.via === 'key' ? (ME.group ? (MEK ? (membersOf().find(m => m.k === MEK) || { n: '?' }).n + '（自報）' : '還沒選你是誰') : '本人') : ME.me.name;
+  bar.replaceChildren(el('span', null, '✏️ ' + me));
   const g = el('span');
+  if (ME.via === 'key' && ME.group) { const b0 = el('button', null, MEK ? '換人' : '選我是誰'); b0.onclick = () => whoSheet(); g.append(b0, ' '); }
   const b1 = el('button', null, '⚙️ 家庭對應'); b1.onclick = famSheet;
   const b2 = el('button', null, '⚙️ 設定'); b2.onclick = setSheet;
-  if (j.group) g.append(b1, ' ', b2);
+  if (ME.group) g.append(b1, ' ', b2);
   bar.append(g);
+}
+async function boot() {
+  const bar = $('mode');
+  if (!IDT && !K) { bar.hidden = false; bar.className = 'ro'; bar.textContent = '👀 只能看。要改的話，用群組裡小帥給的行事曆連結打開。'; render(); return; }
+  bar.hidden = false; bar.className = 'ed'; bar.textContent = '確認中…';
+  render();
+  const j = await call('me', {});
+  if (!j) { if (K || IDT) { bar.className = 'ro'; bar.textContent = '👀 只能看（' + (navigator.onLine ? '這個連結不能改' : '沒有網路') + '）'; } return; }
+  ME = j;
+  if (MEK && !membersOf().some(m => m.k === MEK)) { MEK = null; keep('xs-cal-me:' + TOKEN, ''); }
+  meBar();
   render();
 }
 boot();

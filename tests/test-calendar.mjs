@@ -169,7 +169,7 @@ await test('查詢：一天一張卡、今天標橘色、投票截止一起列�
   assert.deepEqual([...byDay.keys()], ['2026-10-31', '2026-11-01']);
   assert.deepEqual(byDay.get('2026-11-01').map(i => i.title), ['校外教學', '聖誕聚餐地點 投票截止']);
   const url = cal.writePage('G', [{ chatId: 'G', label: '' }], { title: '測試群 行事曆', now: NOW });
-  assert.match(url, /^https:\/\/bot\.example\.test\/public\/cal\/[0-9a-f]{32}\.html\?v=\d+$/);
+  assert.match(url, /^https:\/\/bot\.example\.test\/public\/cal\/[0-9a-f]{32}\.html\?v=\d+#k=[A-Za-z0-9_-]{32}$/); // 編輯碼放 fragment
   const msgs = cal.queryMessages(range, byDay, { url, now: NOW });
   assert.match(msgs[0].text, /這週 2 天有事（共 3 件），往右滑/);
   const bubbles = msgs[1].contents.contents;
@@ -685,9 +685,10 @@ const GE = 'C' + 'e'.repeat(32);
 const UA = uid(1), UB = uid(4), UOUT = uid(9);
 async function editBot() {
   const db = await memDb();
-  const held = [];
+  const pushed = [];
+  const replies = [];
   const member = { [UA]: '葶', [UB]: 'Jasmine' };
-  const lineApi = { reply: async () => ({}), push: async () => { throw new Error('不該推播'); },
+  const lineApi = { reply: async (_t, m) => { replies.push(m); return {}; }, push: async (to, m) => { pushed.push([to, m]); },
     getGroupMemberProfile: async (_g, u) => (member[u] ? { displayName: member[u] } : null), getProfile: async () => null };
   const ctx = { db, lineApi, isAdmin: (u) => u === 'UADMIN', providers: { llm: { generate: async () => '{}' } } };
   await xiaoshuai.init(ctx);
@@ -695,32 +696,199 @@ async function editBot() {
   await xiaoshuai.init(ctx);
   seedMembers(db, GE, SKI);
   db.run("INSERT INTO trip_binds (chat_id, name) VALUES (?, 'ski-2026')", GE);
+  xiaoshuai._calResetRate();
   // 路由：照框架的 http hook 收起來
   const routes = {};
   xiaoshuai.http({ get: (p, fn) => { routes[`GET ${p}`] = fn; }, post: (p, fn) => { routes[`POST ${p}`] = fn; } });
   caledit.setVerifier(async (tok) => ({ 'tok-a': { userId: UA, name: 'A（LINE 名）' }, 'tok-b': { userId: UB, name: 'B' }, 'tok-out': { userId: UOUT, name: '路人' } })[tok] || null);
   const token = cal.tokenOf(GE);
-  const api = async (action, body, { idt = 'tok-a', origin = 'https://bot.example.test', json = true } = {}) => {
+  const key = caledit.editKey(GE);
+  const kOf = (n) => db.get('SELECT rowid AS k FROM cal_members WHERE chat_id = ? AND name = ?', GE, n).k;
+  const meK = kOf('葶');
+  // 預設：編輯連結＋自報「葶」；idt 給了就走 LINE 登入
+  const api = async (action, body, { idt = null, k = key, who = meK, origin = 'https://bot.example.test', json = true, client = '1', ip = '203.0.113.9', dev = 'dev-1', big = 0 } = {}) => {
     let status = 200; let out = null;
-    const req = { body: { t: token, id: idt, ...body }, is: (t) => json && t === 'application/json', get: (h) => (h === 'origin' ? origin : undefined) };
+    const headers = { origin, 'x-cal-client': client, 'cf-connecting-ip': ip, 'user-agent': 'test-agent', 'content-length': String(big) };
+    const req = { body: { t: token, ...(idt ? { id: idt } : { k }), who, dev, ...body }, is: (t) => json && t === 'application/json', get: (h) => headers[h.toLowerCase()], ip: '127.0.0.1' };
     const res = { status(s) { status = s; return this; }, set() { return this; }, json(j) { out = j; return this; } };
     await routes[`POST /cal/${action}`](req, res);
     return { status, ...out };
   };
-  return { db, routes, api, token, held };
+  let seq = 7000;
+  const say = async (userId, text, chatId = GE) => {
+    const id = String(++seq); const event = { message: { type: 'text', id, text } };
+    xiaoshuai.onGroupText({ chatId, userId, text, event });
+    const n = replies.length;
+    await xiaoshuai.onUnmatched({ chatId, userId, text, replyToken: `rt${id}`, event });
+    return replies.length > n ? replies.at(-1) : null;
+  };
+  return { db, routes, api, token, key, kOf, meK, pushed, say };
 }
 const pageData = (token) => JSON.parse(/const D = (.*);\n/.exec(readFileSync(join(PAGE_DIR, `${token}.html`), 'utf8').replace(/\r/g, ''))[1]);
 
-await test('LIFF 沒設定：網頁只能看（edit:false）、API 回 503、卡片連一般網址', async () => {
+await test('編輯連結：卡片網址帶 #k=；沒帶碼、碼錯、別的群的碼都不能改；同源＋自訂標頭＋JSON＋16KB', async () => {
   delete process.env.XIAOSHUAI_LIFF_ID; delete process.env.XIAOSHUAI_LIFF_CHANNEL_ID;
   process.env.XIAOSHUAI_LIFF_FILE = join(PAGE_DIR, 'no-such-liff.json');
-  const { routes, api, token } = await editBot();
-  assert.equal((await api('me', {})).status, 503);
+  const { db, api, token, key, routes } = await editBot();
+  assert.match(key, /^[A-Za-z0-9_-]{32}$/);                                   // 24 bytes＝192 bit
+  assert.equal(cal.pageUrl(GE).split('#k=')[1], key);
+  assert.ok(!cal.pageUrl(GE, Date.now(), { readOnly: true }).includes('#k='));
   let code = 0; routes['GET /cal/config']({}, { status(s) { code = s; return this; }, set() { return this; }, json() { return this; } });
-  assert.equal(code, 404);
+  assert.equal(code, 404);                                                    // LIFF 還沒設定
+  assert.equal((await api('me', {}, { k: null })).status, 403);         // 沒帶碼
+  assert.equal((await api('me', {}, { k: key.slice(0, -1) + (key.endsWith('A') ? 'B' : 'A') })).status, 403);   // 碼錯
+  assert.equal((await api('me', {}, { origin: null })).status, 403);    // 沒有 Origin
+  assert.equal((await api('me', {}, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await api('me', {}, { client: null })).status, 400);    // 沒有自訂標頭（跨站表單送不出）
+  assert.equal((await api('me', {}, { json: false })).status, 400);
+  assert.equal((await api('me', {}, { big: 20000 })).status, 413);
+  assert.equal((await api('me', { pad: 'x'.repeat(17000) })).status, 413);
+  assert.equal((await api('me', { t: 'f'.repeat(32) })).status, 404);
+  // 別的群的碼不能改這個群；這個群的碼也改不到別的群的事
+  cal.tokenOf('C' + 'f'.repeat(32));
+  const otherKey = caledit.editKey('C' + 'f'.repeat(32));
+  assert.equal((await api('me', {}, { k: otherKey })).status, 403);
+  const other = cal.add('C' + 'f'.repeat(32), { day: D3, title: '別群的事' }, Date.now()).event;
+  assert.match((await api('edit', { ref: `e${other.id}`, ver: 0, changes: { l: '偷改' } })).error, /不在/);
+  assert.equal(cal.getEvent(other.id).short, null);
+  // 錯的都記異常，訊息不帶內部細節
+  assert.ok(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'key'").n >= 3);
+  assert.ok(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'origin'").n >= 2);
+  const me = await api('me', {});
+  assert.equal(me.ok, true);
+  assert.equal(me.via, 'key');
+  assert.equal(me.members.length, 7);
+  assert.ok(me.members.every(m => Number.isInteger(m.k) && !('user_id' in m)));  // 不給 LINE userId
+  // 沒選「我是誰」不能改
+  const ev = cal.add(GE, { day: D3, title: '家長會' }, Date.now()).event;
+  assert.match((await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '親師' } }, { who: null })).error, /我是誰/);
+  assert.match((await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '親師' } }, { who: 99999 })).error, /我是誰/);
   cal.writePage(GE, [{ chatId: GE, label: '' }], { now: NOW });
   assert.equal(pageData(token).edit, false);
-  assert.match(cal.pageUrl(GE), /\/public\/cal\/[0-9a-f]{32}\.html\?v=/);
+  assert.ok(readFileSync(join(PAGE_DIR, `${token}.html`), 'utf8').includes("'X-Cal-Client': '1'"));
+});
+
+await test('自報身分：紀錄寫名字＋「自報」、只存裝置指紋與 IP 的雜湊', async () => {
+  const { db, api } = await editBot();
+  const ev = cal.add(GE, { day: D3, title: '烤肉' }, Date.now()).event;
+  assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '烤肉趴' } }, { dev: 'device-xyz', ip: '198.51.100.7' })).ok, true);
+  const h = db.get("SELECT * FROM cal_history WHERE ref = ? AND what LIKE '短名稱%'", `e${ev.id}`);
+  assert.deepEqual([h.user_name, h.via], ['葶（自報）', 'key']);
+  assert.match(h.fp, /^[0-9a-f]{16}$/);
+  assert.match(h.iph, /^[0-9a-f]{16}$/);
+  const all = JSON.stringify(db.all('SELECT * FROM cal_history')) + JSON.stringify(db.all('SELECT * FROM cal_anomaly'));
+  assert.ok(!all.includes('198.51.100.7') && !all.includes('device-xyz'));   // 不存明文
+  assert.equal((await api('history', { ref: `e${ev.id}` })).list[0].self, true);
+});
+
+await test('輸入驗證：長度上限、日期前後 2 年、不收 HTML、參加的人只能是這群的成員；網頁輸出一律跳脫', async () => {
+  const { api, token, kOf } = await editBot();
+  const ev = cal.add(GE, { day: D3, title: '聚會' }, Date.now()).event;
+  const e = (changes) => { xiaoshuai._calResetRate(); return api('edit', { ref: `e${ev.id}`, ver: 0, changes }); };
+  assert.match((await e({ n: '<script>alert(1)</script>' })).error, /< >/);
+  assert.match((await e({ n: '<img src=x onerror=alert(1)>' })).error, /< >/);
+  assert.match((await e({ p: 'a>b' })).error, /< >/);
+  assert.match((await e({ l: '<b>' })).error, /< >/);
+  assert.match((await e({ n: '字'.repeat(61) })).error, /60/);
+  assert.match((await e({ l: '字'.repeat(9) })).error, /8/);
+  assert.match((await e({ p: '字'.repeat(61) })).error, /60/);
+  assert.match((await e({ d: cal.addDays(cal.todayKey(), 800) })).error, /2 年/);
+  assert.match((await e({ d: cal.addDays(cal.todayKey(), -800) })).error, /2 年/);
+  assert.match((await e({ who: [kOf('葶'), 424242] })).error, /成員/);
+  assert.match((await e({ who: 'all' })).error, /格式/);
+  assert.match((await e({ t: { x: 1 } })).error, /時間/);
+  assert.match((await api('families', { families: [{ name: '<b>壞家', keys: [] }] })).error, /< >/);
+  assert.equal(cal.getEvent(ev.id).version, 0);                              // 都沒寫進去
+  // 剛好在上限：可以
+  assert.equal((await e({ n: '字'.repeat(60), l: '字'.repeat(8), p: '字'.repeat(60) })).ok, true);
+  // 聊天記進來的標題就算帶 HTML 字元，網頁也只當文字：JSON 跳脫、用 textContent 畫
+  const bad = cal.add(GE, { day: D4, title: 'x' }, Date.now()).event;
+  caledit.log; // 確保模組載入
+  const html = readFileSync(join(PAGE_DIR, `${token}.html`), 'utf8');
+  assert.ok(!html.includes('innerHTML') && !/(src|href)=["']https?:/.test(html));
+  void bad;
+});
+
+await test('頻率限制：同一個編輯碼、同一個 IP 每分鐘 10 次修改，超過回 429 並記異常', async () => {
+  const { db, api } = await editBot();
+  const ev = cal.add(GE, { day: D3, title: '練習' }, Date.now()).event;
+  let ok = 0; let last = null;
+  for (let i = 0; i < 12; i++) { last = await api('edit', { ref: `e${ev.id}`, ver: i, changes: { l: `練${i}` } }, { ip: `192.0.2.${i}` }); if (last.ok) ok++; }
+  assert.equal(ok, 10);                                // 換 IP 也一樣：編輯碼自己有上限
+  assert.equal(last.status, 429);
+  xiaoshuai._calResetRate();
+  for (let i = 0; i < 10; i++) await api('me', {}, { ip: '192.0.2.200' });
+  assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 10, changes: { l: '練習' } }, { ip: '192.0.2.200' })).ok, true); // 讀跟寫分開算
+  xiaoshuai._calResetRate();
+  for (let i = 0; i < 10; i++) await api('edit', { ref: 'e0', ver: 0, changes: { l: 'x' } }, { ip: '192.0.2.99' });
+  assert.equal((await api('me', {}, { ip: '192.0.2.99' })).ok, true);
+  assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 11, changes: { l: 'y' } }, { ip: '192.0.2.99' })).status, 429);  // 同一個 IP
+  assert.ok(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'rate'").n >= 2);
+});
+
+await test('大量刪除：10 分鐘內用編輯連結刪 5 筆 → 暫停網頁編輯 1 小時、推播通知 TED；可以一鍵還原', async () => {
+  process.env.XIAOSHUAI_CAL_ALERT_TO = 'UADMIN';
+  const { db, api, pushed, say, token } = await editBot();
+  const t0 = Date.now() - 180_000;
+  const evs = Array.from({ length: 6 }, (_, i) => cal.add(GE, { day: D3, title: `事${i}` }, t0).event);
+  for (let i = 0; i < 4; i++) assert.equal((await api('delete', { ref: `e${evs[i].id}`, ver: 0 })).ok, true);
+  assert.equal(pushed.length, 0);
+  assert.equal((await api('delete', { ref: `e${evs[4].id}`, ver: 0 })).ok, true);   // 第 5 筆 → 觸發
+  assert.equal(pushed.length, 1);
+  assert.equal(pushed[0][0], 'UADMIN');
+  assert.match(pushed[0][1][0].text, /刪了 5 筆.*暫停 1 小時/s);
+  assert.ok(caledit.suspendedUntil(GE) > Date.now() + 50 * 60_000);
+  assert.equal((await api('delete', { ref: `e${evs[5].id}`, ver: 0 })).status, 423);
+  assert.equal((await api('edit', { ref: `e${evs[5].id}`, ver: 0, changes: { l: 'x' } })).status, 423);
+  assert.ok(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'burst'").n === 1);
+  // 不是 TED 不能整個還原
+  assert.match((await say(UA, '小帥 行事曆 還原到 00:00'))[0].text, /只有 TED/);
+  // TED 一鍵還原到刪之前
+  const hm = new Date(Date.now() - 90_000 + 8 * 3600_000).toISOString().slice(11, 16); // 整分鐘：介於新增之後、刪除之前
+  const r = await say('UADMIN', `小帥 行事曆 還原到 ${hm}`);
+  assert.match(r[0].text, /還原好了.*5 筆/);
+  assert.equal(db.get('SELECT COUNT(*) n FROM cal_events WHERE chat_id = ? AND deleted_at IS NULL', GE).n, 6);
+  assert.ok(pageData(token).items.filter(i => /^事\d$/.test(i.n)).length === 6);
+  delete process.env.XIAOSHUAI_CAL_ALERT_TO;
+});
+
+await test('還原到某個時間點：改過的改回去、之後才新增的移掉、家庭對應也回去；還原本身也能再還原', async () => {
+  const { db, api, kOf } = await editBot();
+  const t0 = Date.now() - 120_000;
+  const ev = cal.add(GE, { day: D3, title: '原本的標題' }, t0).event;
+  meta.setFamily(GE, '妞', '葶', t0);
+  const tMid = Date.now() - 60_000;
+  await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { n: '被亂改', l: '亂改', who: [kOf('Jasmine')] } });
+  const late = cal.add(GE, { day: D4, title: '後來加的' }, Date.now()).event;
+  await api('families', { families: [{ name: '亂家', keys: [kOf('葶')] }] });
+  await new Promise(res => setTimeout(res, 5));
+  const tBefore = Date.now();                            // 還原之前
+  await new Promise(res => setTimeout(res, 5));
+  const r = caledit.restoreTo(GE, tMid, { id: 'UADMIN', name: 'TED', via: 'chat' });
+  assert.equal(r.n, 3);
+  const e2 = cal.getEvent(ev.id);
+  assert.deepEqual([e2.title, e2.short, e2.who, e2.deleted_at], ['原本的標題', null, null, null]);
+  assert.ok(cal.getEvent(late.id).deleted_at);
+  assert.deepEqual(meta.families(GE).map(f => f.family), ['妞']);
+  // 還原錯了：還原到「還原之前」就回到被改過的樣子
+  await new Promise(res => setTimeout(res, 5));
+  const r2 = caledit.restoreTo(GE, tBefore, { id: 'UADMIN', name: 'TED', via: 'chat' });
+  assert.equal(r2.n, 3);
+  assert.deepEqual([cal.getEvent(ev.id).title, cal.getEvent(ev.id).short], ['被亂改', '亂改']);
+  assert.equal(cal.getEvent(late.id).deleted_at, null);
+  assert.deepEqual(meta.families(GE).map(f => f.family), ['亂']);
+});
+
+await test('換網址：群組成員可以換、舊碼立刻失效、5 分鐘內不能連換；私訊只有 TED、可以指定群', async () => {
+  const { api, say, key } = await editBot();
+  const r = await say(UA, '小帥 行事曆 換網址');
+  assert.match(r[0].text, /換好了/);
+  const newKey = /#k=([A-Za-z0-9_-]+)/.exec(r[0].text)[1];
+  assert.notEqual(newKey, key);
+  assert.equal((await api('me', {}, { k: key })).status, 403);              // 舊的立刻不能用
+  assert.equal((await api('me', {}, { k: newKey })).ok, true);
+  assert.match((await say(UB, '小帥 行事曆換網址'))[0].text, /5 分鐘/);
+  assert.equal(caledit.history(GE, 'sys')[0].what, '換了編輯連結（舊的失效）');
 });
 
 await test('LIFF 設定後：卡片連 LIFF；要 JSON、自己的網域、LINE 驗過的身分、群組成員才能改', async () => {
@@ -729,12 +897,12 @@ await test('LIFF 設定後：卡片連 LIFF；要 JSON、自己的網域、LINE 
   assert.equal(cal.pageUrl(GE), `https://liff.line.me/1234567890-AbCdEfGh?t=${token}`);
   let cfg = null; routes['GET /cal/config']({}, { status() { return this; }, set() { return this; }, json(j) { cfg = j; return this; } });
   assert.deepEqual(cfg, { ok: true, liffId: '1234567890-AbCdEfGh' });
-  assert.equal((await api('me', {}, { json: false })).status, 415);
-  assert.equal((await api('me', {}, { origin: 'https://evil.example' })).status, 403);   // 擋 CSRF
+  assert.equal((await api('me', {}, { idt: 'tok-a', json: false })).status, 400);
+  assert.equal((await api('me', {}, { idt: 'tok-a', origin: 'https://evil.example' })).status, 403);   // 擋 CSRF
   assert.equal((await api('me', {}, { idt: 'fake' })).status, 401);                       // LINE 沒驗過
   assert.equal((await api('me', {}, { idt: 'tok-out' })).status, 403);                    // 不是群組成員
   assert.equal((await api('me', { t: 'f'.repeat(32) })).status, 404);
-  const me = await api('me', {});
+  const me = await api('me', {}, { idt: 'tok-a' });
   assert.equal(me.ok, true);
   assert.equal(me.me.name, '葶');                    // 用群組裡的名字
   assert.equal(me.members.length, 7);
@@ -744,7 +912,7 @@ await test('LIFF 設定後：卡片連 LIFF；要 JSON、自己的網域、LINE 
 });
 
 await test('改自己記的事：每個欄位都能改、記紀錄、手動標記；同時改要先看到「剛被誰改過」', async () => {
-  const { db, api, token } = await editBot();
+  const { db, api, token, kOf } = await editBot();
   const ev = cal.add(GE, { day: D3, time: '19:00', title: '家長會', by: UA, byName: '葶' }, Date.now()).event;
   const keys = (names) => names.map(n => db.get('SELECT rowid AS k FROM cal_members WHERE chat_id = ? AND name = ?', GE, n).k);
   const r = await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { n: '期末家長會', l: '親師會', d: D4, t: '', p: '禮堂', who: keys(['葶', 'Jasmine']) } });
@@ -755,18 +923,18 @@ await test('改自己記的事：每個欄位都能改、記紀錄、手動標�
   assert.deepEqual(Object.keys(JSON.parse(e2.manual)).sort(), ['d', 'l', 'n', 'p', 't', 'who']);
   const h = (await api('history', { ref: `e${ev.id}` })).list;
   assert.equal(h.length, 7);                        // 6 欄＋新增
-  assert.ok(h.every(x => x.by === '葶'));
+  assert.ok(h.every(x => x.by === '葶（自報）' || x.what.startsWith('新增')));
   assert.ok(h.some(x => x.what === '時間：19:00 → 全天'));
   assert.ok(h.some(x => x.what === '參加的人：沒有 → 葶、Jasmine'));
   // 網頁跟著重寫：短名稱、參加的人、版本
   const it = pageData(token).items.find(i => i.r === `e${ev.id}`);
   assert.deepEqual([it.l, it.ver, it.x, it.w.length], ['親師會', 1, 1, 2]);
   // B 拿舊版本（0）來改 → 409，看得到 A 剛改了什麼；選蓋掉才存
-  const c = await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '開會' } }, { idt: 'tok-b' });
+  const c = await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '開會' } }, { who: kOf('Jasmine') });
   assert.equal(c.status, 409);
-  assert.equal(c.by, '葶');
+  assert.equal(c.by, '葶（自報）');
   assert.match(c.what, /新增|：/);
-  assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '開會' }, force: true }, { idt: 'tok-b' })).ok, true);
+  assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '開會' }, force: true }, { who: kOf('Jasmine') })).ok, true);
   assert.equal(cal.getEvent(ev.id).short, '開會');
   // 欄位不對
   assert.match((await api('edit', { ref: `e${ev.id}`, ver: 2, changes: { d: '2026-02-30' } })).error, /日期/);
@@ -851,7 +1019,7 @@ await test('家庭對應、群組通知：網頁上改；預設不在群組說�
   assert.equal((await api('settings', { notify: true })).ok, true);
   assert.equal((await api('me', {})).notify, true);
   await api('edit', { ref: `e${ev.id}`, ver: 1, changes: { l: '烤肉' } });
-  assert.match(db.get('SELECT text FROM held_answers WHERE chat_id = ?', GE).text, /葶 改了行事曆：「烤肉」/);
+  assert.match(db.get('SELECT text FROM held_answers WHERE chat_id = ?', GE).text, /葶（自報） 改了行事曆：「烤肉」/);
   caledit.setVerifier(null);
   delete process.env.XIAOSHUAI_LIFF_ID; delete process.env.XIAOSHUAI_LIFF_CHANNEL_ID;
 });
