@@ -682,6 +682,7 @@ async function calPage(chatId, dm, { enrich = true } = {}) {
 
 // 月曆格子的短標籤、參加的人、頭像（2026-11-01）：背景做，做完有變才重寫網頁；同一個聊天一次只跑一個
 const calEnriching = new Map();
+const calRetry = new Set(); // 已排了 AI 重試的聊天
 const CAL_ENRICH_EVERY_MS = 30 * 60_000; // 行程網頁改了（小帥改或從電腦改）：每 30 分鐘看一次要不要重標
 let calEnrichTimer = null;
 function calEnrich(chatId, dm = /^U/.test(chatId)) {
@@ -698,6 +699,11 @@ function calEnrich(chatId, dm = /^U/.test(chatId)) {
     }
     const trips = tripsOf(chatId).map(n => trip.detailOf(n)).filter(Boolean);
     const n = await calmeta.runLabels(llm, chatId, { trips, fromDay: cal.addDays(cal.todayKey(), -62) });
+    // AI 失敗（剛重開時偶爾回空的）：10 分鐘後自己再試一次，不用等 30 分鐘的例行檢查
+    if (!n && calmeta.labelFailed(chatId) && !calRetry.has(chatId)) {
+      calRetry.add(chatId);
+      setTimeout(() => { calRetry.delete(chatId); calEnrich(chatId, dm); }, calmeta.LABEL_RETRY_MS + 5_000).unref?.();
+    }
     if (n) console.log(`[xiaoshuai-cal] ${chatId.slice(0, 8)} 短標籤標好 ${n} 筆`);
     if (changed || n) {
       await calPage(chatId, dm, { enrich: false });

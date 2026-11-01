@@ -26,6 +26,8 @@ const MAX_PIC_BYTES = 400_000;
 let db = null;
 let avDir = '';
 const labelFail = new Map(); // chatId → 上次 AI 失敗的時間
+/** 這個聊天上次標籤 AI 失敗、還在等重試嗎 */
+export const labelFailed = (chatId) => labelFail.has(chatId);
 
 export function initMeta(database, pageDir) {
   db = database;
