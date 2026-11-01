@@ -652,6 +652,18 @@ await test('月曆網頁（格子放大版）：短標籤、參加的人只放�
   assert.ok(!html.includes('innerHTML') && html.includes('a\\u003c/script\\u003e b'));
 });
 
+await test('給 AI 的行程內容：標題帶頁首日期說明、每天的項目、內容雜湊（改了才重標）', () => {
+  writeFileSync(join(TRIP_DIR, 'trips', 'snow.json'), JSON.stringify({ meta: { title: '❄️ 2027 雪國之旅', dates: '大部分 2/6 回，妞家留到 2/9' }, days: [
+    { date: '2/6（六）回程', place: '回高雄', items: [{ when: '8:45', title: '其他人回程', sub: '<b>12 位</b>' }] }, { date: '2/7（日）', items: [] }] }));
+  const d = trip.detailOf('snow', 2026, TRIP_DIR);
+  assert.equal(d.title, '❄️ 2027 雪國之旅（大部分 2/6 回，妞家留到 2/9）');
+  assert.deepEqual(d.days, [{ day: '2027-02-06', text: '2/6（六）回程；回高雄；8:45 其他人回程 12 位' }, { day: '2027-02-07', text: '2/7（日）' }]);
+  assert.match(d.sig, /^[0-9a-f]{16}$/);
+  writeFileSync(join(TRIP_DIR, 'trips', 'snow.json'), JSON.stringify({ meta: { title: '❄️ 2027 雪國之旅' }, days: [{ date: '2/6' }] }));
+  assert.notEqual(trip.detailOf('snow', 2026, TRIP_DIR).sig, d.sig);
+  assert.equal(trip.detailOf('../x', 2026, TRIP_DIR), null);
+});
+
 await test('「小帥 妞家是 葶」：群裡記家庭對應；對不到任何成員就照常聊天', async () => {
   const { db, say } = await calBot();
   seedMembers(db, 'GC', SKI);

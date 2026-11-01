@@ -79,7 +79,9 @@ export function detailOf(name, fallbackYear = new Date().getFullYear(), repo = T
     const items = (Array.isArray(d.items) ? d.items : []).map(it => [it.when, it.title, it.text, it.sub].map(strip).filter(Boolean).join(' '));
     return { day, text: [strip(d.date), strip(d.place || d.glance?.place), ...items].filter(Boolean).join('；').slice(0, 240) };
   });
-  return { name, title: strip(r.t.meta?.title || r.t.title || name).slice(0, 60), sig: createHash('sha1').update(r.raw).digest('hex').slice(0, 16), days };
+  // 標題後面帶行程頁首的日期說明（例如「大部分 2/6 回，妞家留到 2/9」），AI 才知道哪幾天只剩部分的人
+  const dates = strip(r.t.meta?.dates);
+  return { name, title: `${strip(r.t.meta?.title || r.t.title || name).slice(0, 60)}${dates ? `（${dates.slice(0, 80)}）` : ''}`, sig: createHash('sha1').update(r.raw).digest('hex').slice(0, 16), days };
 }
 
 let queue = Promise.resolve();
