@@ -10,7 +10,7 @@
  * 兩個人同時改：每筆有版本號，送出時版本不對回 409＋最後一次是誰改了什麼，網頁問要不要蓋掉
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import * as cards from './cards.js';
 import * as meta from './calmeta.js';
 
@@ -240,17 +240,16 @@ export function setNotify(chatId, on, by, now = Date.now()) {
 // ── LIFF（LINE 網頁登入）設定與驗身分 ─────────────────
 
 const LIFF_ID_RE = /^\d{10}-[A-Za-z0-9]{8}$/;
-let cfgCache = { at: 0, mtime: 0, v: null };
 /** 環境變數 XIAOSHUAI_LIFF_ID／XIAOSHUAI_LIFF_CHANNEL_ID，沒有就讀 data/xiaoshuai-liff.json（{ liffId, channelId }，都不是密碼）；沒設定回 null */
 export function liffConfig(file = process.env.XIAOSHUAI_LIFF_FILE) {
   let liffId = process.env.XIAOSHUAI_LIFF_ID || '';
   let channelId = process.env.XIAOSHUAI_LIFF_CHANNEL_ID || '';
   if ((!liffId || !channelId) && file && existsSync(file)) {
     try {
-      const mt = statSync(file).mtimeMs;
-      if (mt !== cfgCache.mtime) cfgCache = { at: Date.now(), mtime: mt, v: JSON.parse(readFileSync(file, 'utf8')) };
-      liffId ||= String(cfgCache.v?.liffId || '');
-      channelId ||= String(cfgCache.v?.channelId || '');
+      // 檔案很小，每次都讀（改了馬上生效；用修改時間快取會漏掉同一毫秒內的兩次寫入）
+      const v = JSON.parse(readFileSync(file, 'utf8'));
+      liffId ||= String(v?.liffId || '');
+      channelId ||= String(v?.channelId || '');
     } catch { /* 格式不對就當沒設定 */ }
   }
   return LIFF_ID_RE.test(liffId) && /^\d{10}$/.test(channelId) ? { liffId, channelId } : null;
