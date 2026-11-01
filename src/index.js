@@ -101,7 +101,7 @@ async function main() {
   const logger = createLogger(dataDir);
 
   // 載入 plugins（傳入所有 providers）
-  const pluginHooks = { groupText: [], unmatched: [], privateText: [], postback: [], announce: [], idleReply: [] };
+  const pluginHooks = { groupText: [], unmatched: [], privateText: [], postback: [], announce: [], idleReply: [], http: [] };
   const loaded = await loadPlugins(config.plugins.dir, {
     router,
     scheduler,
@@ -123,6 +123,12 @@ async function main() {
   // Dashboard 靜態頁面（/public/dashboard.html）
   app.use('/public', express.static(resolve(ROOT, 'public')));
   app.get('/dashboard', (_req, res) => res.redirect('/public/dashboard.html'));
+
+  // Plugin 對外公開的路由（/x/<plugin>/…）：不經 /api 的管理驗證，plugin 自己驗身分（例如小帥行事曆用 LINE 登入）
+  for (const h of pluginHooks.http) {
+    const r = express.Router();
+    try { h.fn(r); app.use(`/x/${h.plugin}`, r); } catch (err) { console.error(`[linebot-framework] ${h.plugin} 的 http 路由掛不上：${err.message}`); }
+  }
 
   // API 驗證：保護 /api/* 管理端點（webhook 路徑不受限）
   const apiAuth = createApiAuth(config.apiAuth);

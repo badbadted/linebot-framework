@@ -25,6 +25,7 @@
  *     onPostback?: async (ctx) => boolean,     // 可選：Flex 卡片 postback 按鈕（ctx: chatId, userId, data, replyToken）；回 true = 已接手
  *     onAnnounce?: async (ctx) => { ok, error? }, // 可選：/api/announce 公告排進免費回覆（ctx: chatId, text, keepMs）
  *     onIdleReply?: async (ctx) => boolean,    // 可選：群組裡確定沒人會回的訊息（ctx: chatId, replyToken），可拿來貼排著的東西（見 core/idle-reply.js）
+ *     http?: (router) => void,                 // 可選：對外公開的 HTTP 路由（express.Router），掛在 /x/<plugin名稱>/，不經 /api 的管理驗證——要自己驗身分
  *   }
  *
  * 前綴模式（prefix + command）：
@@ -173,6 +174,7 @@ export async function loadPlugins(pluginsDir, { router, scheduler, lineApi, prov
         if (plugin.onPostback) hooks.postback?.push({ plugin: plugin.name, fn: plugin.onPostback });
         if (plugin.onAnnounce) hooks.announce?.push({ plugin: plugin.name, fn: plugin.onAnnounce });
         if (plugin.onIdleReply) hooks.idleReply?.push({ plugin: plugin.name, fn: plugin.onIdleReply });
+        if (plugin.http) hooks.http?.push({ plugin: plugin.name, fn: plugin.http });
       }
 
       loaded.push(plugin.name);
