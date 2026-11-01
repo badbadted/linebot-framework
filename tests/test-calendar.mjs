@@ -706,10 +706,10 @@ async function editBot() {
   const kOf = (n) => db.get('SELECT rowid AS k FROM cal_members WHERE chat_id = ? AND name = ?', GE, n).k;
   const meK = kOf('葶');
   // 預設：編輯連結＋自報「葶」；idt 給了就走 LINE 登入
-  const api = async (action, body, { idt = null, k = key, who = meK, origin = 'https://bot.example.test', json = true, client = '1', ip = '203.0.113.9', dev = 'dev-1', big = 0 } = {}) => {
+  const api = async (action, body, { idt = null, k = key, who = meK, origin = 'https://bot.example.test', json = true, client = '1', ip = '203.0.113.9', dev = 'dev-1', big = 0, peer = '127.0.0.1' } = {}) => {
     let status = 200; let out = null;
     const headers = { origin, 'x-cal-client': client, 'cf-connecting-ip': ip, 'user-agent': 'test-agent', 'content-length': String(big) };
-    const req = { body: { t: token, ...(idt ? { id: idt } : { k }), who, dev, ...body }, is: (t) => json && t === 'application/json', get: (h) => headers[h.toLowerCase()], ip: '127.0.0.1' };
+    const req = { body: { t: token, ...(idt ? { id: idt } : { k }), who, dev, ...body }, is: (t) => json && t === 'application/json', get: (h) => headers[h.toLowerCase()], ip: peer };
     const res = { status(s) { status = s; return this; }, set() { return this; }, json(j) { out = j; return this; } };
     await routes[`POST /cal/${action}`](req, res);
     return { status, ...out };
@@ -824,6 +824,19 @@ await test('頻率限制：同一個編輯碼、同一個 IP 每分鐘 10 次修
   assert.equal((await api('me', {}, { ip: '192.0.2.99' })).ok, true);
   assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 11, changes: { l: 'y' } }, { ip: '192.0.2.99' })).status, 429);  // 同一個 IP
   assert.ok(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'rate'").n >= 2);
+});
+
+await test('頻率限制不能被繞：沒碼的請求不吃群組的額度；區網直連偽造 cf-connecting-ip 不算數', async () => {
+  const { api } = await editBot();
+  const ev = cal.add(GE, { day: D3, title: '練習' }, Date.now()).event;
+  // 拿唯讀網址（只有頁面 token、沒有編輯碼）狂打：每次換 IP 也只會被 403，群組的修改額度不受影響
+  for (let i = 0; i < 15; i++) assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: 'x' } }, { k: null, ip: `198.18.0.${i}` })).status, 403);
+  assert.equal((await api('edit', { ref: `e${ev.id}`, ver: 0, changes: { l: '練習中' } })).ok, true);
+  // 區網直連（不是 Tunnel）：cf-connecting-ip 是假的，照連線位址算
+  xiaoshuai._calResetRate();
+  let last = null;
+  for (let i = 0; i < 11; i++) last = await api('edit', { ref: 'e0', ver: 0, changes: { l: 'x' } }, { peer: '192.168.0.50', ip: `203.0.113.${i}` });
+  assert.equal(last.status, 429);
 });
 
 await test('大量刪除：10 分鐘內用編輯連結刪 5 筆 → 暫停網頁編輯 1 小時、推播通知 TED；可以一鍵還原', async () => {

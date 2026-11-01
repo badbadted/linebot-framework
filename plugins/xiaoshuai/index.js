@@ -932,7 +932,7 @@ async function calPostback({ chatId, userId, data, replyToken }) {
 // 先開放免登入：帶編輯碼（#k=）的網址就能改，身分自報；LIFF 有設定時也收 LINE 驗過的身分
 // 防亂改全在主機這邊：同源＋自訂標頭＋JSON、16KB 上限、頻率限制（編輯碼、IP 各算）、大量刪除自動停用並通知 TED
 const CAL_BODY_MAX = 16 * 1024;
-const CAL_RATE = { write: [[60_000, 10], [3600_000, 60]], read: [[60_000, 60]] }; // [時間窗, 次數]
+const CAL_RATE = { write: [[60_000, 10], [3600_000, 60]], read: [[60_000, 60]], chatRead: [[60_000, 300]] }; // [時間窗, 次數]
 const CAL_BURST = { deletes: 5, edits: 30, suspendMs: 3600_000 };                 // 10 分鐘內
 const CAL_WRITES = new Set(['edit', 'delete', 'restore', 'unpin', 'families', 'settings']);
 const calHits = new Map();        // 計數用的 key → [時間…]
@@ -965,7 +965,10 @@ async function calAlert(text) {
 /** 驗：回 { chatId, by, dm, via } 或 { status, error }（錯誤訊息不帶內部細節） */
 async function calAuth(req, action) {
   const now = Date.now();
-  const ip = String(req.get('cf-connecting-ip') || req.ip || '');
+  // cf-connecting-ip 只信 Cloudflare Tunnel 轉進來的（cloudflared 從本機連）；區網直連的用連線位址，標頭可以造假
+  const peer = String(req.ip || req.socket?.remoteAddress || '');
+  const viaTunnel = /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(peer);
+  const ip = (viaTunnel && req.get('cf-connecting-ip')) || peer;
   const iph = caledit.hashOf(ip);
   const len = Number(req.get('content-length') || 0);
   if (len > CAL_BODY_MAX || JSON.stringify(req.body ?? {}).length > CAL_BODY_MAX) return { status: 413, error: '送來的資料太大' };
@@ -976,10 +979,10 @@ async function calAuth(req, action) {
   const chatId = cal.chatOfToken(body.t);
   if (!chatId) return { status: 404, error: '找不到這個行事曆' };
   const write = CAL_WRITES.has(action);
-  if (calOver(`ip:${iph}:${write ? 'w' : 'r'}`, write ? CAL_RATE.write : CAL_RATE.read, now) || (write && calOver(`chat:${chatId}:w`, CAL_RATE.write, now))) {
-    caledit.anomaly(chatId, 'rate', action, iph, now);
-    return { status: 429, error: '改太快了，等一下再試' };
-  }
+  // 先算 IP（沒驗過的請求只吃 IP 的額度）；聊天的額度等驗過身分才扣，免得拿唯讀網址就能把大家的額度用光
+  const tooFast = () => { caledit.anomaly(chatId, 'rate', action, iph, now); return { status: 429, error: '改太快了，等一下再試' }; };
+  if (calOver(`ip:${iph}:${write ? 'w' : 'r'}`, write ? CAL_RATE.write : CAL_RATE.read, now)) return tooFast();
+  const chatOver = () => calOver(`chat:${chatId}:${write ? 'w' : 'r'}`, write ? CAL_RATE.write : CAL_RATE.chatRead, now);
   const dm = /^U/.test(chatId);
   const l = cal.liff();
   if (l && body.id) {
@@ -1000,11 +1003,13 @@ async function calAuth(req, action) {
       if (!c.ok) return { status: 403, error: '你不在這個群組，只能看' };
       name = c.name || name;
     } else return { status: 403, error: '這個行事曆只能看' };
+    if (chatOver()) return tooFast();
     return { chatId, dm, via: 'liff', by: { id: who.userId, name: cards.clean(name, 30) || '某人', via: 'liff', iph } };
   }
   // 編輯連結：碼要對、沒有被暫停；身分自報（只能選這個群的成員）
   if (!caledit.keyOk(chatId, body.k)) { caledit.anomaly(chatId, 'key', action, iph, now); return { status: 403, error: '這個編輯連結不能用了，請用群組裡最新的行事曆連結' }; }
   if (caledit.suspendedUntil(chatId) > now) return { status: 423, error: '網頁編輯暫停中（偵測到短時間大量刪除），晚點再試或請 TED 處理' };
+  if (chatOver()) return tooFast();
   const fp = caledit.hashOf(`${String(body.dev || '').slice(0, 64)}|${String(req.get('user-agent') || '').slice(0, 200)}`);
   let by = { id: '', name: '', via: 'key', fp, iph };
   if (dm) by = { ...by, id: chatId, name: '本人（自報）' };
