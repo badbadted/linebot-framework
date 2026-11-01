@@ -752,8 +752,8 @@ await test('編輯連結：卡片網址帶 #k=；沒帶碼、碼錯、別的群�
   assert.match((await api('edit', { ref: `e${other.id}`, ver: 0, changes: { l: '偷改' } })).error, /不在/);
   assert.equal(cal.getEvent(other.id).short, null);
   // 錯的都記異常，訊息不帶內部細節
-  assert.ok(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'key'").n >= 3);
-  assert.ok(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'origin'").n >= 2);
+  assert.equal(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'key'").n, 1);           // 同一個來源一分鐘只記一筆（灌不爆異常表）
+  assert.equal(db.get("SELECT COUNT(*) n FROM cal_anomaly WHERE kind = 'origin'").n, 1);
   const me = await api('me', {});
   assert.equal(me.ok, true);
   assert.equal(me.via, 'key');

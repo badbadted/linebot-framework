@@ -342,7 +342,9 @@ export function rotateKey(chatId, by, now = Date.now()) {
 
 /** 記一筆異常（頻率超過、碼不對、大量刪除…）；回這個聊天 10 分鐘內同類的筆數 */
 export function anomaly(chatId, kind, detail = '', iph = '', now = Date.now()) {
-  db.run('INSERT INTO cal_anomaly (chat_id, at, kind, detail, iph) VALUES (?, ?, ?, ?, ?)', chatId || '', now, kind, cards.clean(detail, 200), iph);
+  // 同一個來源、同一類一分鐘只記一筆（狂打也灌不爆異常表）
+  const dup = db.get('SELECT 1 FROM cal_anomaly WHERE chat_id = ? AND kind = ? AND iph = ? AND at > ?', chatId || '', kind, iph, now - 60_000);
+  if (!dup) db.run('INSERT INTO cal_anomaly (chat_id, at, kind, detail, iph) VALUES (?, ?, ?, ?, ?)', chatId || '', now, kind, cards.clean(detail, 200), iph);
   return db.get('SELECT COUNT(*) n FROM cal_anomaly WHERE chat_id = ? AND kind = ? AND at > ?', chatId || '', kind, now - 10 * 60_000).n;
 }
 /** 編輯連結（自報身分）10 分鐘內刪了幾筆 */
