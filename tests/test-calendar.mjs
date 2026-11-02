@@ -16,6 +16,9 @@ mkdirSync(join(TRIP_DIR, 'trips'));
 process.env.TRIP_REPO_DIR = TRIP_DIR;
 process.env.XIAOSHUAI_CAL_NO_ENRICH = '1';
 process.env.BOT_PUBLIC_URL = 'https://bot.example.test'; // 背景補短標籤／頭像另外測（calmeta），這裡不跑
+// 不讀機器上真的 LIFF 設定（Mac 上 data/xiaoshuai-liff.json 已設好）；要測 LIFF 的項目自己設環境變數
+process.env.XIAOSHUAI_LIFF_FILE = join(PAGE_DIR, 'no-such-liff.json');
+delete process.env.XIAOSHUAI_LIFF_ID; delete process.env.XIAOSHUAI_LIFF_CHANNEL_ID;
 
 const cal = await import('../plugins/xiaoshuai/calendar.js');
 const polls = await import('../plugins/xiaoshuai/polls.js');

@@ -26,6 +26,9 @@ import { tmpdir } from 'node:os';
 import { join as pjoin } from 'node:path';
 
 // 台北 2026-10-25 12:00 = UTC 04:00
+// 不讀機器上真的 LIFF 設定（Mac 上 data/xiaoshuai-liff.json 已設好），測的是沒設定時的行為
+process.env.XIAOSHUAI_LIFF_FILE = pjoin(tmpdir(), 'xs-no-such-liff.json');
+delete process.env.XIAOSHUAI_LIFF_ID; delete process.env.XIAOSHUAI_LIFF_CHANNEL_ID;
 const NOON = Date.UTC(2026, 9, 25, 4, 0, 0);
 
 function harness({ start = NOON, reply = true, cfg = {} } = {}) {
