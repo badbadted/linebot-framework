@@ -82,6 +82,19 @@ async function loadEvent(id) {
   const doc = await fs.collection('events').doc(id).get();
   return doc.exists ? { id, ...doc.data() } : null;
 }
+/** 照 ID 拿活動（ID 格式不對直接 null，不查） */
+export const getEvent = (id) => (EVENT_ID_RE.test(String(id)) ? loadEvent(String(id)) : Promise.resolve(null));
+
+/** 還沒過的活動（發卡片頁的清單用）：日期近的在前，最多 limit 個 */
+export async function upcoming(now = Date.now(), limit = 20) {
+  const fs = await getFs();
+  const today = new Date(now).toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+  const snap = await fs.collection('events').where('startDate', '>=', today).limit(100).get();
+  return snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => EVENT_ID_RE.test(e.id))
+    .sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)) || String(a.startTime || '').localeCompare(String(b.startTime || '')))
+    .slice(0, limit);
+}
+export const whenOf = (e) => whenText(e);
 
 const grams = (t) => { const out = new Set(); for (const run of String(t).normalize('NFKC').toLowerCase().match(/[一-鿿぀-ヿa-z0-9]{2,}/g) || []) for (let i = 0; i + 2 <= run.length; i++) out.add(run.slice(i, i + 2)); return out; };
 const COMMON = new Set(['小帥', '分享', '活動', '這個', '剛剛', '那團', '妞揪', '群組', '親子', '子團', '貼到', '貼去', '幫我', '一下']);
@@ -203,6 +216,20 @@ export function askText(event, target, count, left) {
   const cost = count == null ? '會依群組人數扣額度' : `會扣 ${count} 則`;
   const rest = left == null ? '' : `，本月剩 ${left} 則`;
   return `要把「${cards.clean(event.title, 30)}」貼到「${target.name}」嗎？\n回「好」＝等那群有人講話時免費貼出（最多等 3 天）\n回「推」＝馬上推播（${cost}${rest}）`;
+}
+
+/**
+ * LIFF 有設定時的回覆（2026-11-02 預設改成用 TED 自己的帳號發，不扣額度）：
+ * 有認出目標群就順便給小帥代貼的備用（好／推）；沒講群組就教他怎麼叫小帥代貼
+ */
+export function linkText(event, target = null, count = null, left = null) {
+  const name = cards.clean(event.title, 30);
+  if (!target) return `「${name}」點下面「📤 用我的帳號發」，選群組或好友送出就好（用你自己的帳號發，不扣小帥的推播額度）。
+要小帥代貼的話，說「把剛剛那團貼到○○群」。`;
+  const cost = count == null ? '會依群組人數扣額度' : `會扣 ${count} 則`;
+  const rest = left == null ? '' : `，本月剩 ${left} 則`;
+  return `「${name}」點下面「📤 用我的帳號發」，選「${target.name}」送出就好（用你自己的帳號發，不扣小帥的推播額度）。
+要小帥代貼：回「好」＝等那群有人講話時免費貼出（最多等 3 天）、回「推」＝馬上推播（${cost}${rest}）`;
 }
 
 export function recordJob({ event, target, by, mode, heldId = null }, now = Date.now()) {

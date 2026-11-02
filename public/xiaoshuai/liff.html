@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>小帥</title>
+<!--
+  小帥的 LIFF 入口（2026-11-02）：LINE Developers 的 LIFF Endpoint URL 填這一頁，行事曆和發卡片共用一個 LIFF。
+  - ?t=<行事曆 token>：行事曆。拿 LINE 的 ID token 放 sessionStorage，轉到 /public/cal/<token>.html（那頁送給主機驗身分）
+  - ?p=share[&c=<卡片代號>]：用 TED 自己的帳號發卡片。選卡片 → 預覽 → liff.shareTargetPicker 在 LINE 裡選群組／好友送出。
+    卡片由主機組（/x/xiaoshuai/share/*，主機向 LINE 驗 ID token、只給管理員）；主機不代發，送出的是 TED 本人的訊息，不扣小帥的推播額度
+  LIFF SDK 照 LINE 官方寫法載 edge/2：沒加 SRI，因為 LINE 的 CDN 不回 CORS 標頭（加了 integrity 瀏覽器會擋），
+  固定版本的檔案又設了到期日（2026-11 查：versions/2.31.2 標 2026-12-07 到期）。
+  卡片預覽全部用 textContent／DOM 組，不用 innerHTML（卡片文字是資料）。
+-->
+<style>
+  :root { --bg:#FFF9EF; --main:#287C78; --text:#243B3A; --sub:#7B8C8A; --line:#06C755; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",sans-serif; font-size:14px; }
+  .center { min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; text-align:center; padding:24px; font-size:15px; }
+  .av { width:96px; height:96px; border-radius:50%; background:#fff url(avatar.jpg?v=shiba1) center/cover no-repeat; }
+  #app { display:none; max-width:520px; margin:0 auto; padding-bottom:110px; }
+  .hd { display:flex; align-items:center; gap:8px; padding:12px 12px 6px; }
+  .hd .av { width:32px; height:32px; border:1.5px solid #287C7822; }
+  .hd b { font-size:15px; }
+  .hd span { font-size:11.5px; color:var(--sub); display:block; }
+  .tabs { display:flex; gap:6px; padding:4px 12px 8px; overflow-x:auto; }
+  .tabs button { flex:none; border:0; border-radius:999px; padding:7px 12px; font-size:13px; background:#fff; color:var(--sub); box-shadow:0 1px 2px #0000001a; cursor:pointer; }
+  .tabs button.on { background:var(--main); color:#fff; font-weight:700; }
+  .list { padding:0 10px; }
+  .it { display:flex; gap:10px; align-items:center; width:100%; text-align:left; background:#fff; border-radius:12px; padding:10px 12px; margin-bottom:7px; cursor:pointer; border:2px solid transparent; font:inherit; color:inherit; }
+  .it:active { border-color:var(--main); background:#F0F8F7; }
+  .it .ic { font-size:20px; width:28px; text-align:center; flex:none; }
+  .it .tx { flex:1; min-width:0; }
+  .it .tx b { display:block; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .it .tx span { font-size:12px; color:var(--sub); }
+  .empty { color:var(--sub); font-size:13px; padding:16px 6px; }
+  textarea { width:100%; border:1px solid #cbd5e1; border-radius:10px; padding:8px; font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang TC",sans-serif; background:#fff; color:var(--text); }
+  #json { height:200px; font:12px/1.5 ui-monospace,Consolas,monospace; }
+  .sec { font-size:12px; color:var(--sub); margin:10px 4px 6px; }
+  .err { color:#B91C1C; font-size:13px; margin:8px 4px; }
+  .ok { color:#166534; font-size:13px; margin:8px 4px; }
+  .note { font-size:12px; color:#92400E; background:#FEF3C7; border-radius:8px; padding:6px 8px; margin:8px 0; }
+  .chat { background:#8CABD9; border-radius:14px; padding:12px 10px; margin:6px 10px; overflow:hidden; }
+  .msg { background:#85E249; border-radius:14px; padding:7px 10px; font-size:13px; max-width:85%; margin:0 0 10px auto; white-space:pre-wrap; word-break:break-word; width:fit-content; }
+  .car { display:flex; gap:8px; overflow-x:auto; padding-bottom:6px; margin-bottom:10px; }
+  .fx { flex:none; width:240px; background:#fff; border-radius:14px; overflow:hidden; box-shadow:0 1px 2px #0002; margin-left:auto; }
+  .car .fx { width:210px; margin:0; }
+  .fx img { display:block; width:100%; }
+  .fx .t { white-space:pre-wrap; word-break:break-word; }
+  .fx .btn { display:block; text-align:center; border-radius:8px; padding:7px; font-size:12.5px; color:#2563a8; }
+  .fx .btn.p { color:#fff; }
+  .fx .btn.s { background:#f1f5f9; color:#1e293b; }
+  .fx hr { border:0; border-top:1px solid #e5e7eb; margin:4px 0; width:100%; }
+  .back { border:0; background:none; color:var(--main); font-size:14px; padding:10px 12px 0; cursor:pointer; }
+  .foot { position:fixed; left:0; right:0; bottom:0; background:#fffffff2; border-top:1px solid #e5e7eb; padding:10px 12px 14px; display:none; }
+  .foot > div { max-width:520px; margin:0 auto; }
+  .foot button { width:100%; border:0; border-radius:12px; padding:13px; font-size:15px; font-weight:800; background:var(--line); color:#fff; cursor:pointer; }
+  .foot button:disabled { opacity:.5; }
+  .foot small { display:block; text-align:center; color:var(--sub); font-size:11.5px; margin-top:6px; }
+  .pv { padding:0 10px; }
+</style>
+</head>
+<body>
+<div class="center" id="boot"><div class="av"></div><div id="msg">小帥準備中…</div></div>
+
+<div id="app">
+  <div class="hd"><div class="av"></div><div><b>用我的帳號發卡片</b><span>用你自己的 LINE 發，不扣小帥的推播額度</span></div></div>
+  <div id="pick">
+    <div class="tabs" id="tabs"></div>
+    <div class="list" id="list"></div>
+  </div>
+  <div id="preview" style="display:none">
+    <button class="back" id="back" type="button">← 換一張</button>
+    <div class="pv">
+      <div class="sec">開頭那句（可以改，清空就不加）</div>
+      <textarea id="intro" rows="2" maxlength="300"></textarea>
+      <div id="dropped" class="note" style="display:none"></div>
+      <div class="sec">預覽（大家收到的樣子）</div>
+    </div>
+    <div class="chat" id="chat"></div>
+    <div id="result"></div>
+  </div>
+</div>
+<div class="foot" id="foot"><div><button id="send" type="button">📤 用我的 LINE 發送</button><small>下一步在 LINE 裡選群組或好友，可以一次選好幾個</small></div></div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js" charset="utf-8"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const msg = (t) => { $('msg').textContent = t; };
+  const params = () => {
+    const q = new URLSearchParams(location.search);
+    // LIFF 會把參數放在 liff.state 轉過來，init 完通常已還原；兩種都看
+    const st = q.get('liff.state') || '';
+    const q2 = new URLSearchParams(st.slice(st.indexOf('?') + 1));
+    const get = (k) => q.get(k) || q2.get(k) || '';
+    return { t: get('t'), p: get('p'), c: get('c') };
+  };
+
+  let idToken = '';
+  const api = async (name, body) => {
+    const res = await fetch('/x/xiaoshuai/share/' + name, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-Cal-Client': '1' }, body: JSON.stringify({ id: idToken, ...body }) });
+    let j = null; try { j = await res.json(); } catch (e) { /* 不是 JSON */ }
+    if (!res.ok || !j || !j.ok) throw new Error((j && j.error) || '連不上小帥（' + res.status + '）');
+    return j;
+  };
+
+  // ── 行事曆：拿 ID token 轉到月曆頁 ──
+  function openCalendar(t) {
+    if (!/^[0-9a-f]{32}$/.test(t)) return msg('連結不完整，請從 LINE 群組裡行事曆卡片的「🗓️ 看整個月」打開');
+    const idt = liff.getIDToken();
+    try { if (idt) sessionStorage.setItem('xs-cal-idt', idt); } catch (e) { /* 存不了就只能看 */ }
+    location.replace('/public/cal/' + t + '.html?v=' + Date.now());
+  }
+
+  // ── Flex 預覽（簡化版：夠看出長相就好）──
+  const COLOR_RE = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
+  const SIZE = { xxs: 10, xs: 11, sm: 12.5, md: 14, lg: 16, xl: 18, xxl: 20, '3xl': 22, '4xl': 24, '5xl': 26 };
+  const PAD = (v) => (/^\d{1,2}px$/.test(v || '') ? v : ({ none: '0', xs: '2px', sm: '4px', md: '8px', lg: '12px', xl: '16px', xxl: '20px' })[v] || '');
+  function node(n) {
+    if (!n || typeof n !== 'object') return el('div');
+    if (n.type === 'box') {
+      const d = el('div');
+      d.style.display = 'flex';
+      d.style.flexDirection = n.layout === 'vertical' ? 'column' : 'row';
+      if (n.layout === 'baseline') d.style.alignItems = 'baseline';
+      d.style.gap = PAD(n.spacing) || (n.layout === 'vertical' ? '0' : '6px');
+      if (n.paddingAll) d.style.padding = PAD(n.paddingAll);
+      if (n.margin) d.style.marginTop = PAD(n.margin);
+      if (COLOR_RE.test(n.backgroundColor || '')) d.style.background = n.backgroundColor;
+      if (n.flex != null) d.style.flex = String(Number(n.flex) || 0);
+      (n.contents || []).forEach(c => d.appendChild(node(c)));
+      return d;
+    }
+    if (n.type === 'text') {
+      const d = el('div', 't', n.text || (n.contents || []).map(s => s.text || '').join(''));
+      d.style.fontSize = (SIZE[n.size] || 13) + 'px';
+      if (n.weight === 'bold') d.style.fontWeight = '700';
+      if (COLOR_RE.test(n.color || '')) d.style.color = n.color;
+      if (n.flex != null) d.style.flex = String(Number(n.flex) || 0);
+      if (n.wrap === false) { d.style.whiteSpace = 'nowrap'; d.style.overflow = 'hidden'; d.style.textOverflow = 'ellipsis'; }
+      if (n.margin) d.style.marginTop = PAD(n.margin);
+      return d;
+    }
+    if (n.type === 'button') {
+      const d = el('div', 'btn ' + (n.style === 'primary' ? 'p' : n.style === 'secondary' ? 's' : 'l'), (n.action && n.action.label) || '按鈕');
+      if (n.style === 'primary') d.style.background = COLOR_RE.test(n.color || '') ? n.color : '#0f8a6a';
+      if (n.flex != null) d.style.flex = String(Number(n.flex) || 1);
+      else d.style.flex = '1';
+      return d;
+    }
+    if (n.type === 'image' && /^https:\/\//.test(n.url || '')) { const i = el('img'); i.src = n.url; i.alt = ''; i.referrerPolicy = 'no-referrer'; return i; }
+    if (n.type === 'separator') return el('hr');
+    return el('div');
+  }
+  function bubble(b) {
+    const d = el('div', 'fx');
+    ['header', 'hero', 'body', 'footer'].forEach(k => { if (b[k]) d.appendChild(node(b[k])); });
+    return d;
+  }
+  function renderMessages(list) {
+    const chat = $('chat');
+    chat.textContent = '';
+    for (const m of list) {
+      if (m.type === 'text') chat.appendChild(el('div', 'msg', m.text));
+      else if (m.type === 'image') { const i = el('img'); i.src = m.previewImageUrl; i.style.cssText = 'max-width:70%;border-radius:12px;display:block;margin:0 0 10px auto'; chat.appendChild(i); }
+      else if (m.type === 'flex') {
+        const c = m.contents;
+        if (c.type === 'carousel') { const car = el('div', 'car'); c.contents.forEach(b => car.appendChild(bubble(b))); chat.appendChild(car); }
+        else { const w = el('div'); w.style.marginBottom = '10px'; w.appendChild(bubble(c)); chat.appendChild(w); }
+      }
+    }
+  }
+
+  // ── 發卡片 ──
+  const TABS = [['cal', '📅 行事曆'], ['nj', '📣 妞揪活動'], ['kb', '📇 小卡'], ['json', '🧩 貼 JSON']];
+  const ICON = { cal: '📅', nj: '📣', kb: '📇' };
+  let data = null; let tab = 'cal'; let current = null; let cardMsgs = []; let messages = [];
+
+  function showTabs() {
+    const box = $('tabs'); box.textContent = '';
+    for (const [k, label] of TABS) {
+      const b = el('button', k === tab ? 'on' : '', label); b.type = 'button';
+      b.onclick = () => { tab = k; showTabs(); showList(); };
+      box.appendChild(b);
+    }
+  }
+  function showList() {
+    const box = $('list'); box.textContent = '';
+    if (tab === 'json') {
+      box.appendChild(el('div', 'sec', '貼一則訊息、訊息陣列，或 Flex Message Simulator 複製出來的 bubble／carousel'));
+      const ta = el('textarea'); ta.id = 'json'; ta.maxLength = 12000; ta.placeholder = '{"type":"bubble", ...}';
+      box.appendChild(ta);
+      const b = el('button', 'it', null); b.type = 'button'; b.style.marginTop = '8px';
+      b.appendChild(el('span', 'ic', '👀')); const tx = el('span', 'tx'); tx.appendChild(el('b', null, '預覽這段 JSON')); b.appendChild(tx);
+      b.onclick = () => choose({ json: ta.value }, '');
+      box.appendChild(b);
+      return;
+    }
+    const items = (data && data[tab]) || [];
+    if (tab === 'nj' && data && data.njError) box.appendChild(el('div', 'err', data.njError));
+    if (!items.length) { box.appendChild(el('div', 'empty', tab === 'kb' ? '還沒有小卡' : tab === 'nj' ? '妞揪沒有還沒過的活動' : '沒有可以發的行事曆')); return; }
+    for (const it of items) {
+      const b = el('button', 'it'); b.type = 'button';
+      b.appendChild(el('span', 'ic', ICON[tab]));
+      const tx = el('span', 'tx'); tx.appendChild(el('b', null, it.label)); tx.appendChild(el('span', null, it.sub || '')); b.appendChild(tx);
+      b.onclick = () => choose({ key: it.key });
+      box.appendChild(b);
+    }
+  }
+  function compose() {
+    const t = $('intro').value.trim();
+    messages = (t ? [{ type: 'text', text: t }] : []).concat(cardMsgs).slice(0, 5);
+    renderMessages(messages);
+  }
+  async function choose(req) {
+    $('result').textContent = '';
+    try {
+      const r = await api('build', req);
+      current = req;
+      const list = r.messages;
+      const first = list[0] && list[0].type === 'text' ? list[0].text : '';
+      cardMsgs = first ? list.slice(1) : list;
+      $('intro').value = first;
+      $('dropped').style.display = r.dropped ? 'block' : 'none';
+      $('dropped').textContent = r.dropped ? '小帥專用的按鈕（刪掉、這週行程…）轉發時拿掉了 ' + r.dropped + ' 個，別人按了也不會動' : '';
+      $('pick').style.display = 'none'; $('preview').style.display = 'block'; $('foot').style.display = 'block';
+      $('send').disabled = false;
+      compose();
+      window.scrollTo(0, 0);
+    } catch (e) {
+      const box = $('list');
+      const err = el('div', 'err', e.message);
+      box.insertBefore(err, box.firstChild);
+    }
+  }
+  async function send() {
+    const out = $('result'); out.textContent = '';
+    if (!messages.length) return;
+    if (!liff.isApiAvailable('shareTargetPicker')) {
+      out.appendChild(el('div', 'err', '這裡不能選對象發送：請在手機的 LINE 裡打開，或到 LINE Developers 把 LIFF 的「Share target picker」打開'));
+      return;
+    }
+    $('send').disabled = true;
+    try {
+      const r = await liff.shareTargetPicker(messages, { isMultiple: true });
+      out.appendChild(r ? el('div', 'ok', '✅ 送出了') : el('div', 'sec', '沒有送（取消了）'));
+    } catch (e) {
+      out.appendChild(el('div', 'err', '送不出去：' + (e && e.message ? e.message : '不明原因')));
+    } finally { $('send').disabled = false; }
+  }
+
+  async function openShare(c) {
+    idToken = liff.getIDToken() || '';
+    if (!idToken) return msg('拿不到 LINE 登入資料：LIFF 的 scope 要勾 openid');
+    data = await api('list', {});
+    $('boot').style.display = 'none'; $('app').style.display = 'block';
+    $('intro').oninput = compose;
+    $('send').onclick = send;
+    $('back').onclick = () => { $('preview').style.display = 'none'; $('foot').style.display = 'none'; $('pick').style.display = 'block'; };
+    if (/^cal:/.test(c)) tab = 'cal'; else if (/^nj:/.test(c)) tab = 'nj'; else if (/^kb:/.test(c)) tab = 'kb';
+    showTabs(); showList();
+    if (c) await choose({ key: c });
+  }
+
+  (async () => {
+    try {
+      const res = await fetch('/x/xiaoshuai/cal/config', { cache: 'no-store' });
+      const cfg = await res.json();
+      if (!cfg.ok) return msg('LINE 登入還沒設定好');
+      await liff.init({ liffId: cfg.liffId });
+      const p = params();
+      if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+      if (p.p === 'share') return await openShare(p.c);
+      if (p.t) return openCalendar(p.t);
+      msg('連結不完整：行事曆請從群組卡片的「🗓️ 看整個月」打開；發卡片請私訊小帥「發卡片」');
+    } catch (e) {
+      msg('打不開（' + (e && e.message ? e.message : '不明原因') + '），等一下再試一次');
+    }
+  })();
+})();
+</script>
+</body>
+</html>

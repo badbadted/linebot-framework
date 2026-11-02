@@ -43,6 +43,7 @@ import * as share from './share.js';
 import * as cal from './calendar.js';
 import * as calmeta from './calmeta.js';
 import * as caledit from './caledit.js';
+import * as sendcard from './sendcard.js';
 import { safeFetch } from '../../src/utils/safe-fetch.js';
 import * as claims from './claims.js';
 import * as social from '../../src/utils/social-preview.js';
@@ -849,7 +850,7 @@ async function calendarIntercept({ chatId, userId, text, replyToken, mention, dm
     const withGroups = dm && CAL_WITH_GROUPS_RE.test(t);
     const sources = await calSources(chatId, { dm, withGroups });
     const url = await calPage(chatId, dm);
-    return say(cal.queryMessages(it.range, cal.itemsBetween(sources, it.range.from, it.range.to, now), { url, showSrc: withGroups, now }));
+    return say(shareable(chatId, cal.queryMessages(it.range, cal.itemsBetween(sources, it.range.from, it.range.to, now), { url, showSrc: withGroups, now }), calRangeKey(it.range)));
   }
   if (it.action === 'add') {
     if (it.error) return say(it.error);
@@ -872,7 +873,8 @@ async function calendarIntercept({ chatId, userId, text, replyToken, mention, dm
     changed();
     const url = await calPage(chatId, dm);
     const head = added.length === 1 ? '記好了 📅' : `記好了 ${added.length} 筆 📅${added.length > cal.MAX_EVENT_CARDS ? `（卡片先列前 ${cal.MAX_EVENT_CARDS} 筆，其他看整個月）` : '，往右滑看 👉'}`;
-    return say([{ type: 'text', text: [head, ...notes].join('\n') }, added.length === 1 ? cal.eventFlex(added[0], { dm, url }) : cal.eventsFlex(added, { dm, url })]);
+    const key = added.length === 1 ? `cal:e${added[0].id}` : calRangeKey({ from: added.map(e => e.day).sort()[0], to: added.map(e => e.day).sort().at(-1) });
+    return say(shareable(chatId, [{ type: 'text', text: [head, ...notes].join('\n') }, added.length === 1 ? cal.eventFlex(added[0], { dm, url }) : cal.eventsFlex(added, { dm, url })], key));
   }
   if (it.action === 'delete' || it.action === 'edit') {
     const pick = cal.pickEvent(chatId, it.target, now);
@@ -899,7 +901,7 @@ async function calendarIntercept({ chatId, userId, text, replyToken, mention, dm
     changed();
     const diff = [r.before.day !== r.event.day || r.before.time !== r.event.time ? `${cal.whenLabel(r.before)} → ${cal.whenLabel(r.event)}` : '',
       r.before.title !== r.event.title ? `「${r.before.title}」→「${r.event.title}」` : '', r.before.place !== r.event.place ? `地點改成 ${r.event.place}` : ''].filter(Boolean).join('，');
-    return say([{ type: 'text', text: `改好了：${diff}` }, cal.eventFlex(r.event, { dm, url: await calPage(chatId, dm) })]);
+    return say(shareable(chatId, [{ type: 'text', text: `改好了：${diff}` }, cal.eventFlex(r.event, { dm, url: await calPage(chatId, dm) })], `cal:e${r.event.id}`));
   }
   return false;
 }
@@ -912,7 +914,7 @@ async function calPostback({ chatId, userId, data, replyToken }) {
   const now = Date.now();
   if (data === 'cal:week') {
     const range = cal.rangeOf('week', now);
-    return say(cal.queryMessages(range, cal.itemsBetween(await calSources(chatId, { dm }), range.from, range.to, now), { url: await calPage(chatId, dm), now }));
+    return say(shareable(chatId, cal.queryMessages(range, cal.itemsBetween(await calSources(chatId, { dm }), range.from, range.to, now), { url: await calPage(chatId, dm), now }), 'cal:week'));
   }
   const m = /^cal:del:(\d{1,9})$/.exec(String(data));
   if (!m) return true;
@@ -963,9 +965,8 @@ async function calAlert(text) {
   }
 }
 
-/** 驗：回 { chatId, by, dm, via } 或 { status, error }（錯誤訊息不帶內部細節） */
-async function calAuth(req, action) {
-  const now = Date.now();
+/** /x/xiaoshuai/* 共同的門口：大小、同源、JSON＋自訂標頭；回 { iph, body } 或 { status, error } */
+function webGuard(req, now = Date.now()) {
   // cf-connecting-ip 只信 Cloudflare Tunnel 轉進來的（cloudflared 從本機連）；區網直連的用連線位址，標頭可以造假
   const peer = String(req.ip || req.socket?.remoteAddress || '');
   const viaTunnel = /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(peer);
@@ -976,7 +977,15 @@ async function calAuth(req, action) {
   // 擋 CSRF：只收同源（Origin 一定要有、要是自己的網域）、JSON、自訂標頭（跨站表單送不出這種請求）
   if (req.get('origin') !== PUBLIC_ORIGIN) { caledit.anomaly('', 'origin', String(req.get('origin') || '（沒有）').slice(0, 80), iph, now); return { status: 403, error: '來源不對' }; }
   if (!req.is('application/json') || req.get('x-cal-client') !== '1') return { status: 400, error: '格式不對' };
-  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+  return { iph, body: req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {} };
+}
+
+/** 驗：回 { chatId, by, dm, via } 或 { status, error }（錯誤訊息不帶內部細節） */
+async function calAuth(req, action) {
+  const now = Date.now();
+  const g = webGuard(req, now);
+  if (g.status) return g;
+  const { iph, body } = g;
   const chatId = cal.chatOfToken(body.t);
   if (!chatId) return { status: 404, error: '找不到這個行事曆' };
   const write = CAL_WRITES.has(action);
@@ -1127,7 +1136,7 @@ const calApi = {
   },
 };
 
-/** /x/xiaoshuai/cal/*：config 公開（給 cal-liff.html 拿 LIFF ID），其他都要驗（編輯碼或 LINE 登入） */
+/** /x/xiaoshuai/cal/*：config 公開（給 liff.html 拿 LIFF ID），其他都要驗（編輯碼或 LINE 登入） */
 function calHttp(router) {
   router.get('/cal/config', (_req, res) => {
     const l = cal.liff();
@@ -1150,6 +1159,141 @@ function calHttp(router) {
       }
     });
   }
+}
+
+// ── 用 TED 自己的 LINE 帳號發卡片（2026-11-02）──
+// LIFF 頁（liff.html?p=share）拿 LINE 的 ID token 來；主機向 LINE 驗過、是管理員才給卡片。主機只組卡片，送出是 TED 在 LINE 的選單裡自己按
+const SHARE_RATE = [[60_000, 30], [3600_000, 300]];
+const CAL_RANGE_MAX_DAYS = 62;
+
+/** 查詢範圍 → 卡片代號（太長的範圍不給，免得一次組太多） */
+function calRangeKey(r) {
+  if (!r?.from || !r?.to) return '';
+  const days = (Date.parse(`${r.to}T00:00:00Z`) - Date.parse(`${r.from}T00:00:00Z`)) / 86400_000;
+  return days >= 0 && days <= CAL_RANGE_MAX_DAYS ? `cal:${r.from}~${r.to}` : '';
+}
+
+/** 私訊 TED 的卡片：LIFF 有設定就在每張 Flex 卡底下加「📤 用我的帳號發」（群組、別人、沒設定都不加） */
+function shareable(chatId, msgs, key) {
+  const l = /^U/.test(String(chatId)) && isAdmin(chatId) && sendcard.keyOk(key) ? cal.liff() : null;
+  return l ? sendcard.addShareButton(msgs, sendcard.shareUrl(l.liffId, key)) : msgs;
+}
+
+/** 驗：LINE 登入的 ID token、是管理員；回 { userId, body, liff } 或 { status, error } */
+async function shareAuth(req, now = Date.now()) {
+  const g = webGuard(req, now);
+  if (g.status) return g;
+  if (calOver(`ip:${g.iph}:share`, SHARE_RATE, now)) { caledit.anomaly('', 'rate', 'share', g.iph, now); return { status: 429, error: '太快了，等一下再試' }; }
+  const l = cal.liff();
+  if (!l) return { status: 503, error: 'LINE 登入還沒設定好' };
+  const who = await caledit.verify(g.body.id, l.channelId);
+  if (!who) return { status: 401, error: '登入過期了，從 LINE 再打開一次' };
+  if (!isAdmin(who.userId)) { caledit.anomaly('', 'share', '不是管理員', g.iph, now); return { status: 403, error: '這個功能只有 TED 能用' }; }
+  return { userId: who.userId, body: g.body, liff: l };
+}
+
+const calLabel = (r) => (r.from === r.to ? cal.dayLabel(r.from) : `${cal.dayLabel(r.from)}～${cal.dayLabel(r.to)}`);
+/** 卡片代號 → 要發的訊息（還沒清理）；找不到回 null */
+async function shareCard(userId, key, now = Date.now()) {
+  const i = key.indexOf(':');
+  const kind = key.slice(0, i); const v = key.slice(i + 1);
+  if (kind === 'cal') {
+    const sources = await calSources(userId, { dm: true, withGroups: true });
+    if (/^e\d+$/.test(v)) {
+      const ev = cal.getEvent(v.slice(1));
+      if (!ev || ev.deleted_at || !sources.some(s => s.chatId === ev.chat_id)) return null;
+      return [{ type: 'text', text: `📅 ${cards.clean(ev.title, 40)}，${cal.whenLabel(ev)}` }, cal.eventFlex(ev, { remind: false })];
+    }
+    let r = cal.rangeOf(v, now);
+    if (!r) {
+      const [from, to] = v.split('~');
+      if (!calRangeKey({ from, to }) || Number.isNaN(Date.parse(`${from}T00:00:00Z`)) || Number.isNaN(Date.parse(`${to}T00:00:00Z`))) return null;
+      r = { from, to, label: calLabel({ from, to }), single: from === to };
+    }
+    return cal.queryMessages(r, cal.itemsBetween(sources, r.from, r.to, now), { url: null, showSrc: false, now });
+  }
+  if (kind === 'nj') {
+    const e = await share.getEvent(v);
+    return e ? share.eventMessages(e) : null;
+  }
+  if (kind === 'kb') {
+    const row = kb.getById(v);
+    const fl = row && kb.kbFlex(row);
+    return fl ? [{ type: 'text', text: `📇 ${cards.clean(row.title, 30)}，整理給大家參考 👇` }, fl] : null;
+  }
+  return null;
+}
+
+const shareApi = {
+  /** 發卡片頁的清單：行事曆（這週、下週、還沒過的事）、妞揪活動、小卡 */
+  async list(a, _b, now = Date.now()) {
+    const sources = await calSources(a.userId, { dm: true, withGroups: true });
+    const calList = ['week', 'next_week'].map((w) => {
+      const r = cal.rangeOf(w, now);
+      const n = [...cal.itemsBetween(sources, r.from, r.to, now).values()].reduce((x, l) => x + l.length, 0);
+      return { key: `cal:${w}`, label: `${r.label}行程`, sub: n ? `${n} 件事・${calLabel(r)}` : `沒有事・${calLabel(r)}` };
+    });
+    const evs = sources.flatMap(s => cal.futureEvents(s.chatId, now).map(e => ({ e, src: s.label })))
+      .sort((x, y) => (x.e.day + (x.e.time || '')).localeCompare(y.e.day + (y.e.time || ''))).slice(0, 20);
+    for (const { e, src } of evs) calList.push({ key: `cal:e${e.id}`, label: cards.clean(e.title, 30), sub: `${cal.whenLabel(e)}${src && src !== '我的' ? `・${src}` : ''}` });
+    let njList = []; let njError = '';
+    try { njList = (await share.upcoming(now)).map(e => ({ key: `nj:${e.id}`, label: cards.clean(e.title, 30), sub: share.whenOf(e) })); } catch (err) {
+      console.warn(`[xiaoshuai-sendcard] 妞揪活動拿不到：${err.message}`);
+      njError = '妞揪活動暫時拿不到';
+    }
+    const kbList = kb.list().map(r => ({ key: `kb:${r.id}`, label: cards.clean(r.title, 30), sub: `${new Date(r.updated_at).toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric' })} 整理` }));
+    return { cal: calList, nj: njList, njError, kb: kbList };
+  },
+  /** 組要發的訊息：選的卡片（key）或貼上的 JSON（json）；intro 換掉開頭那句；最後一律清理 */
+  async build(a, b, now = Date.now()) {
+    let msgs;
+    if (b.json != null) {
+      const p = sendcard.parsePasted(b.json);
+      if (p.error) return { status: 400, error: p.error };
+      msgs = p.messages;
+    } else {
+      if (!sendcard.keyOk(b.key)) return { status: 400, error: '要發哪張？' };
+      msgs = await shareCard(a.userId, b.key, now);
+      if (!msgs) return { status: 404, error: '找不到這張卡片（可能被刪了）' };
+    }
+    if (b.intro != null) msgs = sendcard.withIntro(msgs, b.intro);
+    const r = sendcard.sanitize(msgs, { host: new URL(PUBLIC_ORIGIN).hostname, liffId: a.liff.liffId });
+    if (r.error) return { status: 400, error: r.error };
+    console.log(`[xiaoshuai-sendcard] 組卡片 ${b.json != null ? '（貼上的 JSON）' : b.key}：${r.messages.length} 則${r.dropped ? `，拿掉 ${r.dropped} 個按鈕` : ''}`);
+    return { messages: r.messages, dropped: r.dropped };
+  },
+};
+
+/** /x/xiaoshuai/share/*：都要 LINE 登入、管理員 */
+function shareHttp(router) {
+  for (const [name, fn] of Object.entries(shareApi)) {
+    router.post(`/share/${name}`, async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      try {
+        const a = await shareAuth(req);
+        if (a.status) return res.status(a.status).json({ ok: false, error: a.error });
+        const r = await fn(a, a.body);
+        if (r.status) { const { status, ...rest } = r; return res.status(status).json({ ok: false, ...rest }); }
+        res.json({ ok: true, ...r });
+      } catch (err) {
+        console.warn(`[xiaoshuai-sendcard] 網頁 ${name} 失敗：${err.message}`);
+        res.status(500).json({ ok: false, error: '出了點問題，等一下再試' });
+      }
+    });
+  }
+}
+
+/** 私訊說「發卡片」：給打開發卡片頁的按鈕；LIFF 還沒設定就講清楚要做什麼 */
+const SENDCARD_RE = /^(?:小帥\s*[,，、]?\s*)?(?:發卡片|用我的帳號發(?:卡片)?|我要發卡片)\s*[!！。.~～]*$/;
+function sendCardEntry() {
+  const l = cal.liff();
+  if (!l) return [{ type: 'text', text: '「用自己的帳號發卡片」還沒開通：要先在 LINE Developers 建好 LINE 登入（LIFF），把 LIFF ID 和 Channel ID 給 Claude 設定。\n在那之前，要分享妞揪活動照舊說「把○○分享到△△群」，小帥代貼。' }];
+  const b = cards.bubble({
+    color: '#0f8a6a', sub: '📤 用我的帳號發', title: '選一張卡片發到群組或好友',
+    lines: ['行事曆、妞揪活動、小卡、貼 Flex JSON', '用你自己的帳號發，不扣小帥的推播額度'],
+    buttons: [{ label: '打開', uri: sendcard.shareUrl(l.liffId), primary: true }],
+  });
+  return [cards.flex([b], `📤 用我的帳號發卡片：${sendcard.shareUrl(l.liffId)}`)];
 }
 
 /** 今天 7:00 後第一個人講話：今天有事就排「今天的行程」，等免費回覆貼（不推播） */
@@ -1180,6 +1324,7 @@ async function shareIntercept({ chatId, userId, text, replyToken, mention, dm, t
     return true;
   };
   const admin = !!userId && isAdmin(userId);
+  if (dm && admin && SENDCARD_RE.test(t)) return say(sendCardEntry());
   const p = admin ? share.pendingOf(chatId) : null;
   // 進行中（只認管理員）：等指定活動、等指定群組、等確認
   if (p) {
@@ -1215,6 +1360,17 @@ async function continueShare(chatId, userId, st, say, transcript = []) {
     event = ev.event;
   }
   let target = st.target;
+  const l = cal.liff();
+  if (l) {
+    // 2026-11-02 預設：給「📤 用我的帳號發」，TED 在 LINE 自己選群組送（不扣額度）；認得出目標群就順便給小帥代貼（好／推）當備用
+    if (!target && st.targetText) target = (await share.findTarget(st.targetText, { exclude: chatId })).group || null;
+    share.rememberCreated(chatId, event.id, event.title); // 之後說「把剛剛那團貼到○○群」接得上
+    const card = sendcard.addShareButton(share.eventMessages(event).slice(1), sendcard.shareUrl(l.liffId, `nj:${event.id}`));
+    if (!target) { share.clearPending(chatId); return say([{ type: 'text', text: share.linkText(event) }, ...card]); }
+    const [count, left] = await Promise.all([share.groupMembers(target.id), share.quotaLeft()]);
+    share.setPending(chatId, { stage: 'confirm', event, target, count });
+    return say([{ type: 'text', text: share.linkText(event, target, count, left) }, ...card]);
+  }
   if (!target) {
     const tg = await share.findTarget(st.targetText || '', { exclude: chatId });
     if (tg.ask) { share.setPending(chatId, { ...st, stage: 'need_target', event }); return say(tg.ask); }
@@ -1972,7 +2128,7 @@ function handleKb(chatId, parsed) {
   const row = parsed.kbRows.find(r => r.title === parsed.kb) || parsed.kbRows[0];
   kb.markUsed(chatId, row.title);
   if (parsed.kbCards) {
-    const fl = kb.kbFlex(row);
+    const fl = shareable(chatId, [kb.kbFlex(row)].filter(Boolean), `kb:${row.id}`)[0];
     if (fl) parsed.images = [...(parsed.images || []), fl].slice(0, 4);
   }
   console.log(`[xiaoshuai-kb] ${chatId.slice(0, 8)} 用小卡「${row.title}」回答${parsed.kbCards ? '（附卡片）' : ''}`);
@@ -2532,7 +2688,7 @@ export default {
   },
 
   /** Flex 卡片的 postback：投票按鈕「poll:<id>:<選項>」、看結果「poll:<id>:r」 */
-  http: (router) => calHttp(router),
+  http: (router) => { calHttp(router); shareHttp(router); },
   /** 測試用：清掉頻率限制的計數 */
   _calResetRate: () => calHits.clear(),
 

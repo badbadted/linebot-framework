@@ -115,6 +115,8 @@ export const clearDraft = (chatId) => drafts.delete(chatId);
 
 const rowOf = (r) => (r ? { ...r, keywords: JSON.parse(r.keywords), cards: JSON.parse(r.cards) } : null);
 export const getCard = (title) => rowOf(db?.get('SELECT * FROM kb_cards WHERE title = ? AND active = 1', title));
+/** 照 id 拿（發卡片頁用；只拿還在用的版本） */
+export const getById = (id) => rowOf(db?.get('SELECT * FROM kb_cards WHERE id = ? AND active = 1', Number(id)));
 
 /** 存（同標題就是新版本，舊版 active=0 留著）；回傳新的那列 */
 export function save({ title, keywords, cards: list }, raw, { source = '', caveat = null, now = Date.now() } = {}) {
@@ -128,7 +130,7 @@ export function save({ title, keywords, cards: list }, raw, { source = '', cavea
 }
 
 export function list() {
-  return (db?.all('SELECT title, version, updated_at FROM kb_cards WHERE active = 1 ORDER BY updated_at DESC') || []);
+  return (db?.all('SELECT id, title, version, updated_at FROM kb_cards WHERE active = 1 ORDER BY updated_at DESC') || []);
 }
 
 /** 軟刪除：資料留著，只是不再使用 */

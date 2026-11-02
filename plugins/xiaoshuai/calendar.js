@@ -684,7 +684,7 @@ let start = (saved && saved.start) || weekStart(D.today);
 let Y = +((saved && saved.ym) || D.today).slice(0, 4), M = +((saved && saved.ym) || D.today).slice(5, 7);
 let sel = null;
 store('xs-cal-view', null);
-// 編輯：①群組卡片的連結帶 #k=<編輯碼>（fragment 不會送到主機），存在這台裝置；②LIFF 打開時 cal-liff.html 放的 ID token
+// 編輯：①群組卡片的連結帶 #k=<編輯碼>（fragment 不會送到主機），存在這台裝置；②LIFF 打開時 liff.html 放的 ID token
 const IDT = D.edit ? store('xs-cal-idt') : null;
 const fromHash = (/[#&]k=([A-Za-z0-9_-]{20,80})/.exec(location.hash) || [])[1] || '';
 if (fromHash) keep('xs-cal-k:' + TOKEN, fromHash);
@@ -1144,7 +1144,7 @@ export function eventsFlex(list, opts = {}) {
   return cards.flex(shown.map(ev => eventBubble(ev, opts)), shown.map(ev => `${whenLabel(ev)} ${ev.title}`).join('\n'), MAX_EVENT_CARDS);
 }
 
-function eventBubble(ev, { dm = false, url = null, verb = '加的' } = {}) {
+function eventBubble(ev, { dm = false, url = null, verb = '加的', remind = true } = {}) {
   const footer = [{ type: 'box', layout: 'horizontal', spacing: 'sm', contents: [pb('🗑️ 刪掉', `cal:del:${ev.id}`, `🗑️ 刪掉 ${cards.clean(ev.title, 20)}`), pb('📅 這週行程', 'cal:week', '📅 這週行程', true)] }];
   const safe = url && cards.safeUri(url, pageUrlOk);
   if (safe) footer.push(monthBtn(safe));
@@ -1154,7 +1154,7 @@ function eventBubble(ev, { dm = false, url = null, verb = '加的' } = {}) {
     body: { type: 'box', layout: 'vertical', paddingAll: '12px', contents: [
       kv('時間', whenLabel(ev), true),
       ...(ev.place ? [kv('地點', ev.place)] : []),
-      kv('提醒', '當天早上貼今日行程（免費）'),
+      ...(remind ? [kv('提醒', '當天早上貼今日行程（免費）')] : []), // 轉發給別人的不放（那是小帥的功能）
     ] },
     footer: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '10px', contents: footer },
   };
