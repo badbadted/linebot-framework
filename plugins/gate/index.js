@@ -5,6 +5,7 @@
  * - /關遊戲               立刻關閉外網
  * - /遊戲狀態             查看是否開放、幾點關
  * - /延長 [1小時]          延後關門時間（不超過開門後 6 小時）
+ * - /放行 帳號 [取消]       （管理員）今天不用做完今日任務也能玩遊戲，晚上 12 點自動失效（2026-11-02）
  *
  * 誰能用：私訊只限管理員。群組要先 `/開通 gate`，開通後群組成員可以
  * /開遊戲、/遊戲狀態；/關遊戲、/延長 仍只限管理員。
@@ -20,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const GATE = process.env.WEB_GATE_SCRIPT || join(homedir(), 'apps/web-hub/bin/web-gate.mjs');
+const PLAY_PASS = process.env.PLAY_PASS_SCRIPT || join(homedir(), 'apps/web-hub/bin/play-pass.mjs');
 const LAN_URL = 'http://192.168.0.222:4800/';
 
 function isAdmin(userId) {
@@ -33,14 +35,18 @@ function isAdmin(userId) {
 
 /** 執行開關腳本，回傳它印出的 JSON */
 function gate(...args) {
+  return run(GATE, args);
+}
+/** 執行大廳的腳本（開關、放行），回傳它印出的最後一行 JSON */
+function run(script, args) {
   return new Promise((ok) => {
-    execFile(process.execPath, [GATE, ...args], { timeout: 40_000 }, (err, stdout) => {
+    execFile(process.execPath, [script, ...args], { timeout: 40_000 }, (err, stdout) => {
       const line = String(stdout || '').trim().split('\n').pop();
       try {
         ok(JSON.parse(line));
       } catch {
         // 原始錯誤只記在伺服器 log，不回給 LINE（可能含路徑等內部資訊）
-        if (err) console.error(`[gate] ${args[0]} failed: ${err.message}`);
+        if (err) console.error(`[gate] ${script} ${args[0]} failed: ${err.message}`);
         ok({ ok: false, reason: 'exec', message: '開關沒有回應' });
       }
     });
@@ -140,6 +146,21 @@ export default {
         const r = await gate('extend', String(hours));
         if (!r.ok) return r.reason === 'closed' ? '外網目前是關的，請用「/開遊戲」。' : `⚠️ 延長失敗：${r.message || r.reason}`;
         return `⏰ 改成 ${r.closesAtText} 關閉（還剩 ${r.minutesLeft} 分鐘）${r.capped ? '\n已到上限：開門後最多 6 小時。' : ''}`;
+      },
+    },
+    {
+      // 遊戲解鎖（web-hub src/play-gate.mjs）：平常要做完今日任務才能玩，生病、出遊時爸爸放行
+      name: 'play-pass',
+      pattern: /^\/放行\s+([A-Za-z0-9_一-鿿]{1,16})(?:\s+(取消))?$/,
+      describe: '/放行 帳號 [取消] — （管理員）今天不用做完今日任務也能玩遊戲',
+      type: 'query',
+      handler: async (m, ctx) => {
+        if (!isAdmin(ctx.userId)) return NOT_ADMIN;
+        const r = await run(PLAY_PASS, m[2] ? [m[1], '--off'] : [m[1]]);
+        if (!r.ok) return r.reason === 'not-found' ? `找不到帳號「${m[1]}」。` : `⚠️ 放行失敗：${r.message || r.reason}`;
+        return r.on
+          ? `🎮 已放行 ${r.name}：今天（${r.day}）不用做完今日任務也能玩遊戲，晚上 12 點自動失效。`
+          : `已取消 ${r.name} 今天的放行。`;
       },
     },
   ],
