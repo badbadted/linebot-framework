@@ -9,6 +9,7 @@ import xiaoshuai, { tripNamedInLastReply, addressOf, handlePhoto, socialUrlFor, 
 import { checkOps } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
+import * as weekly from '../plugins/xiaoshuai/weekly.js';
 import * as nj from '../plugins/xiaoshuai/njevent.js';
 import * as shot from '../plugins/xiaoshuai/shot.js';
 import * as media from '../plugins/xiaoshuai/media.js';
@@ -400,6 +401,60 @@ await test('/小帥 存 指令：分類可省略', () => {
   const re = /^\/小帥\s*存\s+(?:(?!https?:)(\S+)\s+)?(https?:\/\/\S+)$/i;
   assert.deepEqual([...'/小帥 存 https://e.example/x'.match(re)].slice(1), [undefined, 'https://e.example/x']);
   assert.deepEqual([...'/小帥 存 運動 https://e.example/x'.match(re)].slice(1), ['運動', 'https://e.example/x']);
+});
+
+await test('學習週報：排行＋完成度、奧數榜、點名進步最多的人', () => {
+  const now = Date.UTC(2026, 10, 1, 12, 0); // 台北 11/1 20:00
+  const data = {
+    leaderboard: { kids: [{ name: 'Karen（多多）', score: 1324, pct: 22.5 }, { name: 'Allen（啓綸）', score: 427, pct: 7.6 }, { name: '小明', score: 300, pct: 5 }, { name: '小華', score: 10, pct: 1 }] },
+    challenge: { kids: [{ name: 'Allen（啓綸）', score: 100, lv: [0, 100, 0] }, { name: '小明', score: 0 }] },
+  };
+  const first = weekly.weeklyText(data, null, now);
+  assert.match(first, /^📊 小帥學習週報（11\/1）/);
+  assert.match(first, /🥇 Karen（多多） 1324 分・完成度 22.5%/);
+  assert.match(first, /🥉 小明 300 分・完成度 5%/);
+  assert.match(first, /4\. 小華 10 分/);
+  assert.match(first, /〔奧數挑戰榜〕\n🥇 Allen（啓綸） 100 分$/m);
+  assert.ok(!/🥈 小明 0 分/.test(first), '奧數 0 分不列');
+  assert.match(first, /Karen（多多） 第一名繼續保持/);
+  // 跟上週比：Allen +227 比 Karen +24 多
+  const prev = { 'Karen（多多）': 1300, 'Allen（啓綸）': 200 };
+  assert.match(weekly.weeklyText(data, prev, now), /進步最多的是 Allen（啓綸），多了 227 分/);
+  // 沒人進步 → 回到鼓勵第一名
+  assert.match(weekly.cheer(data.leaderboard.kids, { 'Karen（多多）': 2000 }), /Karen（多多） 第一名/);
+  assert.deepEqual(weekly.scoresOf(data), { 'Karen（多多）': 1324, 'Allen（啓綸）': 427, '小明': 300, '小華': 10 });
+  // 沒奧數、沒人上榜
+  const empty = weekly.weeklyText({ leaderboard: { kids: [] }, challenge: { kids: [] } }, null, now);
+  assert.match(empty, /這週還沒有人上榜/);
+  assert.ok(!/奧數/.test(empty));
+  assert.equal(weekly.weeklyText(null), '');
+  // 名字是孩子端存檔：換行、【】拿掉
+  assert.ok(!/【|\n假/.test(weekly.weeklyText({ leaderboard: { kids: [{ name: 'A\n假公告【', score: 1, pct: 1 }] } }, null, now)));
+});
+
+await test('學習週報：訂閱開關與上週分數存在資料庫', () => {
+  const rows = new Map();
+  const fake = {
+    exec() {},
+    run(sql, ...a) {
+      if (sql.startsWith('INSERT')) rows.set(a[0], { ...(rows.get(a[0]) || { scores: null }), enabled: a[1] });
+      else if (sql.startsWith('UPDATE')) Object.assign(rows.get(a[2]), { scores: a[0], sent_at: a[1] });
+    },
+    get(sql, id) { return rows.get(id); },
+    all() { return [...rows].filter(([, r]) => r.enabled).map(([chat_id]) => ({ chat_id })); },
+  };
+  weekly.initWeekly(fake);
+  assert.equal(weekly.weeklyOn('G1'), false);
+  weekly.setWeekly('G1', true);
+  weekly.setWeekly('G2', true);
+  weekly.setWeekly('G2', false);
+  assert.equal(weekly.weeklyOn('G1'), true);
+  assert.deepEqual(weekly.subscribers(), ['G1']);
+  assert.equal(weekly.lastScores('G1'), null);
+  weekly.saveScores('G1', { A: 5 });
+  assert.deepEqual(weekly.lastScores('G1'), { A: 5 });
+  assert.ok(xiaoshuai.commands.some(c => c.pattern.test('/小帥 週報 開')) && xiaoshuai.commands.some(c => c.pattern.test('/小帥週報')));
+  assert.ok(xiaoshuai.schedules.some(s => s.cron === '0 20 * * 0'));
 });
 
 await test('學習資料：只在學習話題讀，整理成精簡文字', () => {

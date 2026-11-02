@@ -29,6 +29,7 @@ import { createBrain } from './brain.js';
 import * as trip from './trip.js';
 import * as links from './links.js';
 import * as learning from './learning.js';
+import * as weekly from './weekly.js';
 import * as nj from './njevent.js';
 import * as shot from './shot.js';
 import * as media from './media.js';
@@ -2223,6 +2224,41 @@ async function command(match, ctx) {
   return lines.join('\n');
 }
 
+/** /小帥 週報 [開｜關｜預覽] */
+async function weeklyCommand(match, ctx) {
+  const chatId = ctx.groupId || ctx.roomId;
+  if (!chatId) return '週報要在群組裡設定';
+  const action = match[1] || '';
+  if (action === '開' || action === '關') {
+    if (!isAdmin(ctx.userId)) return '⛔ 只有管理員能開關週報';
+    weekly.setWeekly(chatId, action === '開');
+    return action === '開'
+      ? '📊 好，每週日晚上 8 點小帥會整理學習排行和奧數挑戰榜，等群裡下一個人講話時貼出來（不推播、不扣額度）\n想先看看：/小帥 週報 預覽'
+      : '週報關掉了，/小帥 週報 開 可以再打開';
+  }
+  if (action === '預覽') {
+    const text = weekly.weeklyText(await learning.fetchLearning(), weekly.lastScores(chatId));
+    return text || '讀不到學習網站的資料，等一下再試';
+  }
+  return weekly.weeklyOn(chatId)
+    ? '📊 這群有收學習週報：每週日晚上 8 點排進下一個人講話時的回覆\n/小帥 週報 預覽 先看一次；管理員 /小帥 週報 關 可以關掉'
+    : '這群沒有收學習週報。管理員打 /小帥 週報 開 就會每週日晚上 8 點貼一次';
+}
+
+/** 排程：每個訂閱群排一則週報；讀不到資料這次就跳過 */
+export async function queueWeekly(now = Date.now()) {
+  const subs = weekly.subscribers();
+  if (!subs.length) return 0;
+  const data = await learning.fetchLearning();
+  if (!data) { console.warn('[xiaoshuai-weekly] 讀不到學習資料，這週不排'); return 0; }
+  for (const chatId of subs) {
+    holdAnswer(chatId, weekly.weeklyText(data, weekly.lastScores(chatId), now), [], { keepMs: weekly.WEEKLY_KEEP_MS });
+    weekly.saveScores(chatId, weekly.scoresOf(data), now);
+    console.log(`[xiaoshuai-weekly] ${chatId.slice(0, 8)} 週報排進免費回覆`);
+  }
+  return subs.length;
+}
+
 /** /小帥 新行程 <名稱> <標題>：用通用版面開一份新的，推上網站後綁到這群 */
 async function newTripCommand(match, ctx) {
   const chatId = ctx.groupId || ctx.roomId;
@@ -2304,6 +2340,8 @@ export default {
 小帥 加到小卡 <內容> — （管理員）加一張資料卡，大家問到就照它回答；/小帥 小卡 列出、/小帥 小卡 刪 <標題>
 /小帥 開｜關 — （管理員）讓小帥進來／離開
 /小帥 行程 <名稱>｜取消 [名稱] — （管理員）綁定／取消行程網頁，一個群可以綁好幾份
+/小帥 週報 — 看這群有沒有收學習週報；/小帥 週報 預覽 — 現在先看一次
+/小帥 週報 開｜關 — （管理員）每週日晚上 8 點把學習排行、奧數挑戰榜排進下一個人講話時的回覆（不推播）
 /小帥 新行程 <名稱> <標題> — （管理員）開一份新行程網頁並綁到這群，例如 /小帥 新行程 hokkaido-2028 2028 北海道滑雪`,
 
   commands: [
@@ -2376,12 +2414,23 @@ export default {
       handler: tripCommand,
     },
     {
+      name: 'xiaoshuai-weekly',
+      pattern: /^\/小帥\s*週報(?:\s*(開|關|預覽))?$/,
+      describe: '/小帥 週報 [開｜關｜預覽] — 每週學習排行週報',
+      type: 'query',
+      handler: weeklyCommand,
+    },
+    {
       name: 'xiaoshuai',
       pattern: /^\/小帥(?:\s*(開|關|狀態|記憶|忘記))?$/,
       describe: '/小帥 狀態｜記憶｜忘記｜開｜關 — 群組聊天角色',
       type: 'query',
       handler: command,
     },
+  ],
+
+  schedules: [
+    { name: 'xiaoshuai-weekly-learning', cron: weekly.WEEKLY_CRON, describe: '小帥學習週報：排進訂閱群的免費回覆', handler: () => queueWeekly() },
   ],
 
   async init(ctx) {
@@ -2404,6 +2453,7 @@ export default {
     });
     media.initStickers(db);
     polls.initPolls(db);
+    weekly.initWeekly(db);
     // 綁了旅遊行程的群：行事曆直接讀行程每天的摘要（行程網頁是正本，不另存）
     cal.initCalendar(db, { dir: process.env.XIAOSHUAI_CAL_DIR, trips: (chatId) => tripsOf(chatId).flatMap(n => trip.daysOf(n)) });
     if (!calEnrichTimer && !process.env.XIAOSHUAI_CAL_NO_ENRICH) {

@@ -36,6 +36,7 @@ const GRADE = ['', '一', '二', '三', '四', '五', '六'];
 // 存檔欄位是孩子端網頁寫的，當作不可信文字：去換行、去標記符號、限長
 const txt = (v, max = 30) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(/[【】<>〔〕]/g, '').trim().slice(0, max);
 const num = (v) => (v !== undefined && v !== null && Number.isFinite(+v) ? +v : '—');
+export { txt as safeText, num as safeNum };
 const ago = (ts, now) => {
   if (!ts) return '沒有紀錄';
   const m = Math.round((now - ts) / 60_000);
