@@ -74,7 +74,11 @@ const pendingEdits = new Map(); // chatId → { name, ops, changes, at }：等�
 const restNoticeAt = new Map(); // chatId → 上次回「休息中」的時間
 const dmQueue = new Map();      // userId → 私訊正在處理的那句
 // 私訊講到家裡設備：直接交給 Luna（不花小帥的 AI）；沒抓到的由 AI 回 to_luna
-export const HOME_RE = /開燈|關燈|把燈|燈打開|燈關|冷氣|空調|除濕機|暖氣|電風扇|循環扇|窗簾|掃地機|掃地|拖地|門鎖|電視|音響|spotify|播音樂|放音樂|室溫|管家|luna|露娜|空氣清淨/i;
+export const HOME_RE = /開燈|關燈|把燈|燈打開|燈關|冷氣|空調|除濕機|暖氣|電風扇|循環扇|窗簾|掃地機|掃地|拖地|門鎖|電視|音響|spotify|播音樂|放音樂|室溫|管家|luna|露娜|空氣清淨|客廳台|投影/i;
+// 剛交給 Luna 的 10 分鐘內，短短的接話也交給 Luna（客廳台問「要播第幾支」「要切過來嗎」之後的回答、「關掉」）
+export const LUNA_FOLLOW_RE = /^(要|好|好啊|好喔|可以|對|不要|先不要|算了|關掉|關了|關台|停|停止|不用了|第?\s*\d{1,2}\s*(支|個|部)?|播\s*第?\s*\d{1,2}\s*(支|個|部)?)[!！。.～~ ]*$/;
+const LUNA_FOLLOW_MS = 10 * 60_000;
+const lunaAt = new Map();       // userId → 上次把私訊交給 Luna 的時間
 
 export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年輕男生（在群組裡，或管理員私訊你）。
 個性：溫暖、可靠，又很有幽默感，像群組裡那個熱心又好笑的朋友。正事認真回答清楚；聊天時愛接梗、會自嘲、會用誇張的比喻或冷笑話逗大家，但不嘲笑人，不拿別人的外表、身分開玩笑。
@@ -2669,7 +2673,9 @@ export default {
   /** 私訊：管理員講的話都由小帥回（家裡設備交給 Luna）；其他人私訊照舊交給原本的 AI */
   async onPrivateText({ userId, text, replyToken, event }) {
     if (!brain || !llm?.generate || !userId || !isAdmin(userId)) return false;
-    if (HOME_RE.test(String(text || '').normalize('NFKC')) && !KB_ADD_RE.test(String(text || '')) && !kb.draftOf(userId)) return false;
+    const plain = String(text || '').normalize('NFKC').trim();
+    if (HOME_RE.test(plain) && !KB_ADD_RE.test(String(text || '')) && !kb.draftOf(userId)) { lunaAt.set(userId, Date.now()); return false; }
+    if (Date.now() - (lunaAt.get(userId) || 0) < LUNA_FOLLOW_MS && LUNA_FOLLOW_RE.test(plain)) { lunaAt.set(userId, Date.now()); return false; }
     const item = brain.observe(userId, { userId, text });
     tagMsgId(item, event);
     if (item) await resolveName(userId, userId, item);
@@ -2689,6 +2695,7 @@ export default {
     });
     dmQueue.set(userId, job.catch(() => {}));
     const r = await job;
+    if (r?.handoff) lunaAt.set(userId, Date.now());
     return !r?.handoff;
   },
 
