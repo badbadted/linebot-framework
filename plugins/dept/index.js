@@ -23,8 +23,8 @@ let db;
 const COLOR = '#475569'; // 板岩灰
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-// 固定部門名單（綁定只能用這六個；大小寫容錯，存標準寫法）
-const ROSTER = ['Ken', 'Peter', 'Steven', 'Ida', 'Kacie', 'Hoho'];
+// 固定部門名單（綁定只能用這份名單；大小寫容錯，存標準寫法）
+const ROSTER = ['Ken', 'Peter', 'Steven', 'Ida', 'Kacie', 'Hoho', 'Violet'];
 function canonName(input) {
   const t = String(input).trim();
   return ROSTER.find(n => n.toLowerCase() === t.toLowerCase()) || null;
@@ -164,7 +164,7 @@ export default {
 
 ① 綁定名字（登錄前先做一次）
 　/派工單綁定 Steven
-　名單：Ken / Peter / Steven / Ida / Kacie / Hoho
+　名單：Ken / Peter / Steven / Ida / Kacie / Hoho / Violet
 
 ② 登錄派工單（一行：派工單號 機關 原因；可多行一次多筆）
 　/派工單 UTS060226002 行政院主計總處 非本人瑕疵 接表單流程送件結果寫錯
