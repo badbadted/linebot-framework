@@ -1757,6 +1757,23 @@ await test('公告：排進免費回覆（不推播），下一個人講話時�
   assert.equal(heldAnswers('GPL', 3, Date.now() + 2 * 3600_000).length, 0);
 });
 
+await test('公告附圖：只收小帥自己 public/shots 的圖、最多 4 張，跟文字一起貼', async () => {
+  const { say } = await pollBot();
+  const base = new URL(process.env.BOT_PUBLIC_URL || 'https://bot.pushbike-training.app').origin + '/public/shots/';
+  const a = base + 'a'.repeat(32) + '.jpg', ap = base + 'a'.repeat(32) + '-p.jpg';
+  for (const bad of [[{ url: 'https://evil.example/x.jpg' }], [{ url: base + '../../src/index.js' }], [{ url: a, previewUrl: 'http://x/y.jpg' }], Array(5).fill({ url: a }), 'x']) {
+    assert.equal((await xiaoshuai.onAnnounce({ chatId: 'GPL', text: '公告', images: bad })).ok, false);
+  }
+  assert.equal(heldAnswers('GPL').length, 0);
+  assert.equal((await xiaoshuai.onAnnounce({ chatId: 'GPL', text: '📢 新功能', images: [{ url: a, previewUrl: ap }, { url: a }] })).ok, true);
+  const got = await say('U4', '大家晚安');
+  assert.equal(got[0].text, '📢 新功能');
+  assert.deepEqual(got.slice(1), [
+    { type: 'image', originalContentUrl: a, previewImageUrl: ap },
+    { type: 'image', originalContentUrl: a, previewImageUrl: a },
+  ]);
+});
+
 await test('判斷是不是在叫小帥：引用小帥的話給別人看、@別人、句中提到小帥，都先判斷', async () => {
   const self = { message: { mention: { mentionees: [{ isSelf: true }] } } };
   const other = { message: { mention: { mentionees: [{ isSelf: false }] } } };

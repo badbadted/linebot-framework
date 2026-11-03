@@ -683,7 +683,7 @@ async function main() {
   }
 
   // ── 公告 API（2026-10-28）：排進群組「下一個人講話時」的免費回覆，不推播、不扣訊息額度 ──
-  // 受 apiAuth 保護（同 /api/push）。body: { to: groupId, text, keepHours? }（預設等 72 小時，最多 168）
+  // 受 apiAuth 保護（同 /api/push）。body: { to: groupId, text, keepHours?, images? }（預設等 72 小時，最多 168；images 由 plugin 檢查）
   // 由開著的 plugin（小帥）接；沒有 plugin 接得了（這群沒開小帥）回 409，要發只能改用 /api/push
   app.post('/api/announce', async (req, res) => {
     const body = req.body || {};
@@ -696,7 +696,7 @@ async function main() {
     const errors = [];
     for (const h of pluginHooks.announce) {
       try {
-        const r = await h.fn({ chatId: to, text, keepMs });
+        const r = await h.fn({ chatId: to, text, keepMs, images: body.images });
         if (r?.ok) return res.json({ ok: true, to, mode: 'reply', plugin: h.plugin, keepHours: keepMs / 3600_000, queuedAt: new Date().toISOString() });
         if (r?.error) errors.push(r.error);
       } catch (err) { errors.push(err.message); }

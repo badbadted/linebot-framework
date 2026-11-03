@@ -23,7 +23,7 @@
  *     onUnmatched?: async (ctx) => boolean,    // 可選：群組裡沒命中指令的非 / 訊息；回 true = 已接手，不再交給 LLM fallback
  *     onPrivateText?: async (ctx) => boolean,  // 可選：私訊沒命中指令的非 / 訊息；回 true = 已接手（如健身教練），否則照舊交給 LLM
  *     onPostback?: async (ctx) => boolean,     // 可選：Flex 卡片 postback 按鈕（ctx: chatId, userId, data, replyToken）；回 true = 已接手
- *     onAnnounce?: async (ctx) => { ok, error? }, // 可選：/api/announce 公告排進免費回覆（ctx: chatId, text, keepMs）
+ *     onAnnounce?: async (ctx) => { ok, error? }, // 可選：/api/announce 公告排進免費回覆（ctx: chatId, text, keepMs, images?: [{ url, previewUrl? }]）
  *     onIdleReply?: async (ctx) => boolean,    // 可選：群組裡確定沒人會回的訊息（ctx: chatId, replyToken），可拿來貼排著的東西（見 core/idle-reply.js）
  *     http?: (router) => void,                 // 可選：對外公開的 HTTP 路由（express.Router），掛在 /x/<plugin名稱>/，不經 /api 的管理驗證——要自己驗身分
  *   }

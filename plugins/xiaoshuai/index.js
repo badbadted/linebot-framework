@@ -1816,14 +1816,31 @@ export function heldAnswers(chatId, limit = HOLD_MAX, now = Date.now()) {
  * @param keepMs 等多久（預設 3 天，過了就不貼）
  */
 export const ANNOUNCE_KEEP_MS = 3 * 86400_000;
-export function queueAnnouncement(chatId, text, keepMs = ANNOUNCE_KEEP_MS) {
+export function queueAnnouncement(chatId, text, keepMs = ANNOUNCE_KEEP_MS, images = []) {
   if (!db) return { queued: false, error: '小帥沒有資料庫' };
   if (!enabled.has(chatId)) return { queued: false, error: '這群沒開小帥，沒有免費回覆可以用' };
   const t = String(text || '').trim().slice(0, 5000);
   if (!t) return { queued: false, error: '公告是空的' };
-  holdAnswer(chatId, t, [], { keepMs });
+  const imgs = announceImages(images);
+  if (!imgs) return { queued: false, error: `圖片最多 ${ANNOUNCE_IMAGES} 張，而且要是小帥自己 /public/shots/ 底下的圖` };
+  holdAnswer(chatId, t, imgs, { keepMs });
   console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 公告排進免費回覆（${Math.round(keepMs / 3600_000)} 小時內有人講話就貼）：${t.slice(0, 40)}`);
   return { queued: true };
+}
+/**
+ * 公告附的圖（2026-11-03）：announce skill 先把圖傳到 Mac 的 public/shots/（跟行程截圖同一個地方，3 天後自動刪），這裡只收那裡的網址，
+ * 不收外部網址；文字＋圖一次回覆最多 5 則，所以最多 4 張。回 LINE 圖片訊息陣列，不合格回 null
+ */
+export const ANNOUNCE_IMAGES = 4;
+const SHOT_PATH = /^\/public\/shots\/[0-9a-f]{32}(-p)?\.jpg$/;
+export function announceImages(images) {
+  if (images == null) return [];
+  if (!Array.isArray(images) || images.length > ANNOUNCE_IMAGES) return null;
+  const own = (u) => {
+    try { const x = new URL(String(u)); return x.origin === PUBLIC_ORIGIN && SHOT_PATH.test(x.pathname) ? x.href : null; } catch { return null; }
+  };
+  const out = images.map(i => ({ url: own(i?.url), previewUrl: own(i?.previewUrl || i?.url) }));
+  return out.every(i => i.url && i.previewUrl) ? out.map(shot.imageMessage) : null;
 }
 /** 一則存著的答案要送的訊息：文字＋卡片 */
 function heldMessages(row) {
@@ -2681,9 +2698,9 @@ export default {
     return deliverHeld(chatId, replyToken);
   },
 
-  /** 框架的 /api/announce：公告排進免費回覆；這群沒開小帥回 false（交給呼叫端決定要不要推播） */
-  async onAnnounce({ chatId, text, keepMs }) {
-    const r = queueAnnouncement(chatId, text, keepMs || ANNOUNCE_KEEP_MS);
+  /** 框架的 /api/announce：公告（可附圖）排進免費回覆；這群沒開小帥回 false（交給呼叫端決定要不要推播） */
+  async onAnnounce({ chatId, text, keepMs, images }) {
+    const r = queueAnnouncement(chatId, text, keepMs || ANNOUNCE_KEEP_MS, images);
     return r.queued ? { ok: true, mode: 'reply', keepMs: keepMs || ANNOUNCE_KEEP_MS } : { ok: false, error: r.error };
   },
 
