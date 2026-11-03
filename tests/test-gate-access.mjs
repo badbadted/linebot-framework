@@ -50,6 +50,11 @@ check('群組成員 /關遊戲 被擋', (await run('gate-close', group, '/關遊
 check('群組成員 /延長 被擋', (await run('gate-extend', group, '/延長 1小時')).includes('只有管理員'));
 check('私訊非管理員 /開遊戲 被擋', (await run('gate-open', priv, '/開遊戲')) === '這個指令只有管理員能用。');
 
+// 已經開著又按 /開遊戲：從現在起算延後，群組成員也可以
+writeFileSync(fake, `console.log(JSON.stringify({ ok: true, renewed: true, url: 'https://example.test', closesAtText: '21:30', minutesLeft: 120 }));`);
+const renewed = await run('gate-open', group, '/開遊戲');
+check('開著再按 /開遊戲：直接延後、回新的關門時間', renewed.includes('從現在起算') && renewed.includes('21:30') && !renewed.includes('請找管理員'));
+
 // 開關腳本壞掉時，成員只看到通用訊息，不看到內部錯誤
 writeFileSync(fake, `process.stderr.write('boom /secret/path'); process.exit(2);`);
 check('開關失敗時成員只看到通用訊息', (await run('gate-open', group, '/開遊戲')) === '開關暫時無法使用，請找管理員。');

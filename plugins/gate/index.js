@@ -1,10 +1,10 @@
 /**
  * Gate Plugin — 家用遊戲大廳的對外開關
  *
- * - /開遊戲 [2小時｜30分]  打開外網，預設 2 小時，最長 6 小時（22:00 限制 2026-10-24 拿掉）
+ * - /開遊戲 [2小時｜30分]  打開外網，預設 2 小時，單次最長 6 小時；已經開著再按就從現在起算（2026-11-03）
  * - /關遊戲               立刻關閉外網
  * - /遊戲狀態             查看是否開放、幾點關
- * - /延長 [1小時]          延後關門時間（不超過開門後 6 小時）
+ * - /延長 [1小時]          延後關門時間（單次最多 6 小時，沒有總上限，2026-11-03）
  * - /放行 帳號 [取消]       （管理員）今天不用做完今日任務也能玩遊戲，晚上 12 點自動失效（2026-11-02）
  *
  * 誰能用：私訊只限管理員。群組要先 `/開通 gate`，開通後群組成員可以
@@ -95,6 +95,9 @@ export default {
         if (!canUse({ admin, sourceType: ctx.sourceType, memberOk: true })) return deny(ctx);
         const hours = parseHours(m[1], m[2]);
         const r = await gate('start', ...(hours ? [String(hours)] : []));
+        if (r.ok && r.renewed) {
+          return `⏰ 已經是開的，從現在起算：改成 ${r.closesAtText} 關閉（還剩 ${r.minutesLeft} 分鐘）\n🌐 ${r.url}/`;
+        }
         if (r.ok) {
           return [
             `🔓 遊戲大廳已開放外網，${r.closesAtText} 自動關閉（約 ${r.minutesLeft} 分鐘）`,
@@ -145,7 +148,7 @@ export default {
         const hours = parseHours(m[1], m[2]) ?? 1;
         const r = await gate('extend', String(hours));
         if (!r.ok) return r.reason === 'closed' ? '外網目前是關的，請用「/開遊戲」。' : `⚠️ 延長失敗：${r.message || r.reason}`;
-        return `⏰ 改成 ${r.closesAtText} 關閉（還剩 ${r.minutesLeft} 分鐘）${r.capped ? '\n已到上限：開門後最多 6 小時。' : ''}`;
+        return `⏰ 改成 ${r.closesAtText} 關閉（還剩 ${r.minutesLeft} 分鐘）`;
       },
     },
     {
