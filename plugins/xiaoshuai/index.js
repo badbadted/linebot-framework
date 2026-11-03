@@ -74,7 +74,7 @@ const pendingEdits = new Map(); // chatId → { name, ops, changes, at }：等�
 const restNoticeAt = new Map(); // chatId → 上次回「休息中」的時間
 const dmQueue = new Map();      // userId → 私訊正在處理的那句
 // 私訊講到家裡設備：直接交給 Luna（不花小帥的 AI）；沒抓到的由 AI 回 to_luna
-export const HOME_RE = /開燈|關燈|把燈|燈打開|燈關|冷氣|空調|除濕機|暖氣|電風扇|循環扇|窗簾|掃地機|掃地|拖地|門鎖|電視|音響|spotify|播音樂|放音樂|室溫|管家|luna|露娜|空氣清淨|客廳台|投影/i;
+export const HOME_RE = /開燈|關燈|把燈|燈打開|燈關|冷氣|空調|除濕機|暖氣|電風扇|循環扇|窗簾|掃地機|掃地|拖地|門鎖|電視|音響|spotify|播音樂|放音樂|室溫|管家|luna|露娜|空氣清淨|客廳台|小帥台|電視台|投影/i;
 // 剛交給 Luna 的 10 分鐘內，短短的接話也交給 Luna（客廳台問「要播第幾支」「要切過來嗎」之後的回答、「關掉」）
 export const LUNA_FOLLOW_RE = /^(要|好|好啊|好喔|可以|對|不要|先不要|算了|關掉|關了|關台|停|停止|不用了|第?\s*\d{1,2}\s*(支|個|部)?|播\s*第?\s*\d{1,2}\s*(支|個|部)?)[!！。.～~ ]*$/;
 const LUNA_FOLLOW_MS = 10 * 60_000;
