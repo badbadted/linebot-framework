@@ -429,7 +429,7 @@ export async function startTrip({ chatId, userId, dm, name }, deps) {
   currentChat = chatId;
   const zh = `${data.title} 行程圖`.slice(0, 40);
   const id = logStart(chatId, userId, zh);
-  await deps.reply([{ type: 'text', text: `好，小帥把「${data.title}」的行程畫成一張圖，大約 2～3 分鐘${dm ? '，畫好直接傳給你' : '，畫好會在下一句話時貼出來（可以打「畫好了嗎」）'}` }]).catch(() => {});
+  await deps.reply([{ type: 'text', text: `好，小帥把「${data.title}」的行程畫成一張圖，大約 2～5 分鐘${dm ? '，畫好直接傳給你' : '，畫好會在下一句話時貼出來（可以打「畫好了嗎」）'}` }]).catch(() => {});
   console.log(`[xiaoshuai-draw] ${chatId.slice(0, 8)} 開始畫行程圖「${data.title}」（${data.days.length} 天）`);
   const prepare = async (dir) => {
     const inDir = join(dir, 'in');
@@ -437,7 +437,7 @@ export async function startTrip({ chatId, userId, dm, name }, deps) {
     writeFileSync(join(inDir, 'trip.json'), JSON.stringify(data, null, 1));
     return cameoPrepare(dir);
   };
-  draw(id, { zh, en: '' }, deps, { kind: 'trip', prompt: tripimg.PROMPT({ style: STYLE_A, fullBleed: FULL_BLEED, cameo: CAMEO }), prepare, chatId, timeoutMs: 6 * 60_000 })
+  draw(id, { zh, en: '' }, deps, { kind: 'trip', prompt: tripimg.PROMPT({ style: STYLE_A, fullBleed: FULL_BLEED, cameo: CAMEO }), prepare, chatId, timeoutMs: 10 * 60_000 })
     .catch((err) => console.warn(`[xiaoshuai-draw] 背景工作失敗：${err.message}`)).finally(() => { pending = false; });
   return true;
 }
