@@ -383,25 +383,25 @@ await test('行程圖：送給 OpenAI 的只有行程本身（人名、家庭、
   assert.equal(tripimg.tripData('../etc', repo), null);
 });
 
-await test('行程圖轉 PNG 只准讀這次輸出夾裡的檔：外面的檔、捷徑、網址都擋', async () => {
+await test('行程圖轉 PNG 不從檔案打開：只讀輸出夾裡的排版檔與 bg.png（捷徑不收），內嵌＋CSP 擋掉其他資源', async () => {
   const tripimg = await import('../plugins/xiaoshuai/tripimg.js');
-  const { pathToFileURL } = await import('node:url');
-  const { realpathSync } = await import('node:fs');
   const out = mkdtempSync(join(tmpdir(), 'xs-out-'));
-  writeFileSync(join(out, 'index.html'), '<p>x</p>');
+  writeFileSync(join(out, 'index.html'), '<div style="background:url(bg.png)"></div><img src="./bg.png"><img src="file:///Users/x/family.jpg">');
   writeFileSync(join(out, 'bg.png'), PNG);
+  assert.ok(tripimg.readOwnFile(out, 'index.html', 1000));
+  assert.equal(tripimg.readOwnFile(out, 'index.html', 10), null, '太大不收');
+  assert.equal(tripimg.readOwnFile(out, 'nope.png', 1000), null);
   const secret = join(mkdtempSync(join(tmpdir(), 'xs-sec-')), 'family.jpg');
   writeFileSync(secret, PNG);
-  const real = realpathSync(out);
-  assert.equal(tripimg.allowedFile(pathToFileURL(join(out, 'index.html')).href, real), true);
-  assert.equal(tripimg.allowedFile(pathToFileURL(join(out, 'bg.png')).href, real), true);
-  assert.equal(tripimg.allowedFile(pathToFileURL(secret).href, real), false);
-  assert.equal(tripimg.allowedFile(pathToFileURL(join(out, '..', 'x.png')).href, real), false);
-  assert.equal(tripimg.allowedFile('https://evil.example/x.png', real), false);
   try {
     symlinkSync(secret, join(out, 'link.png'));
-    assert.equal(tripimg.allowedFile(pathToFileURL(join(out, 'link.png')).href, real), false);
+    assert.equal(tripimg.readOwnFile(out, 'link.png', 1e8), null, '捷徑不收');
   } catch { console.log('  （這台不能建 symlink，捷徑那項略過）'); }
+  const h = tripimg.inlineHtml('<div style="background:url(bg.png)"></div><img src="./bg.png"><img src="file:///Users/x/family.jpg">', PNG);
+  assert.ok(h.startsWith(tripimg.CSP) && tripimg.CSP.includes("default-src 'none'") && tripimg.CSP.includes('img-src data:'));
+  assert.ok(!/bg\.png/.test(h) && h.includes('data:image/png;base64,'), 'bg.png 改成內嵌');
+  assert.ok(!tripimg.CSP.includes('file:'), 'CSP 不放行本機檔');
+  assert.ok(!tripimg.inlineHtml('<img src="bg.png">', Buffer.from('not image')).includes('data:image'), '不是圖就不內嵌');
 });
 
 await test('行程圖要畫哪一份：只綁一份就畫；多份有線索才畫，猜不出來回 null（要問）', async () => {

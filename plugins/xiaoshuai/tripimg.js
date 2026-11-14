@@ -5,14 +5,13 @@
  *   A image_gen 直接把字畫進圖：這次字都對，但一張要 6 分鐘，生成的字沒有保證
  *   B Codex 畫一張「無字」水彩插圖＋寫 HTML 排版，bot 用 Chrome 轉成 PNG：75 秒、字是字型排的不會錯 → 採用 B
  * 送給 OpenAI 的只有行程本身：日期、星期、地點、行程項目標題。人名、家庭、航班分組、人數、說明細節（sub、moreHtml、info）都不送
- * 轉 PNG 時鎖死：不跑 JavaScript、只准讀這次輸出夾裡的檔（捷徑不收、真實路徑要在輸出夾內），其他網址、本機檔一律擋
+ * 轉 PNG 時鎖死：排版檔讀成字串、bg.png 內嵌、加 CSP 丟進空白頁，不跑 JavaScript、離線、所有請求一律擋，本機檔載不到
  */
 
 import { chromium } from 'playwright-core';
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const tripRepo = () => process.env.TRIP_REPO_DIR || join(homedir(), 'apps', 'temp-reports');
@@ -79,16 +78,33 @@ let launch = () => chromium.launch({ executablePath: CHROME, headless: true });
 /** 測試用 */
 export function configure({ launch: l } = {}) { if (l) launch = l; }
 
-/** 只准這個夾子裡、不是捷徑、真實路徑也在裡面的檔 */
-export function allowedFile(url, outReal) {
-  if (!url.startsWith('file://')) return false;
-  let p;
-  try { p = fileURLToPath(url); } catch { return false; }
+const BG_MAX = 15_000_000;
+// 只准內嵌的圖與行內樣式；任何外部網址、本機檔都載不到
+export const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">`;
+
+/** 讀這次輸出夾裡的一個檔：不是捷徑、只有一個名稱、真實路徑在夾內、不跟隨捷徑開檔；不合格回 null */
+export function readOwnFile(outDir, name, max) {
+  const p = join(outDir, name);
   try {
-    if (lstatSync(p).isSymbolicLink()) return false;
-    const real = realpathSync(p);
-    return real === join(outReal, 'index.html') || real.startsWith(outReal + sep);
-  } catch { return false; }
+    const st = lstatSync(p);
+    if (st.isSymbolicLink() || !st.isFile() || st.nlink !== 1 || st.size > max) return null;
+    const outReal = realpathSync(outDir);
+    if (!realpathSync(p).startsWith(outReal + sep)) return null;
+    const fd = openSync(p, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0));
+    try {
+      const f = fstatSync(fd);
+      if (f.ino !== st.ino || f.dev !== st.dev) return null;
+      return readFileSync(fd);
+    } finally { closeSync(fd); }
+  } catch { return null; }
+}
+
+/** 排版檔 → 可以安全丟進空白頁的 HTML：最前面加 CSP，bg.png 換成內嵌資料 */
+export function inlineHtml(html, bg) {
+  const isPng = bg && bg.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const isJpg = bg && bg[0] === 0xff && bg[1] === 0xd8;
+  const data = isPng || isJpg ? `data:image/${isPng ? 'png' : 'jpeg'};base64,${bg.toString('base64')}` : '';
+  return CSP + String(html).replace(/(?:\.\/)?bg\.png/g, data);
 }
 
 /** out/index.html → PNG（Buffer）；不合格丟錯 */
@@ -98,15 +114,16 @@ export function render(outDir) {
   return job;
 }
 async function doRender(outDir) {
-  const html = join(outDir, 'index.html');
-  if (!existsSync(html) || lstatSync(html).isSymbolicLink() || statSync(html).size > HTML_MAX) throw new Error('沒有排版檔或檔案不合格');
-  const outReal = realpathSync(outDir);
+  // 不從 file:// 打開（攔不住本機檔）：讀成字串、bg.png 內嵌、加 CSP，丟進空白頁，所有網路請求一律擋
+  const html = readOwnFile(outDir, 'index.html', HTML_MAX);
+  if (!html) throw new Error('沒有排版檔或檔案不合格');
+  const bg = readOwnFile(outDir, 'bg.png', BG_MAX);
   if (!browser?.isConnected()) browser = await launch();
-  const ctx = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, javaScriptEnabled: false });
+  const ctx = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, javaScriptEnabled: false, offline: true });
   try {
     const page = await ctx.newPage();
-    await page.route('**/*', (route) => (allowedFile(route.request().url(), outReal) ? route.continue() : route.abort()));
-    await page.goto(pathToFileURL(html).href, { waitUntil: 'load', timeout: 20_000 });
+    await page.route('**/*', (route) => (route.request().url().startsWith('data:') ? route.continue() : route.abort()));
+    await page.setContent(inlineHtml(html.toString('utf8'), bg), { waitUntil: 'load', timeout: 20_000 });
     return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT } });
   } finally {
     await ctx.close().catch(() => {});
