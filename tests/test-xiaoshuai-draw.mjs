@@ -67,7 +67,9 @@ await test('觸發句：小帥畫、幫我畫、/畫；畫面、計畫、畫好�
 });
 
 await test('聊天大腦的 draw 欄位：要有 what，style、edit 照填，格式不對不算', async () => {
-  const { parseDraw, parseReply } = await import('../plugins/xiaoshuai/index.js');
+  const { parseDraw, parseReply, PERSONA } = await import('../plugins/xiaoshuai/index.js');
+  assert.ok(PERSONA.includes('畫圖和修圖') && PERSONA.includes('"draw"'), '聊天規則要寫會畫圖');
+  assert.ok(PERSONA.includes('不確定就先問'), '聊天規則要寫不確定先問');
   assert.deepEqual(parseDraw({ what: ' 2026 聖誕\n滑雪旅行 ', style: '蠟筆' }), { what: '2026 聖誕 滑雪旅行', style: '蠟筆', edit: false });
   assert.deepEqual(parseDraw({ what: '加點腹肌', edit: true }), { what: '加點腹肌', style: '', edit: true });
   for (const bad of [null, 'x', [], {}, { what: '' }, { what: 3 }]) assert.equal(parseDraw(bad), null);
