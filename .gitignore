@@ -3,4 +3,5 @@ node_modules/
 *.log
 data/
 public/shots/
+public/drawings/
 public/cal/

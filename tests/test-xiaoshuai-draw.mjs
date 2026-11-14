@@ -5,7 +5,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync, copyFileSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, copyFileSync, existsSync, symlinkSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -80,7 +80,7 @@ await test('畫成功：先回開始畫，Codex 只拿到改寫後的英文，�
   assert.ok(runPrompts[0].includes('<<<a cute dinosaur wearing a red hat>>>'));
   assert.ok(llmPrompts[0].includes('不照做'));
   assert.equal(r.delivered[1].type, 'image');
-  assert.match(r.delivered[1].originalContentUrl, /^https:\/\/bot\.example\.test\/public\/shots\/[0-9a-f]{32}\.jpg$/);
+  assert.match(r.delivered[1].originalContentUrl, /^https:\/\/bot\.example\.test\/public\/drawings\/[0-9a-f]{32}\.jpg$/);
   assert.match(r.delivered[1].previewImageUrl, /-p\.jpg$/);
 });
 
@@ -168,6 +168,18 @@ await test('out/ 裡的捷徑（symlink）不收，就算指到真的圖檔', ()
   writeFileSync(secret, PNG);
   try { symlinkSync(secret, join(dir, 'out', 'image.png')); } catch { console.log('  （這台不能建 symlink，略過）'); return; }
   assert.equal(draw.findImage(dir), null);
+});
+
+await test('畫好的圖留 30 天：舊的刪、新的留、別的檔不碰', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'xs-keep-'));
+  const old = join(dir, 'a'.repeat(32) + '.jpg'); const fresh = join(dir, 'b'.repeat(32) + '-p.jpg'); const other = join(dir, 'note.txt');
+  for (const f of [old, fresh, other]) writeFileSync(f, 'x');
+  const past = (Date.now() - 31 * 86400_000) / 1000;
+  utimesSync(old, past, past); utimesSync(other, past, past);
+  draw.cleanup(Date.now(), dir);
+  assert.equal(existsSync(old), false);
+  assert.equal(existsSync(fresh), true);
+  assert.equal(existsSync(other), true);
 });
 
 await test('Codex 參數與環境：權限設定檔、不帶 --sandbox、環境變數只有三個', () => {

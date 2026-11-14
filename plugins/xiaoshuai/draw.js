@@ -56,7 +56,10 @@ let db = null;
 const mem = []; // 沒有 DB（測試）時的備用紀錄
 let llm = null;
 let convert = sipsConvert;
-let outDir = shot.SHOT_DIR;
+// 畫好的圖另放 public/drawings、留 KEEP_DAYS 天（行程截圖的 public/shots 3 天就刪，LINE 裡的舊圖會變成驚嘆號）
+export const KEEP_DAYS = +(process.env.XIAOSHUAI_DRAW_KEEP_DAYS || 30);
+export const DRAW_DIR = join(shot.SHOT_DIR, '..', 'drawings');
+let outDir = DRAW_DIR;
 let runCodex = (o) => codex.run(o);
 let pending = false; // 從改寫描述開始就算在畫（codex.isBusy() 要等 Codex 真的啟動才會是 true）
 export const isDrawing = () => pending || codex.isBusy();
@@ -165,6 +168,16 @@ export function findImage(dir) {
   return null;
 }
 
+/** 刪掉超過 KEEP_DAYS 天的圖 */
+export function cleanup(now = Date.now(), dir = outDir) {
+  if (!existsSync(dir)) return;
+  for (const f of readdirSync(dir)) {
+    if (!/^[0-9a-f]{32}(-p)?\.jpg$/.test(f)) continue;
+    const p = join(dir, f);
+    try { if (now - statSync(p).mtimeMs > KEEP_DAYS * 86400_000) rmSync(p, { force: true }); } catch { /* 下次再刪 */ }
+  }
+}
+
 const execFileP = promisify(execFile);
 /** macOS 內建 sips 轉 JPG：原圖長邊 2048、預覽長邊 480 */
 async function sipsConvert(src, dst, maxSide, quality) {
@@ -174,7 +187,7 @@ async function sipsConvert(src, dst, maxSide, quality) {
 /** 圖存到 public/shots（3 天後自動刪），回 LINE 圖片訊息；buf 是 findImage 讀進來的內容 */
 export async function publish(buf) {
   mkdirSync(outDir, { recursive: true });
-  shot.cleanup();
+  cleanup();
   const tmp = mkdtempSync(join(tmpdir(), 'xs-draw-'));
   const src = join(tmp, 'src.img');
   writeFileSync(src, buf);
@@ -186,7 +199,7 @@ export async function publish(buf) {
     await convert(src, small, 480, 70);
     if (!existsSync(big) || !existsSync(small) || statSync(small).size > LINE_PREVIEW_MAX) throw new Error('轉檔失敗');
   } finally { rmSync(tmp, { recursive: true, force: true }); }
-  return shot.imageMessage({ url: `${shot.PUBLIC_BASE}/public/shots/${name}.jpg`, previewUrl: `${shot.PUBLIC_BASE}/public/shots/${name}-p.jpg` });
+  return shot.imageMessage({ url: `${shot.PUBLIC_BASE}/public/drawings/${name}.jpg`, previewUrl: `${shot.PUBLIC_BASE}/public/drawings/${name}-p.jpg` });
 }
 
 /**
