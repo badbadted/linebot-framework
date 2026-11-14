@@ -11,8 +11,9 @@
 
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import * as codex from './codex-run.js';
 import * as shot from './shot.js';
@@ -131,18 +132,33 @@ export async function rewrite(what) {
 export function findImage(dir) {
   const out = join(dir, 'out');
   if (!existsSync(out)) return null;
+  // Codex 可以在 out/ 放捷徑（symlink）指向它自己讀不到、但 bot 讀得到的檔（例如 NAS 上的家庭照片）：
+  // 捷徑一律不收，真實路徑也要在 out/ 裡面，開檔不跟隨捷徑
+  let outReal;
+  try { if (lstatSync(out).isSymbolicLink()) return null; outReal = realpathSync(out); } catch { return null; }
   for (const f of readdirSync(out)) {
     const p = join(out, f);
     let st;
-    try { st = statSync(p); } catch { continue; }
-    if (!st.isFile() || st.size < MIN_BYTES || st.size > MAX_BYTES) continue;
-    const head = Buffer.alloc(12);
-    const fd = openSync(p, 'r');
-    try { readSync(fd, head, 0, 12, 0); } finally { closeSync(fd); }
+    try { st = lstatSync(p); } catch { continue; }
+    if (st.isSymbolicLink() || !st.isFile() || st.nlink > 1 || st.size < MIN_BYTES || st.size > MAX_BYTES) continue;
+    try { if (!realpathSync(p).startsWith(outReal + sep)) continue; } catch { continue; }
+    // 透過同一個檔案代號整個讀進記憶體：之後轉檔用這份複本，Codex 事後換檔也影響不到
+    let fd;
+    try { fd = openSync(p, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0)); } catch { continue; }
+    let buf;
+    try {
+      if (!fstatSync(fd).isFile()) continue;
+      buf = Buffer.alloc(st.size);
+      let off = 0;
+      while (off < buf.length) { const n = readSync(fd, buf, off, buf.length - off, off); if (!n) break; off += n; }
+      buf = buf.subarray(0, off);
+    } finally { closeSync(fd); }
+    if (buf.length < MIN_BYTES) continue;
+    const head = buf.subarray(0, 12);
     const png = head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
     const jpg = head[0] === 0xff && head[1] === 0xd8;
     const webp = head.subarray(0, 4).toString() === 'RIFF' && head.subarray(8, 12).toString() === 'WEBP';
-    if (png || jpg || webp) return p;
+    if (png || jpg || webp) return { path: p, buf };
   }
   return null;
 }
@@ -153,16 +169,21 @@ async function sipsConvert(src, dst, maxSide, quality) {
   await execFileP('/usr/bin/sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', String(quality), '-Z', String(maxSide), src, '--out', dst], { timeout: 30_000 });
 }
 
-/** 圖存到 public/shots（3 天後自動刪），回 LINE 圖片訊息 */
-export async function publish(src) {
+/** 圖存到 public/shots（3 天後自動刪），回 LINE 圖片訊息；buf 是 findImage 讀進來的內容 */
+export async function publish(buf) {
   mkdirSync(outDir, { recursive: true });
   shot.cleanup();
+  const tmp = mkdtempSync(join(tmpdir(), 'xs-draw-'));
+  const src = join(tmp, 'src.img');
+  writeFileSync(src, buf);
   const name = randomBytes(16).toString('hex');
   const big = join(outDir, `${name}.jpg`);
   const small = join(outDir, `${name}-p.jpg`);
-  await convert(src, big, 2048, 85);
-  await convert(src, small, 480, 70);
-  if (!existsSync(big) || !existsSync(small) || statSync(small).size > LINE_PREVIEW_MAX) throw new Error('轉檔失敗');
+  try {
+    await convert(src, big, 2048, 85);
+    await convert(src, small, 480, 70);
+    if (!existsSync(big) || !existsSync(small) || statSync(small).size > LINE_PREVIEW_MAX) throw new Error('轉檔失敗');
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
   return shot.imageMessage({ url: `${shot.PUBLIC_BASE}/public/shots/${name}.jpg`, previewUrl: `${shot.PUBLIC_BASE}/public/shots/${name}-p.jpg` });
 }
 
@@ -209,7 +230,7 @@ async function draw(id, r, deps) {
     if (!res.ok) throw Object.assign(new Error(res.detail || res.reason), { reason: res.reason });
     const img = findImage(res.dir);
     if (!img) throw Object.assign(new Error(`沒有圖：${String(res.lastMessage || '').slice(0, 200)}`), { reason: 'no_output' });
-    const message = await publish(img);
+    const message = await publish(img.buf);
     logEnd(id, 'ok', null, res.ms);
     console.log(`[xiaoshuai-draw] 畫好「${r.zh}」（${Math.round(res.ms / 1000)} 秒）`);
     msgs = [{ type: 'text', text: `🎨 畫好了：${r.zh}` }, message];

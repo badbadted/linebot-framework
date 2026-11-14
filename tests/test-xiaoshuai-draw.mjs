@@ -5,7 +5,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, copyFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -157,7 +157,17 @@ await test('找圖只認真的圖檔（假 PNG、太小的不算）', () => {
   writeFileSync(join(dir, 'out', 'tiny.png'), PNG.subarray(0, 100));
   assert.equal(draw.findImage(dir), null);
   writeFileSync(join(dir, 'out', 'image.png'), PNG);
-  assert.ok(draw.findImage(dir).endsWith('image.png'));
+  assert.ok(draw.findImage(dir).path.endsWith('image.png'));
+  assert.equal(draw.findImage(dir).buf.length, PNG.length);
+});
+
+await test('out/ 裡的捷徑（symlink）不收，就算指到真的圖檔', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'xs-link-'));
+  mkdirSync(join(dir, 'out'));
+  const secret = join(mkdtempSync(join(tmpdir(), 'xs-secret-')), 'family.png');
+  writeFileSync(secret, PNG);
+  try { symlinkSync(secret, join(dir, 'out', 'image.png')); } catch { console.log('  （這台不能建 symlink，略過）'); return; }
+  assert.equal(draw.findImage(dir), null);
 });
 
 await test('Codex 參數與環境：權限設定檔、不帶 --sandbox、環境變數只有三個', () => {
