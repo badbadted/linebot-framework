@@ -54,7 +54,8 @@ export const STYLE_A = `Style baseline (keep every image consistent):
  * 小帥柴客串（使用者選「每張角落客串」）：配件照 reference_xschai-youtube——紅色三角領巾＋中間黃色星星，每張都戴；
  * 附上頻道標誌圖（assets/xschai-mark.png）當長相參考。孩子指定別的畫風時照樣客串，但畫成同一種畫風
  */
-export const CAMEO = `Cameo (always include): somewhere in a corner, small and not stealing focus, add Xiaoshuai - a friendly orange-and-cream shiba inu puppy wearing a red triangle bandana with a yellow star in the middle. The attached reference image shows what Xiaoshuai looks like; match his look and the bandana, but draw him in this image's style and do not copy the reference layout or its yellow background. If the main subject is already this shiba, do not add a second one.`;
+// 2026-11-14 使用者看過後說「客串太大」：限定約畫面高度的 1/10、塞在下方角落、可以被東西擋住一半
+export const CAMEO = `Cameo (always include, as a tiny background detail): Xiaoshuai must be very small - no taller than about one tenth of the image height - tucked into a bottom corner, far from the main subject, and may peek out from behind an object. He must never compete with or be as big as the main subject. Xiaoshuai is a friendly orange-and-cream shiba inu puppy wearing a red triangle bandana with a yellow star in the middle. The attached reference image shows what Xiaoshuai looks like; match his look and the bandana, but draw him in this image's style and do not copy the reference layout or its yellow background. If the main subject is already this shiba, do not add a second one.`;
 
 export const PROMPT = (en, style = '') => `Use your image generation tool to create exactly one image.
 
