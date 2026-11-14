@@ -86,8 +86,9 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
 說話：台灣口語、全中文（不要夾英文單字），像朋友打字，一次 1～2 句、大約 30 字，最多 60 字；不用條列、不用 Markdown；大多數時候不用 emoji，要用最多一個。
 你是 AI 角色，不用主動強調；有人認真問你是不是 AI、是什麼模型，就老實說：你是用 Anthropic 的 Claude 做的。
 界線：
-- 你只能聊天、上網查資料，以及下面寫到的收藏連結、改行程、妞揪開團、把妞揪活動分享到 bot 所在的群組（只限 TED：他說「小帥 把○○活動分享到△△群」時系統會處理，你不要說做不到）、健身教練；自己沒辦法控制設備、訂東西、設提醒。其他事請他打 /help 看指令，不要假裝做了。
+- 你只能聊天、上網查資料、畫圖和修圖，以及下面寫到的收藏連結、改行程、妞揪開團、把妞揪活動分享到 bot 所在的群組（只限 TED：他說「小帥 把○○活動分享到△△群」時系統會處理，你不要說做不到）、健身教練；自己沒辦法控制設備、訂東西、設提醒。其他事請他打 /help 看指令，不要假裝做了。
 - 家裡的事：私訊時他要控制家裡設備（開關燈、冷氣、電視、掃地機…）或問家裡設備的狀態，JSON 加 "to_luna": true、reply 空字串，系統會交給家裡的管家 Luna 處理；群組裡沒有這個功能，直接說做不到。
+- 畫圖、修圖（2026-11-14 起你會畫）：有人要你畫圖（「畫一張…」「弄成一張圖」「做成插圖」「兩個都畫」），JSON 加 "draw": {"what":"要畫什麼，用中文寫清楚，把「這個、兩個、那趟」換成對話裡具體的東西","style":"他有指定畫風才填，例如蠟筆、日系動漫"}；要你改一張圖（剛傳的照片，或你剛畫好的那張，例如「加點腹肌」「背景換成海邊」「改成Q版」），給 "draw": {"edit": true, "what":"要怎麼改"}，系統會自己挑那張圖。給 draw 時 reply 填空字串，系統會自己回「開始畫了」。一次只能畫一張：要畫兩張就先畫第一張，系統畫好後再請他叫你畫下一張。圖裡放不了文字，所以行程表、清單、時間表這類要寫字的，不要給 draw，改用行程卡片或文字回答。對話裡「🎨 畫好了：…」「🎨 修好了：…」就是你畫好貼出來的圖，有人誇或問那張圖，就是在講你畫的。
 - 講出來的話要負責：說了要做的事就要真的做到（做不到就不要答應）；不確定就說不確定，不要講得很肯定；被指出說錯了，直接承認並更正，不硬拗、不找藉口。
 - 上網查：問題需要最新或你不確定的資訊（天氣、雪況、營業時間、價格、交通、日期、附近有什麼、新聞）就查，查到的重點用一兩句講，不貼網址、不列長清單；閒聊不用查。
 - 找資料要確實：事實要有可靠來源才講，官方網站、Google 地圖、訂票或訂房頁優先，部落格、論壇只能當參考；順口說是哪裡查到的（例如「官網寫…」）。查不到、只有舊資料、或幾個來源說法不一樣，就照實說，不要挑一個當答案、不要用猜的補。
@@ -1638,6 +1639,15 @@ const photoQueries = (v) => {
   return list.length ? [...new Set(list)].slice(0, 2) : null;
 };
 
+/** AI 判斷要畫圖／修圖：{ what, style, edit }；格式不對回 null */
+export function parseDraw(d) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  const what = typeof d.what === 'string' ? d.what.replace(/\s+/g, ' ').trim().slice(0, 100) : '';
+  if (!what) return null;
+  const style = typeof d.style === 'string' ? d.style.replace(/\s+/g, ' ').trim().slice(0, 30) : '';
+  return { what, style, edit: d.edit === true };
+}
+
 /** AI 回的文字 → { reply, remember }；壞掉的 JSON 盡量救回來 */
 export function parseReply(raw, mode) {
   const { obj: o, text } = parseLlmJson(raw);
@@ -1665,12 +1675,13 @@ export function parseReply(raw, mode) {
       shops: Array.isArray(o.shops) && o.shops.length ? o.shops.slice(0, 5) : null,
       cards: Array.isArray(o.cards) && o.cards.length ? o.cards.slice(0, 5) : null,
       fitness: coach.parseFitness(o),
+      draw: parseDraw(o.draw),
     };
   }
   // 沒有完整 JSON：被點名時用救回的 reply（或 JSON 前的話）當回覆，絕不送 JSON 原文；其他情況當作不說話
   const plain = mode === 'mention' || mode === 'followup' ? text.slice(0, 400) : '';
   if (/\{\s*"/.test(String(raw || ''))) console.warn(`[xiaoshuai] AI 回覆的 JSON 不完整（${String(raw).length} 字，結尾：${JSON.stringify(String(raw).slice(-40))}）`);
-  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true };
+  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null };
 }
 
 // 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
@@ -1891,7 +1902,7 @@ async function replyMsgs(replyToken, msgs) {
  */
 async function drawIntercept({ chatId, userId, text, replyToken, dm, mention, event }) {
   const t = String(text || '').normalize('NFKC').trim();
-  if (draw.DONE_RE.test(t) && (dm || mention || /^小帥/.test(t))) {
+  if (draw.DONE_RE.test(t) && (dm || mention || /^小帥/.test(t) || draw.drawingFor(chatId))) {
     if (heldAnswers(chatId, 1).length && await deliverHeld(chatId, replyToken)) return true;
     if (!draw.isDrawing()) return false;
     try { await lineApi.reply(replyToken, '還在畫，再等一下下'); } catch { /* 過期就算了 */ }
@@ -1899,14 +1910,14 @@ async function drawIntercept({ chatId, userId, text, replyToken, dm, mention, ev
   }
   const deps = drawDeps(chatId, replyToken, dm);
   // 修圖：用回覆指著照片，或這個人上一則就是照片（5 分鐘內）；講家電的話不算（例：傳完照片接著講開冷氣）
-  const photoItem = editPhoto(chatId, userId, event, t);
+  const photoItem = editPhoto(chatId, userId, event?.message?.quotedMessageId, t);
   if (photoItem && await draw.handleEdit({ chatId, userId, text, dm, mention, photo: { load: () => loadPhoto(photoItem.imageId) } }, deps)) return true;
   return draw.handle({ chatId, userId, text, dm, mention }, deps);
 }
 const EDIT_PHOTO_MS = 5 * 60_000;
-function editPhoto(chatId, userId, event, t) {
+function editPhoto(chatId, userId, quoted, t) {
   const buf = brain?._state(chatId)?.buf || [];
-  const quotedId = event?.message?.quotedMessageId ? String(event.message.quotedMessageId) : null;
+  const quotedId = quoted ? String(quoted) : null;
   if (quotedId) return buf.find(x => x.imageId === quotedId) || null;
   if (HOME_RE.test(t)) return null;
   const mine = buf.filter(x => !x.self && x.userId === userId && x.text !== t);
@@ -1917,12 +1928,39 @@ async function loadPhoto(imageId) {
   const r = await lineApi.getContent(imageId, { maxBytes: draw.PHOTO_MAX_BYTES });
   return r?.buffer || null;
 }
+/**
+ * 聊天大腦判斷要畫圖／修圖（parsed.draw）→ 交給 draw.js；回 { replied: true } 表示這則已經回了（「開始畫了」或忙碌、上限的話）
+ * 修哪張：回覆指著的照片、這個人剛傳的照片，都沒有就用小帥在這個聊天剛畫好的那張
+ */
+async function brainDraw(chatId, parsed, trigger, job) {
+  const d = parsed?.draw;
+  if (!d) return null;
+  const dm = !!job.dm;
+  const userId = trigger?.userId || (dm ? chatId : '');
+  const deps = drawDeps(chatId, job.replyToken, dm);
+  console.log(`[xiaoshuai] ${chatId.slice(0, 8)} AI 判斷要${d.edit ? '修圖' : '畫圖'}：${d.what}${d.style ? `（${d.style}）` : ''}`);
+  if (d.edit) {
+    const item = editPhoto(chatId, userId, trigger?.quotedId, String(trigger?.text || ''));
+    const photo = item ? { load: () => loadPhoto(item.imageId) } : draw.lastDrawing(chatId);
+    await draw.startEdit({ chatId, userId, dm, what: d.what, photo }, deps);
+  } else {
+    await draw.startDraw({ chatId, userId, dm, ask: d.style ? `用${d.style}畫${d.what}` : d.what }, deps);
+  }
+  return { replied: true };
+}
 function drawDeps(chatId, replyToken, dm) {
+  // 小帥說的「開始畫了」「畫好了」都寫進對話紀錄，之後聊天大腦才接得上（2026-11-14：原本沒記，小帥說畫圖是「系統」做的）
+  const said = (msgs, res) => {
+    const text = msgs.filter(m => m?.type === 'text').map(m => m.text).join(' ');
+    if (!text) return;
+    brain?.observe(chatId, { name: '小帥', text, self: true });
+    try { rememberSent(chatId, res, text); } catch { /* 記不起來不影響 */ }
+  };
   return {
-    reply: (msgs) => replyMsgs(replyToken, msgs),
+    reply: async (msgs) => { const res = await replyMsgs(replyToken, msgs); said(msgs, res); return res; },
     deliver: async (msgs) => {
       if (dm) {
-        try { await lineApi.push(chatId, msgs); } catch (err) { console.warn(`[xiaoshuai-draw] 推播失敗，改排進下一句：${err.message}`); holdAnswer(chatId, msgs[0].text, msgs.slice(1)); }
+        try { const res = await lineApi.push(chatId, msgs); said(msgs, res); } catch (err) { console.warn(`[xiaoshuai-draw] 推播失敗，改排進下一句：${err.message}`); holdAnswer(chatId, msgs[0].text, msgs.slice(1)); }
       } else holdAnswer(chatId, msgs[0].text, msgs.slice(1));
     },
     notifyAdmin: async (text) => {
@@ -2309,6 +2347,8 @@ async function thinkInner(chatId, job) {
       job.toMe = true;
       // 第二段：是在接小帥的話 → 跟被叫一樣，用 Sonnet 認真回，並重開視窗
       const parsed = await ask(chatId, 'followup', { trigger, transcript });
+      const dr = await brainDraw(chatId, parsed, trigger, job);
+      if (dr) return { ...dr, asMention: true };
       const extra = handleSocial(parsed) + await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) + handleKb(chatId, parsed); // 先跑：可能會清掉 parsed.reply
       guardReply(chatId, parsed);
       const reply = (parsed.reply + extra).trim();
@@ -2345,6 +2385,7 @@ async function thinkInner(chatId, job) {
   const parsed = await ask(chatId, mode, { trigger, transcript, dm: !!job.dm });
   // 私訊講到家裡設備：不回，回覆留給 Luna
   if (job.dm && parsed.toLuna) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 私訊：家裡的事，交給 Luna`); return { replied: false, handoff: true }; }
+  if (mode === 'mention') { const dr = await brainDraw(chatId, parsed, trigger, job); if (dr) return dr; }
   const extra = mode === 'mention' ? handleSocial(parsed) + await handleTrip(chatId, parsed, trigger) + await handleLinks(chatId, parsed, trigger) + await handleNj(chatId, parsed, trigger) + await handleFitness(chatId, parsed, trigger) + await handlePhoto(chatId, parsed, trigger) + await handleCards(chatId, parsed) + handleKb(chatId, parsed) : ''; // 先跑：可能會清掉 parsed.reply
   guardReply(chatId, parsed);
   const reply = (parsed.reply + extra).trim();

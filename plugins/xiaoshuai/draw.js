@@ -39,7 +39,8 @@ const LINE_PREVIEW_MAX = 1_000_000;
 
 // 「小帥畫…」「幫我畫…」「/畫 …」；畫面、畫質、計畫這類詞不算
 export const DRAW_RE = /^(?:\/畫\s*|(?:(?:嘿|欸|喂)?\s*小帥\s*[,，、!！~～]*\s*)?(?:(?:可以|能不能|能|請|麻煩)\s*)?(?:(?:幫我|幫忙|替我|給我)\s*)?(?<how>用\s*[^，,。!！?？畫]{1,12}?\s*)?畫(?![面質布家廊展風板筆圖畫好完])\s*(?:一下\s*)?)(?<what>.+)$/s;
-export const DONE_RE = /^(?:小帥\s*[,，、]?\s*)?(?:圖\s*)?畫好了?(?:嗎|沒|沒有)?\s*[?？!！~～。]*$/;
+// 問進度：畫好了嗎、修好了沒、好了沒（光一個「好」不算，那是在回答別的事）
+export const DONE_RE = /^(?:小帥\s*[,，、]?\s*)?(?:圖\s*)?(?:畫好了?|畫完了?|修好了?|好了)(?:嗎|沒|沒有)?\s*[?？!！~～。]*$/;
 
 /**
  * 畫風基準（使用者 2026-11-14 從 5 組對照選 A 水彩繪本，對照圖在 共用\AI產出\小帥畫圖\畫風對照\）：
@@ -284,8 +285,25 @@ export async function publish(buf) {
     await convert(src, small, 480, 70);
     if (!existsSync(big) || !existsSync(small) || statSync(small).size > LINE_PREVIEW_MAX) throw new Error('轉檔失敗');
   } finally { rmSync(tmp, { recursive: true, force: true }); }
-  return shot.imageMessage({ url: `${shot.PUBLIC_BASE}/public/drawings/${name}.jpg`, previewUrl: `${shot.PUBLIC_BASE}/public/drawings/${name}-p.jpg` });
+  return { message: shot.imageMessage({ url: `${shot.PUBLIC_BASE}/public/drawings/${name}.jpg`, previewUrl: `${shot.PUBLIC_BASE}/public/drawings/${name}-p.jpg` }), file: big };
 }
+
+/**
+ * 每個聊天最後畫好／修好的那張（2026-11-14）：讓「加點腹肌」「改成藍色」這類接著改的話能拿小帥剛畫好的圖來修。
+ * 只留在記憶體，bot 重開就沒了；超過 LAST_MS 不算「剛畫好」
+ */
+const LAST_MS = 60 * 60_000;
+const lastOut = new Map(); // chatId → { file, at, zh }
+export function lastDrawing(chatId, now = Date.now()) {
+  const r = lastOut.get(chatId);
+  if (!r || now - r.at > LAST_MS || !existsSync(r.file)) return null;
+  return { zh: r.zh, load: async () => readFileSync(r.file) };
+}
+/** 測試用 */
+export function _setLast(chatId, file, zh = '那張圖', at = Date.now()) { lastOut.set(chatId, { file, at, zh }); }
+let currentChat = null; // 正在幫哪個聊天畫
+/** 這個聊天是不是正在畫（「好了沒」在群組裡沒叫小帥也要能問進度） */
+export const drawingFor = (chatId) => isDrawing() && currentChat === chatId;
 
 /**
  * 處理一句話
@@ -301,15 +319,25 @@ export async function handle({ chatId, userId, text, dm, mention }, deps) {
   if (!dm && !mention && !t.startsWith('/畫')) return false;
   const what = m.groups.what.trim().slice(0, DESC_MAX);
   if (!what || /^[?？!！~～。.]+$/.test(what)) { await deps.reply([{ type: 'text', text: '要小帥畫什麼呢？例如「小帥畫一隻戴帽子的恐龍」' }]); return true; }
+  // 「用蠟筆畫…」的畫風也要給改寫看
+  return startDraw({ chatId, userId, dm, ask: (m.groups.how ? `${m.groups.how.trim()}畫${what}` : what) }, deps);
+}
+
+/**
+ * 開始畫（固定句型與聊天大腦判斷出來的都走這裡）
+ * @param o.ask 要畫什麼的中文描述（可含畫風），一樣先經 Haiku 改寫、過濾才給 Codex
+ */
+export async function startDraw({ chatId, userId, dm, ask }, deps) {
+  ask = String(ask || '').trim().slice(0, DESC_MAX);
+  if (!ask) { await deps.reply([{ type: 'text', text: '要小帥畫什麼呢？例如「小帥畫一隻戴帽子的恐龍」' }]); return true; }
   if (isDrawing()) { await deps.reply([{ type: 'text', text: friendly('busy') }]); return true; }
   const u = usage(userId);
   if (u.family >= FAMILY_PER_DAY) { await deps.reply([{ type: 'text', text: `今天全家已經畫了 ${FAMILY_PER_DAY} 張，小帥的畫筆要休息了，明天再畫` }]); return true; }
   if (u.user >= USER_PER_DAY) { await deps.reply([{ type: 'text', text: `你今天已經畫了 ${USER_PER_DAY} 張囉，明天再來找小帥畫` }]); return true; }
 
   pending = true;
+  currentChat = chatId;
   let r = null;
-  // 「用蠟筆畫…」的畫風也要給改寫看
-  const ask = (m.groups.how ? `${m.groups.how.trim()}畫${what}` : what).slice(0, DESC_MAX);
   try { r = await rewrite(ask); } catch (err) { console.warn(`[xiaoshuai-draw] 改寫失敗：${err.message}`); }
   if (!r || !r.ok) {
     pending = false;
@@ -321,7 +349,7 @@ export async function handle({ chatId, userId, text, dm, mention }, deps) {
   await deps.reply([{ type: 'text', text: `好，小帥開始畫「${r.zh}」，大約 1～3 分鐘${dm ? '，畫好直接傳給你' : '，畫好會在下一句話時貼出來（可以打「畫好了嗎」）'}` }]).catch(() => {});
   console.log(`[xiaoshuai-draw] ${chatId.slice(0, 8)} 開始畫「${r.zh}」：${r.en}${r.style ? `（畫風：${r.style}）` : ""}`);
   // 背景畫，不擋這則訊息
-  draw(id, r, deps).catch((err) => console.warn(`[xiaoshuai-draw] 背景工作失敗：${err.message}`)).finally(() => { pending = false; });
+  draw(id, r, deps, { chatId }).catch((err) => console.warn(`[xiaoshuai-draw] 背景工作失敗：${err.message}`)).finally(() => { pending = false; });
   return true;
 }
 
@@ -333,12 +361,20 @@ export async function handleEdit({ chatId, userId, text, dm, mention, photo }, d
   const t = String(text || '').normalize('NFKC').trim();
   if (!photo || (!dm && !mention) || !EDIT_HINT_RE.test(t)) return false;
   const what = t.replace(/^(?:(?:嘿|欸|喂)?\s*小帥\s*[,，、!！~～]*\s*)/, '').slice(0, DESC_MAX);
+  return startEdit({ chatId, userId, dm, what, photo }, deps);
+}
+
+/** 開始修圖（固定句型與聊天大腦判斷出來的都走這裡）；photo＝{ load() }，可以是剛傳的照片或小帥剛畫好的那張 */
+export async function startEdit({ chatId, userId, dm, what, photo }, deps) {
+  what = String(what || '').trim().slice(0, DESC_MAX);
+  if (!photo) { await deps.reply([{ type: 'text', text: '要改哪一張呢？用 LINE 的「回覆」指著那張照片再跟我說一次' }]); return true; }
   if (isDrawing()) { await deps.reply([{ type: 'text', text: friendly('busy') }]); return true; }
   const u = usage(userId, Date.now(), 'edit');
   if (u.family >= EDIT_FAMILY_PER_DAY) { await deps.reply([{ type: 'text', text: `今天全家已經修了 ${EDIT_FAMILY_PER_DAY} 張圖，明天再修` }]); return true; }
   if (u.user >= EDIT_USER_PER_DAY) { await deps.reply([{ type: 'text', text: `你今天已經修了 ${EDIT_USER_PER_DAY} 張圖囉，明天再來` }]); return true; }
 
   pending = true;
+  currentChat = chatId;
   let r = null;
   let buf = null;
   try {
@@ -360,7 +396,7 @@ export async function handleEdit({ chatId, userId, text, dm, mention, photo }, d
     if (!existsSync(p)) throw new Error('照片轉檔失敗');
     return [p];
   };
-  draw(id, r, deps, { kind: 'edit', prompt: PROMPT_EDIT(r.en), prepare })
+  draw(id, r, deps, { kind: 'edit', prompt: PROMPT_EDIT(r.en), prepare, chatId })
     .catch((err) => console.warn(`[xiaoshuai-draw] 背景工作失敗：${err.message}`)).finally(() => { pending = false; });
   return true;
 }
@@ -375,14 +411,15 @@ async function cameoPrepare(dir) {
   return [p];
 }
 
-async function draw(id, r, deps, { kind = 'draw', prompt = PROMPT(r.en, r.style), prepare = cameoPrepare } = {}) {
+async function draw(id, r, deps, { kind = 'draw', prompt = PROMPT(r.en, r.style), prepare = cameoPrepare, chatId = null } = {}) {
   const res = await runCodex({ kind, prompt, prepare });
   let msgs;
   try {
     if (!res.ok) throw Object.assign(new Error(res.detail || res.reason), { reason: res.reason });
     const img = findImage(res.dir);
     if (!img) throw Object.assign(new Error(`沒有圖：${String(res.lastMessage || '').slice(0, 200)}`), { reason: 'no_output' });
-    const message = await publish(img.buf);
+    const { message, file } = await publish(img.buf);
+    if (chatId) lastOut.set(chatId, { file, at: Date.now(), zh: r.zh });
     logEnd(id, 'ok', null, res.ms);
     console.log(`[xiaoshuai-draw] 畫好「${r.zh}」（${Math.round(res.ms / 1000)} 秒）`);
     msgs = [{ type: 'text', text: `🎨 ${kind === 'edit' ? '修好了' : '畫好了'}：${r.zh}` }, message];

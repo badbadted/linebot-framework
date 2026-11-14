@@ -62,6 +62,17 @@ await test('觸發句：小帥畫、幫我畫、/畫；畫面、計畫、畫好�
   for (const t of ['畫面怎麼卡住了', '計畫好了嗎', '小帥畫好了嗎', '電視畫質不好', '我今天去上畫畫課']) assert.ok(!draw.DRAW_RE.test(t), t);
   assert.ok(draw.DONE_RE.test('畫好了嗎'));
   assert.ok(draw.DONE_RE.test('小帥 畫好了沒'));
+  for (const t of ['好了沒', '修好了嗎', '畫完了嗎', '好了嗎？']) assert.ok(draw.DONE_RE.test(t), t);
+  for (const t of ['好', '好啊', '好喔', '好了我知道']) assert.ok(!draw.DONE_RE.test(t), t);
+});
+
+await test('聊天大腦的 draw 欄位：要有 what，style、edit 照填，格式不對不算', async () => {
+  const { parseDraw, parseReply } = await import('../plugins/xiaoshuai/index.js');
+  assert.deepEqual(parseDraw({ what: ' 2026 聖誕\n滑雪旅行 ', style: '蠟筆' }), { what: '2026 聖誕 滑雪旅行', style: '蠟筆', edit: false });
+  assert.deepEqual(parseDraw({ what: '加點腹肌', edit: true }), { what: '加點腹肌', style: '', edit: true });
+  for (const bad of [null, 'x', [], {}, { what: '' }, { what: 3 }]) assert.equal(parseDraw(bad), null);
+  assert.equal(parseReply('{"reply":"","draw":{"what":"恐龍"}}', 'mention').draw.what, '恐龍');
+  assert.equal(parseReply('{"reply":"嗨"}', 'mention').draw, null);
 });
 
 await test('英文描述過濾：只剩字母數字，像指令的字拿掉', () => {
@@ -295,6 +306,44 @@ await test('清工作目錄只清 codex-jobs 底下', () => {
   const outside = mkdtempSync(join(tmpdir(), 'keep-'));
   codex.cleanupDir(outside);
   assert.equal(existsSync(outside), true);
+});
+
+await test('接著修小帥剛畫好的那張：記住每個聊天最後一張，修好也會更新；超過一小時不算', async () => {
+  draw._reset(); runResult = 'ok';
+  const shots = mkdtempSync(join(tmpdir(), 'xs-last-'));
+  draw.configure({
+    dir: shots,
+    prep: async (src, dst) => copyFileSync(src, dst),
+    run: async ({ prompt, prepare }) => {
+      const dir = mkdtempSync(join(process.env.XIAOSHUAI_CODEX_JOBS, 'job-'));
+      mkdirSync(join(dir, 'out'));
+      await prepare(dir);
+      writeFileSync(join(dir, 'out', 'image.png'), PNG);
+      return { ok: true, dir, ms: 1000 };
+    },
+  });
+  assert.equal(draw.lastDrawing('Cg'), null);
+  llmReply = '{"ok":true,"en":"a cute dinosaur wearing a red hat","zh":"戴紅帽子的恐龍","style":""}';
+  await ask('小帥畫恐龍', { dm: false, mention: true, chatId: 'Cg', userId: 'Ug1' });
+  const last = draw.lastDrawing('Cg');
+  assert.equal(last.zh, '戴紅帽子的恐龍');
+  assert.equal((await last.load()).length, PNG.length);
+  assert.equal(draw.lastDrawing('Cother'), null);
+  await new Promise(r => setTimeout(r, 20));
+  llmReply = '{"ok":true,"en":"add visible abs to the dinosaur","zh":"加點腹肌"}';
+  const replies = []; let delivered = null; let done;
+  const p = new Promise(r => { done = r; });
+  await draw.startEdit({ chatId: 'Cg', userId: 'Ug1', dm: false, what: '加點腹肌', photo: last }, { reply: async (m) => replies.push(m), deliver: async (m) => { delivered = m; done(); } });
+  await Promise.race([p, new Promise(r => setTimeout(r, 2000))]);
+  assert.match(replies[0][0].text, /開始修圖「加點腹肌」/);
+  assert.match(delivered[0].text, /修好了：加點腹肌/);
+  assert.equal(draw.lastDrawing('Cg').zh, '加點腹肌');
+  assert.equal(draw.lastDrawing('Cg', Date.now() + 61 * 60_000), null);
+  const none = [];
+  await draw.startEdit({ chatId: 'Cx', userId: 'Ux', dm: false, what: '加腹肌', photo: null }, { reply: async (m) => none.push(m), deliver: async () => {} });
+  assert.match(none[0][0].text, /要改哪一張/);
+  draw.configure({ dir: SHOTS });
+  llmReply = '{"ok":true,"en":"a cute dinosaur wearing a red hat","zh":"戴紅帽子的恐龍"}';
 });
 
 console.log(`\n${pass} 項通過`);
