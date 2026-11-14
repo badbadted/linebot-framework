@@ -88,7 +88,7 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
 界線：
 - 你只能聊天、上網查資料、畫圖和修圖，以及下面寫到的收藏連結、改行程、妞揪開團、把妞揪活動分享到 bot 所在的群組（只限 TED：他說「小帥 把○○活動分享到△△群」時系統會處理，你不要說做不到）、健身教練；自己沒辦法控制設備、訂東西、設提醒。其他事請他打 /help 看指令，不要假裝做了。
 - 家裡的事：私訊時他要控制家裡設備（開關燈、冷氣、電視、掃地機…）或問家裡設備的狀態，JSON 加 "to_luna": true、reply 空字串，系統會交給家裡的管家 Luna 處理；群組裡沒有這個功能，直接說做不到。
-- 畫圖、修圖（2026-11-14 起你會畫）：有人要你畫圖（「畫一張…」「弄成一張圖」「做成插圖」「兩個都畫」），JSON 加 "draw": {"what":"要畫什麼，用中文寫清楚，把「這個、兩個、那趟」換成對話裡具體的東西","style":"他有指定畫風才填，例如蠟筆、日系動漫"}；要你改一張圖（剛傳的照片，或你剛畫好的那張，例如「加點腹肌」「背景換成海邊」「改成Q版」），給 "draw": {"edit": true, "what":"要怎麼改"}，系統會自己挑那張圖。給 draw 時 reply 填空字串，系統會自己回「開始畫了」。一次只能畫一張：要畫兩張就先畫第一張，系統畫好後再請他叫你畫下一張。圖裡放不了文字，所以行程表、清單、時間表這類要寫字的，不要給 draw，改用行程卡片或文字回答。對話裡「🎨 畫好了：…」「🎨 修好了：…」就是你畫好貼出來的圖，有人誇或問那張圖，就是在講你畫的。
+- 畫圖、修圖（2026-11-14 起你會畫）：有人要你畫圖（「畫一張…」「弄成一張圖」「做成插圖」「兩個都畫」），JSON 加 "draw": {"what":"要畫什麼，用中文寫清楚，把「這個、兩個、那趟」換成對話裡具體的東西","style":"他有指定畫風才填，例如蠟筆、日系動漫"}；要你改一張圖（剛傳的照片，或你剛畫好的那張，例如「加點腹肌」「背景換成海邊」「改成Q版」），給 "draw": {"edit": true, "what":"要怎麼改"}，系統會自己挑那張圖。給 draw 時 reply 填空字串，系統會自己回「開始畫了」。一次只能畫一張：要畫兩張就先畫第一張，系統畫好後再請他叫你畫下一張。行程圖：有人要把這群綁的行程畫成圖（「畫一下我們的滑雪行程」「把行程弄成一張圖」），給 "draw": {"trip": "哪一份行程（標題或年份，例如 2026 聖誕滑雪旅行）"}，系統會把行程內容交給畫圖的排成一張有字的行程圖；這群綁了不只一份、又看不出是哪一份，才先問「是哪一份行程」，不要問要插圖還是卡片。清單、時間表這類不是行程、又要寫一堆字的，不要給 draw，用文字回答。對話裡「🎨 畫好了：…」「🎨 修好了：…」就是你畫好貼出來的圖，有人誇或問那張圖，就是在講你畫的。
 - 不確定就先問（使用者 2026-11-14 定）：要不要畫、畫什麼、改哪一張，只要有一點不確定就不要給 draw，reply 用一句話問清楚，等他回了再畫。例如：分不清他是在聊天還是要你畫（「這個好可愛喔」）、「兩個都畫」「那個」指的是哪些沒辦法從對話確定、不知道要畫新的一張還是改你剛畫好的那張、要改的圖不只一張、他講的畫風聽不懂。問的時候把你猜的選項講出來（例如「你是要我重畫一張，還是改剛剛那隻恐龍？」）。意思清楚就直接畫，不要每次都問；他回答之後，照他的回答給 draw。
 - 講出來的話要負責：說了要做的事就要真的做到（做不到就不要答應）；不確定就說不確定，不要講得很肯定；被指出說錯了，直接承認並更正，不硬拗、不找藉口。
 - 上網查：問題需要最新或你不確定的資訊（天氣、雪況、營業時間、價格、交通、日期、附近有什麼、新聞）就查，查到的重點用一兩句講，不貼網址、不列長清單；閒聊不用查。
@@ -1644,9 +1644,10 @@ const photoQueries = (v) => {
 export function parseDraw(d) {
   if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
   const what = typeof d.what === 'string' ? d.what.replace(/\s+/g, ' ').trim().slice(0, 100) : '';
-  if (!what) return null;
+  if (!what && !d.trip) return null;
   const style = typeof d.style === 'string' ? d.style.replace(/\s+/g, ' ').trim().slice(0, 30) : '';
-  return { what, style, edit: d.edit === true };
+  const trip = typeof d.trip === 'string' ? d.trip.replace(/\s+/g, ' ').trim().slice(0, 40) : (d.trip === true ? '這群的行程' : '');
+  return { what: what || (trip ? '行程圖' : ''), style, edit: d.edit === true, trip };
 }
 
 /** AI 回的文字 → { reply, remember }；壞掉的 JSON 盡量救回來 */
@@ -1942,6 +1943,18 @@ async function brainDraw(chatId, parsed, trigger, job) {
   if (!dm && !userId) { console.warn(`[xiaoshuai] ${chatId.slice(0, 8)} AI 判斷要畫圖，但不知道是誰說的，不畫`); return null; }
   const deps = drawDeps(chatId, job.replyToken, dm);
   console.log(`[xiaoshuai] ${chatId.slice(0, 8)} AI 判斷要${d.edit ? '修圖' : '畫圖'}：${d.what}${d.style ? `（${d.style}）` : ''}`);
+  if (d.trip) {
+    const names = tripsOf(chatId);
+    if (!names.length) { await deps.reply([{ type: 'text', text: '這裡還沒有綁行程，小帥不知道要畫哪一份' }]); return { replied: true }; }
+    const name = tripForDraw(names, `${d.trip} ${trigger?.text || ''}`);
+    if (!name) {
+      const titles = names.map(n => `「${trip.info(n)?.title || n}」`).join('還是');
+      await deps.reply([{ type: 'text', text: `要畫哪一份行程？${titles}` }]);
+      return { replied: true };
+    }
+    await draw.startTrip({ chatId, userId, dm, name }, deps);
+    return { replied: true };
+  }
   if (d.edit) {
     const item = editPhoto(chatId, userId, trigger?.quotedId, String(trigger?.text || ''));
     const photo = item ? { load: () => loadPhoto(item.imageId) } : draw.lastDrawing(chatId);
@@ -1950,6 +1963,12 @@ async function brainDraw(chatId, parsed, trigger, job) {
     await draw.startDraw({ chatId, userId, dm, ask: d.style ? `用${d.style}畫${d.what}` : d.what }, deps);
   }
   return { replied: true };
+}
+/** 行程圖要畫哪一份：只綁一份就是它；多份要有線索（年份、月份、標題用字）才算，猜的不算（要問） */
+export function tripForDraw(names, hint, infoOf = (n) => trip.info(n)) {
+  const cands = names.map(n => ({ name: n, title: infoOf(n)?.title || n, start: infoOf(n)?.start || null, outline: '' }));
+  const r = pickTripDetail(hint, cands);
+  return r && (r.how === 'only' || r.how === 'match') ? r.name : null;
 }
 function drawDeps(chatId, replyToken, dm) {
   // 小帥說的「開始畫了」「畫好了」都寫進對話紀錄，之後聊天大腦才接得上（2026-11-14：原本沒記，小帥說畫圖是「系統」做的）

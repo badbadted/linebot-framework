@@ -22,6 +22,7 @@ import { join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import * as codex from './codex-run.js';
 import * as shot from './shot.js';
+import * as tripimg from './tripimg.js';
 import { parseLlmJson } from '../../src/utils/llm-json.js';
 
 export const FAMILY_PER_DAY = +(process.env.XIAOSHUAI_DRAW_FAMILY_PER_DAY || 10);
@@ -117,6 +118,7 @@ export const KEEP_DAYS = +(process.env.XIAOSHUAI_DRAW_KEEP_DAYS || 30);
 export const DRAW_DIR = join(shot.SHOT_DIR, '..', 'drawings');
 let outDir = DRAW_DIR;
 let runCodex = (o) => codex.run(o);
+let renderTrip = (dir) => tripimg.render(dir);
 let pending = false; // 從改寫描述開始就算在畫（codex.isBusy() 要等 Codex 真的啟動才會是 true）
 export const isDrawing = () => pending || codex.isBusy();
 let authNoticeAt = 0;
@@ -132,7 +134,8 @@ export function init({ db: d, llm: l } = {}) {
   if (db) { try { db.exec("ALTER TABLE draw_log ADD COLUMN kind TEXT DEFAULT 'draw'"); } catch { /* 已經有了 */ } }
 }
 /** 測試用 */
-export function configure({ llm: l, convert: c, dir, run, prep } = {}) {
+export function configure({ llm: l, convert: c, dir, run, prep, render } = {}) {
+  if (render) renderTrip = render;
   if (l) llm = l;
   if (prep) photoPrep = prep;
   if (c) convert = c;
@@ -411,6 +414,34 @@ export async function startEdit({ chatId, userId, dm, what, photo }, deps) {
   return true;
 }
 
+/**
+ * 行程圖（tripimg.js）：把群組綁的行程（只留行程本身，不含人名）交給 Codex 設計成一張圖。次數算在畫圖裡
+ * @param o.name 行程代號（trip_binds 的 name），呼叫端已確定是哪一份
+ */
+export async function startTrip({ chatId, userId, dm, name }, deps) {
+  if (isDrawing()) { await deps.reply([{ type: 'text', text: friendly('busy') }]); return true; }
+  const u = usage(userId);
+  if (u.family >= FAMILY_PER_DAY) { await deps.reply([{ type: 'text', text: `今天全家已經畫了 ${FAMILY_PER_DAY} 張，小帥的畫筆要休息了，明天再畫` }]); return true; }
+  if (u.user >= USER_PER_DAY) { await deps.reply([{ type: 'text', text: `你今天已經畫了 ${USER_PER_DAY} 張囉，明天再來找小帥畫` }]); return true; }
+  const data = tripimg.tripData(name);
+  if (!data) { await deps.reply([{ type: 'text', text: '小帥讀不到這份行程，等一下再試' }]); return true; }
+  pending = true;
+  currentChat = chatId;
+  const zh = `${data.title} 行程圖`.slice(0, 40);
+  const id = logStart(chatId, userId, zh);
+  await deps.reply([{ type: 'text', text: `好，小帥把「${data.title}」的行程畫成一張圖，大約 2～3 分鐘${dm ? '，畫好直接傳給你' : '，畫好會在下一句話時貼出來（可以打「畫好了嗎」）'}` }]).catch(() => {});
+  console.log(`[xiaoshuai-draw] ${chatId.slice(0, 8)} 開始畫行程圖「${data.title}」（${data.days.length} 天）`);
+  const prepare = async (dir) => {
+    const inDir = join(dir, 'in');
+    mkdirSync(inDir, { recursive: true });
+    writeFileSync(join(inDir, 'trip.json'), JSON.stringify(data, null, 1));
+    return cameoPrepare(dir);
+  };
+  draw(id, { zh, en: '' }, deps, { kind: 'trip', prompt: tripimg.PROMPT({ style: STYLE_A, fullBleed: FULL_BLEED, cameo: CAMEO }), prepare, chatId, timeoutMs: 6 * 60_000 })
+    .catch((err) => console.warn(`[xiaoshuai-draw] 背景工作失敗：${err.message}`)).finally(() => { pending = false; });
+  return true;
+}
+
 /** 畫圖：把小帥柴參考圖放進這次的資料夾給 Codex 看（參考圖不見就照樣畫，只是沒參考） */
 async function cameoPrepare(dir) {
   if (!existsSync(CAMEO_REF)) { console.warn('[xiaoshuai-draw] 找不到小帥柴參考圖，這張不附'); return []; }
@@ -421,12 +452,19 @@ async function cameoPrepare(dir) {
   return [p];
 }
 
-async function draw(id, r, deps, { kind = 'draw', prompt = PROMPT(r.en, r.style), prepare = cameoPrepare, chatId = null } = {}) {
-  const res = await runCodex({ kind, prompt, prepare });
+async function draw(id, r, deps, { kind = 'draw', prompt = PROMPT(r.en, r.style), prepare = cameoPrepare, chatId = null, timeoutMs } = {}) {
+  const res = await runCodex({ kind, prompt, prepare, ...(timeoutMs ? { timeoutMs } : {}) });
   let msgs;
   try {
     if (!res.ok) throw Object.assign(new Error(res.detail || res.reason), { reason: res.reason });
-    const img = findImage(res.dir);
+    let img;
+    if (kind === 'trip') {
+      // 行程圖：Codex 寫的排版檔由 bot 轉成 PNG（字用字型排，不會畫錯）
+      let buf = null;
+      try { buf = await renderTrip(join(res.dir, 'out')); } catch (err) { throw Object.assign(new Error(`排版轉圖失敗：${err.message}`), { reason: 'no_output' }); }
+      if (!isPhoto(buf)) throw Object.assign(new Error('排版轉出來的不是圖'), { reason: 'no_output' });
+      img = { buf };
+    } else img = findImage(res.dir);
     if (!img) throw Object.assign(new Error(`沒有圖：${String(res.lastMessage || '').slice(0, 200)}`), { reason: 'no_output' });
     const { message, file } = await publish(img.buf);
     if (chatId) lastOut.set(chatId, { file, at: Date.now(), zh: r.zh });

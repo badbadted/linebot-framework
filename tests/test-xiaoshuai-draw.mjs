@@ -70,8 +70,9 @@ await test('聊天大腦的 draw 欄位：要有 what，style、edit 照填，�
   const { parseDraw, parseReply, PERSONA } = await import('../plugins/xiaoshuai/index.js');
   assert.ok(PERSONA.includes('畫圖和修圖') && PERSONA.includes('"draw"'), '聊天規則要寫會畫圖');
   assert.ok(PERSONA.includes('不確定就先問'), '聊天規則要寫不確定先問');
-  assert.deepEqual(parseDraw({ what: ' 2026 聖誕\n滑雪旅行 ', style: '蠟筆' }), { what: '2026 聖誕 滑雪旅行', style: '蠟筆', edit: false });
-  assert.deepEqual(parseDraw({ what: '加點腹肌', edit: true }), { what: '加點腹肌', style: '', edit: true });
+  assert.deepEqual(parseDraw({ what: ' 2026 聖誕\n滑雪旅行 ', style: '蠟筆' }), { what: '2026 聖誕 滑雪旅行', style: '蠟筆', edit: false, trip: '' });
+  assert.deepEqual(parseDraw({ what: '加點腹肌', edit: true }), { what: '加點腹肌', style: '', edit: true, trip: '' });
+  assert.deepEqual(parseDraw({ trip: '2026 滑雪' }), { what: '行程圖', style: '', edit: false, trip: '2026 滑雪' });
   for (const bad of [null, 'x', [], {}, { what: '' }, { what: 3 }]) assert.equal(parseDraw(bad), null);
   assert.equal(parseReply('{"reply":"","draw":{"what":"恐龍"}}', 'mention').draw.what, '恐龍');
   assert.equal(parseReply('{"reply":"嗨"}', 'mention').draw, null);
@@ -355,6 +356,95 @@ await test('接著修小帥剛畫好的那張：記住每個聊天最後一張�
   assert.match(none[0][0].text, /要改哪一張/);
   draw.configure({ dir: SHOTS });
   llmReply = '{"ok":true,"en":"a cute dinosaur wearing a red hat","zh":"戴紅帽子的恐龍"}';
+});
+
+await test('行程圖：送給 OpenAI 的只有行程本身（人名、家庭、航班分組、人數、說明細節都拿掉，長字整段不切）', async () => {
+  const tripimg = await import('../plugins/xiaoshuai/tripimg.js');
+  const repo = mkdtempSync(join(tmpdir(), 'xs-trip-'));
+  mkdirSync(join(repo, 'trips'));
+  writeFileSync(join(repo, 'trips', 'ski.json'), JSON.stringify({
+    title: '2026 聖誕滑雪旅行',
+    days: [
+      { date: '12/24（四）', glance: { d: '12/24', w: '四・平安夜', emoji: '✈️', place: '飛東京・Sanrio 旗艦店', note: '第一批出發（淇家先到）' },
+        items: [{ when: '07:00', title: '淇家出發', sub: '長榮 KHH → 成田' }, { title: '妞媽・鈞・岑出發' }, { title: 'WATERRAS ILLUMINATION 或六本木夜景超長超長超長的名字' }, { title: '晴空塔' }] },
+      { date: '12/26', glance: { d: '12/26', w: '六', place: '神樂滑雪場（請教練）', note: '晚上：新宿東京都廳光雕秀' },
+        items: [{ title: '神樂滑雪場 滑雪課程', sub: '10 大 8 小' }, { title: '新宿東京都廳光雕秀' }, { title: '共 12 大 10 小' }, { title: 'Kisarapia 摩天輪公園' }] },
+    ],
+    info: [{ title: '航班', lines: ['華航（品岑家、陳二銘家）'] }],
+  }));
+  const d = tripimg.tripData('ski', repo);
+  const all = JSON.stringify(d);
+  for (const bad of ['淇家', '妞媽', '岑', '陳二銘', '品岑', '10 大', '12 大', '長榮', '航班', '先到']) assert.ok(!all.includes(bad), bad);
+  assert.equal(d.title, '2026 聖誕滑雪旅行');
+  assert.deepEqual(d.days[0], { date: '12/24', weekday: '四・平安夜', place: '飛東京・Sanrio 旗艦店', items: ['晴空塔'], night: '' });
+  assert.equal(d.days[1].place, '神樂滑雪場（請教練）', '「教練」不算人');
+  assert.deepEqual(d.days[1].items, ['神樂滑雪場 滑雪課程', 'Kisarapia 摩天輪公園'], '晚上那項不重複、「公園」不算人');
+  assert.equal(d.days[1].night, '新宿東京都廳光雕秀');
+  assert.equal(tripimg.tripData('../etc', repo), null);
+});
+
+await test('行程圖轉 PNG 只准讀這次輸出夾裡的檔：外面的檔、捷徑、網址都擋', async () => {
+  const tripimg = await import('../plugins/xiaoshuai/tripimg.js');
+  const { pathToFileURL } = await import('node:url');
+  const { realpathSync } = await import('node:fs');
+  const out = mkdtempSync(join(tmpdir(), 'xs-out-'));
+  writeFileSync(join(out, 'index.html'), '<p>x</p>');
+  writeFileSync(join(out, 'bg.png'), PNG);
+  const secret = join(mkdtempSync(join(tmpdir(), 'xs-sec-')), 'family.jpg');
+  writeFileSync(secret, PNG);
+  const real = realpathSync(out);
+  assert.equal(tripimg.allowedFile(pathToFileURL(join(out, 'index.html')).href, real), true);
+  assert.equal(tripimg.allowedFile(pathToFileURL(join(out, 'bg.png')).href, real), true);
+  assert.equal(tripimg.allowedFile(pathToFileURL(secret).href, real), false);
+  assert.equal(tripimg.allowedFile(pathToFileURL(join(out, '..', 'x.png')).href, real), false);
+  assert.equal(tripimg.allowedFile('https://evil.example/x.png', real), false);
+  try {
+    symlinkSync(secret, join(out, 'link.png'));
+    assert.equal(tripimg.allowedFile(pathToFileURL(join(out, 'link.png')).href, real), false);
+  } catch { console.log('  （這台不能建 symlink，捷徑那項略過）'); }
+});
+
+await test('行程圖要畫哪一份：只綁一份就畫；多份有線索才畫，猜不出來回 null（要問）', async () => {
+  const { tripForDraw } = await import('../plugins/xiaoshuai/index.js');
+  const info = (n) => ({ ski: { title: '2026 聖誕滑雪旅行', start: { year: 2026, month: 12, day: 24 } }, snow: { title: '2027 東京・青森雪國之旅', start: { year: 2027, month: 1, day: 30 } } })[n];
+  assert.equal(tripForDraw(['ski'], '行程', info), 'ski');
+  assert.equal(tripForDraw(['ski', 'snow'], '2026 的滑雪行程', info), 'ski');
+  assert.equal(tripForDraw(['ski', 'snow'], '青森那趟', info), 'snow');
+  assert.equal(tripForDraw(['ski', 'snow'], '我們的行程', info), null);
+});
+
+await test('行程圖整條路：交給 Codex 的資料夾有 trip.json＋小帥參考圖，轉出的圖送回並算一張畫圖', async () => {
+  draw._reset();
+  const repo = mkdtempSync(join(tmpdir(), 'xs-trip2-'));
+  mkdirSync(join(repo, 'trips'));
+  writeFileSync(join(repo, 'trips', 'ski.json'), JSON.stringify({ title: '2026 聖誕滑雪旅行', days: [{ glance: { d: '12/26', w: '六', place: '神樂滑雪場' }, items: [{ title: '滑雪課程' }] }] }));
+  process.env.TRIP_REPO_DIR = repo;
+  let inFiles = null; let prompt = null;
+  draw.configure({
+    dir: SHOTS,
+    render: async () => PNG,
+    run: async (o) => {
+      prompt = o.prompt;
+      const dir = mkdtempSync(join(process.env.XIAOSHUAI_CODEX_JOBS, 'trip-'));
+      mkdirSync(join(dir, 'out'));
+      await o.prepare(dir);
+      const { readdirSync, readFileSync } = await import('node:fs');
+      inFiles = readdirSync(join(dir, 'in')).sort();
+      inFiles.trip = JSON.parse(readFileSync(join(dir, 'in', 'trip.json'), 'utf8'));
+      return { ok: true, dir, ms: 1000 };
+    },
+  });
+  const replies = []; let delivered = null; let done;
+  const p = new Promise(r => { done = r; });
+  await draw.startTrip({ chatId: 'Cg', userId: 'Ut1', dm: false, name: 'ski' }, { reply: async (m) => replies.push(m), deliver: async (m) => { delivered = m; done(); } });
+  await Promise.race([p, new Promise(r => setTimeout(r, 2000))]);
+  assert.match(replies[0][0].text, /把「2026 聖誕滑雪旅行」的行程畫成一張圖/);
+  assert.deepEqual([...inFiles], ['trip.json', 'xiaoshuai-reference.png']);
+  assert.equal(inFiles.trip.days[0].place, '神樂滑雪場');
+  assert.ok(prompt.includes('./in/trip.json') && prompt.includes('EXACTLY') && !prompt.includes('神樂'), '行程內容不放提示詞，只放檔案');
+  assert.match(delivered[0].text, /畫好了：2026 聖誕滑雪旅行 行程圖/);
+  assert.equal(delivered[1].type, 'image');
+  assert.equal(draw.usage('Ut1').user, 1, '算一張畫圖');
 });
 
 console.log(`\n${pass} 項通過`);

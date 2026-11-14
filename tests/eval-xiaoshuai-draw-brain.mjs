@@ -11,8 +11,9 @@ const CASES = [
   { want: 'ask', name: '要改哪一張（照片和畫好的都有）', lines: ['小美：［照片］', '小帥：🎨 畫好了：恐龍', '小美：小帥 把這張背景換掉'] },
   { want: 'draw', name: '換句話叫畫（明確）', lines: ['小美：小帥可以把一隻在月亮上釣魚的貓弄成一張圖嗎'] },
   { want: 'edit', name: '接著改剛畫好的（明確）', lines: ['阿庭：小帥 畫一隻恐龍', '小帥：🎨 畫好了：恐龍', '阿庭：小帥 幫牠加點腹肌'] },
-  { want: 'nodraw', name: '行程圖改卡片', lines: ['小美：小帥 把聖誕滑雪的行程弄成一張圖'] },
-  { want: 'nodraw', name: '畫一下行程（11-14 實測誤畫的原句）', lines: ['小美：小帥 畫一下我們2026的滑雪行程'] },
+  { want: 'trip', name: '行程弄成一張圖', lines: ['小美：小帥 把聖誕滑雪的行程弄成一張圖'] },
+  { want: 'trip', name: '畫一下行程（11-14 實測原句）', lines: ['小美：小帥 畫一下我們2026的滑雪行程'] },
+  { want: 'nodraw', name: '購物清單（要寫字、不是行程）', lines: ['小美：小帥 幫我畫一張購物清單：牛奶、雞蛋、吐司'] },
 ];
 
 const SYS = PERSONA;
@@ -25,7 +26,7 @@ for (const c of CASES) {
   });
   const j = await res.json();
   const p = parseReply(j.text || '', 'mention');
-  const got = p.draw ? (p.draw.edit ? 'edit' : 'draw') : (/[?？嗎]/.test(p.reply) ? 'ask' : 'nodraw');
+  const got = p.draw ? (p.draw.trip ? 'trip' : p.draw.edit ? 'edit' : 'draw') : (/[?？嗎]/.test(p.reply) ? 'ask' : 'nodraw');
   const ok = got === c.want || (c.want === 'nodraw' && got === 'ask');
   if (ok) pass++;
   console.log(`${ok ? 'OK ' : 'NG '} ${c.name}：想要 ${c.want}，得到 ${got}｜${p.draw ? JSON.stringify(p.draw) : ''} ${p.reply.slice(0, 80)}`);
