@@ -27,8 +27,8 @@ export const DEFAULT_TIMEOUT_MS = 4 * 60_000;
 /** 權限設定檔（TOML inline table）：給 -c 用 */
 export const PERMISSIONS = 'permissions={xsjob={extends=":workspace", filesystem={"~"="deny", "/Volumes"="deny", "~/.codex/generated_images"="read"}, network={enabled=false}}}';
 
-/** codex exec 的參數（不含提示詞以外的使用者內容） */
-export function codexArgs(dir, prompt) {
+/** codex exec 的參數；images＝要夾帶給 Codex 看的圖（修圖用，路徑由程式產生，不含使用者內容） */
+export function codexArgs(dir, prompt, images = []) {
   return [
     'exec',
     '--skip-git-repo-check', '--ephemeral', '--json',
@@ -38,6 +38,7 @@ export function codexArgs(dir, prompt) {
     '-c', 'approval_policy="never"',
     '-c', 'web_search="disabled"',
     '--disable', 'plugins',
+    ...images.flatMap((p) => ['-i', p]),
     '--', prompt,
   ];
 }
@@ -70,14 +71,16 @@ export function configure({ spawn: s } = {}) { if (s) spawnImpl = s; }
  * @returns {Promise<{ok:boolean, dir:string, reason?:string, detail?:string, lastMessage?:string, ms:number}>}
  *   reason：busy｜timeout｜quota｜auth｜blocked｜error
  */
-export async function run({ kind = 'job', prompt, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+export async function run({ kind = 'job', prompt, timeoutMs = DEFAULT_TIMEOUT_MS, prepare = null }) {
   if (busy) return { ok: false, reason: 'busy', dir: null, ms: 0 };
   busy = true;
   const t0 = Date.now();
   const dir = join(JOBS_DIR, `${kind}-${randomBytes(8).toString('hex')}`);
   try {
     mkdirSync(join(dir, 'out'), { recursive: true });
-    const r = await runChild(dir, prompt, timeoutMs);
+    // prepare(dir)：把要給 Codex 的檔（例如修圖的照片）放進這次的資料夾，回要夾帶的圖路徑
+    const images = prepare ? (await prepare(dir)) || [] : [];
+    const r = await runChild(dir, prompt, timeoutMs, images);
     return { ...r, dir, ms: Date.now() - t0 };
   } catch (err) {
     return { ok: false, reason: 'error', detail: err.message, dir, ms: Date.now() - t0 };
@@ -92,11 +95,11 @@ export function cleanupDir(dir) {
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* 下次再清 */ }
 }
 
-function runChild(dir, prompt, timeoutMs) {
+function runChild(dir, prompt, timeoutMs, images = []) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawnImpl(CODEX_BIN, codexArgs(dir, prompt), { cwd: dir, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      child = spawnImpl(CODEX_BIN, codexArgs(dir, prompt, images), { cwd: dir, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     } catch (err) {
       resolve({ ok: false, reason: 'error', detail: `啟動 Codex 失敗：${err.message}` });
       return;

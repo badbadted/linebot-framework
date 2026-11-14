@@ -1889,7 +1889,7 @@ async function replyMsgs(replyToken, msgs) {
  * 小帥畫圖（2026-11-14，draw.js）：管理員私訊、開了小帥的群組。
  * 畫好：私訊直接推播；群組排進「下一句話時附上」。「畫好了嗎」→ 有畫好的就貼、還在畫就說還在畫
  */
-async function drawIntercept({ chatId, userId, text, replyToken, dm, mention }) {
+async function drawIntercept({ chatId, userId, text, replyToken, dm, mention, event }) {
   const t = String(text || '').normalize('NFKC').trim();
   if (draw.DONE_RE.test(t) && (dm || mention || /^小帥/.test(t))) {
     if (heldAnswers(chatId, 1).length && await deliverHeld(chatId, replyToken)) return true;
@@ -1897,7 +1897,28 @@ async function drawIntercept({ chatId, userId, text, replyToken, dm, mention }) 
     try { await lineApi.reply(replyToken, '還在畫，再等一下下'); } catch { /* 過期就算了 */ }
     return true;
   }
-  return draw.handle({ chatId, userId, text, dm, mention }, {
+  const deps = drawDeps(chatId, replyToken, dm);
+  // 修圖：用回覆指著照片，或這個人上一則就是照片（5 分鐘內）；講家電的話不算（例：傳完照片接著講開冷氣）
+  const photoItem = editPhoto(chatId, userId, event, t);
+  if (photoItem && await draw.handleEdit({ chatId, userId, text, dm, mention, photo: { load: () => loadPhoto(photoItem.imageId) } }, deps)) return true;
+  return draw.handle({ chatId, userId, text, dm, mention }, deps);
+}
+const EDIT_PHOTO_MS = 5 * 60_000;
+function editPhoto(chatId, userId, event, t) {
+  const buf = brain?._state(chatId)?.buf || [];
+  const quotedId = event?.message?.quotedMessageId ? String(event.message.quotedMessageId) : null;
+  if (quotedId) return buf.find(x => x.imageId === quotedId) || null;
+  if (HOME_RE.test(t)) return null;
+  const mine = buf.filter(x => !x.self && x.userId === userId && x.text !== t);
+  const last = mine[mine.length - 1];
+  return last?.imageId && Date.now() - (last.ts || 0) <= EDIT_PHOTO_MS ? last : null;
+}
+async function loadPhoto(imageId) {
+  const r = await lineApi.getContent(imageId, { maxBytes: draw.PHOTO_MAX_BYTES });
+  return r?.buffer || null;
+}
+function drawDeps(chatId, replyToken, dm) {
+  return {
     reply: (msgs) => replyMsgs(replyToken, msgs),
     deliver: async (msgs) => {
       if (dm) {
@@ -1907,7 +1928,7 @@ async function drawIntercept({ chatId, userId, text, replyToken, dm, mention }) 
     notifyAdmin: async (text) => {
       await fetch(`http://127.0.0.1:${process.env.PORT || 3100}/api/push`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: 'me', text }) });
     },
-  });
+  };
 }
 
 /** 群裡有人講話、小帥這次不用回：用這則的回覆把查好的答案貼出來 */
@@ -2701,7 +2722,7 @@ export default {
   async onPrivateText({ userId, text, replyToken, event }) {
     if (!brain || !llm?.generate || !userId || !isAdmin(userId)) return false;
     const plain = String(text || '').normalize('NFKC').trim();
-    if (await drawIntercept({ chatId: userId, userId, text, replyToken, dm: true })) return true;
+    if (await drawIntercept({ chatId: userId, userId, text, replyToken, dm: true, event })) return true;
     if (HOME_RE.test(plain) && !KB_ADD_RE.test(String(text || '')) && !kb.draftOf(userId)) { lunaAt.set(userId, Date.now()); return false; }
     if (Date.now() - (lunaAt.get(userId) || 0) < LUNA_FOLLOW_MS && LUNA_FOLLOW_RE.test(plain)) { lunaAt.set(userId, Date.now()); return false; }
     const item = brain.observe(userId, { userId, text });
@@ -2775,7 +2796,7 @@ export default {
     const addr = addressOf(text, event, quoted);
     const isMention = addr === 'direct';
     const judge = addr === 'soft';
-    if (enabled.has(chatId) && userId && await drawIntercept({ chatId, userId, text, replyToken, dm: false, mention: isMention })) return true;
+    if (enabled.has(chatId) && userId && await drawIntercept({ chatId, userId, text, replyToken, dm: false, mention: isMention, event })) return true;
     if (enabled.has(chatId) && await kbIntercept({ chatId, userId, text, replyToken, event, mention: isMention, dm: false })) return true;
     if (enabled.has(chatId) && await shareIntercept({ chatId, userId, text, replyToken, mention: isMention, dm: false, transcript: brain._state(chatId).buf })) return true;
     if (enabled.has(chatId) && userId && await pollIntercept({ chatId, userId, text, replyToken, mention: isMention })) return true;
