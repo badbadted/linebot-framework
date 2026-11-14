@@ -147,7 +147,9 @@ export function findImage(dir) {
     try { fd = openSync(p, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0)); } catch { continue; }
     let buf;
     try {
-      if (!fstatSync(fd).isFile()) continue;
+      // 開到的必須是剛剛檢查的那一個檔（同裝置、同 inode、沒有其他名稱），中間被換掉就不收
+      const fst = fstatSync(fd);
+      if (!fst.isFile() || fst.dev !== st.dev || fst.ino !== st.ino || fst.nlink !== 1) continue;
       buf = Buffer.alloc(st.size);
       let off = 0;
       while (off < buf.length) { const n = readSync(fd, buf, off, buf.length - off, off); if (!n) break; off += n; }

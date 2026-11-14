@@ -132,6 +132,8 @@ function runChild(dir, prompt, timeoutMs) {
     child.stderr.on('data', (d) => { if (errText.length < 20_000) errText += d.toString(); });
     child.on('error', (err) => finish({ ok: false, reason: 'error', detail: `Codex 執行失敗：${err.message}` }));
     child.on('close', (code) => {
+      // 正常結束也把整個行程群組收掉：不留下任何 Codex 衍生的程式，跟之後的找圖檢查搶時間
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* 已經全部結束 */ }
       const why = [...failures, errText.slice(-2000)].join('\n');
       if (code === 0 && !failures.length) finish({ ok: true, lastMessage });
       else finish({ ok: false, reason: classifyFailure(why + '\n' + lastMessage), detail: `exit ${code}：${why.slice(0, 800)}`, lastMessage });
