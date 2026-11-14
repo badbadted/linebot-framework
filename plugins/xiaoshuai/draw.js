@@ -39,6 +39,8 @@ const LINE_PREVIEW_MAX = 1_000_000;
 
 // 「小帥畫…」「幫我畫…」「/畫 …」；畫面、畫質、計畫這類詞不算
 export const DRAW_RE = /^(?:\/畫\s*|(?:(?:嘿|欸|喂)?\s*小帥\s*[,，、!！~～]*\s*)?(?:(?:可以|能不能|能|請|麻煩)\s*)?(?:(?:幫我|幫忙|替我|給我)\s*)?(?<how>用\s*[^，,。!！?？畫]{1,12}?\s*)?畫(?![面質布家廊展風板筆圖畫好完])\s*(?:一下\s*)?)(?<what>.+)$/s;
+// 要寫一堆字的東西（圖片模型畫不好字）：固定句型遇到就交給聊天大腦
+export const TEXTY_RE = /行程|行事曆|時間表|時刻表|日程|清單|表格|菜單|課表|地圖|攻略|流程|名單|食譜|說明書|海報/;
 // 問進度：畫好了嗎、修好了沒、好了沒（光一個「好」不算，那是在回答別的事）
 export const DONE_RE = /^(?:小帥\s*[,，、]?\s*)?(?:圖\s*)?(?:畫好了?|畫完了?|修好了?|好了)(?:嗎|沒|沒有)?\s*[?？!！~～。]*$/;
 
@@ -59,7 +61,7 @@ export const FULL_BLEED = `Full-bleed composition: the scene fills the whole can
  * 附上頻道標誌圖（assets/xschai-mark.png）當長相參考。孩子指定別的畫風時照樣客串，但畫成同一種畫風
  */
 // 2026-11-14 使用者看過後說「客串太大」：限定約畫面高度的 1/10、塞在下方角落、可以被東西擋住一半
-export const CAMEO = `Cameo (always include, as a tiny background detail): Xiaoshuai must be very small - no taller than about one tenth of the image height - tucked into a bottom corner, far from the main subject, and may peek out from behind an object. He must never compete with or be as big as the main subject. Xiaoshuai is a friendly orange-and-cream shiba inu puppy wearing a red triangle bandana with a yellow star in the middle. The attached reference image shows what Xiaoshuai looks like; match his look and the bandana, but draw him in this image's style and do not copy the reference layout or its yellow background. The red star bandana belongs only to Xiaoshuai: do not put it, or any red scarf with a star, on the main subject or anything else. If the main subject is already this shiba, do not add a second one.`;
+export const CAMEO = `Cameo (always include, as a tiny background detail): Xiaoshuai must be very small - no taller than about one tenth of the image height - always placed in the BOTTOM-RIGHT corner of the image (lower right; never the left side, never the top), far from the main subject, and may peek out from behind an object. He must never compete with or be as big as the main subject. Xiaoshuai is a friendly orange-and-cream shiba inu puppy wearing a red triangle bandana with a yellow star in the middle. The attached reference image shows what Xiaoshuai looks like; match his look and the bandana, but draw him in this image's style and do not copy the reference layout or its yellow background. The red star bandana belongs only to Xiaoshuai: do not put it, or any red scarf with a star, on the main subject or anything else. If the main subject is already this shiba, do not add a second one.`;
 
 export const PROMPT = (en, style = '') => `Use your image generation tool to create exactly one image.
 
@@ -322,6 +324,9 @@ export async function handle({ chatId, userId, text, dm, mention }, deps) {
   if (!m) return false;
   // 群組裡沒叫小帥的「畫…」不理（「/畫」算叫）
   if (!dm && !mention && !t.startsWith('/畫')) return false;
+  // 行程、清單、時間表這類要寫字的不走固定句型，交給聊天大腦判斷（它會問要插圖還是行程卡片）
+  // 2026-11-14 實測：「小帥 畫一下我們2026的滑雪行程」被這裡直接畫成一張跟行程無關的滑雪圖
+  if (TEXTY_RE.test(m.groups.what)) return false;
   const what = m.groups.what.trim().slice(0, DESC_MAX);
   if (!what || /^[?？!！~～。.]+$/.test(what)) { await deps.reply([{ type: 'text', text: '要小帥畫什麼呢？例如「小帥畫一隻戴帽子的恐龍」' }]); return true; }
   // 「用蠟筆畫…」的畫風也要給改寫看

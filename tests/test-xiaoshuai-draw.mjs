@@ -154,6 +154,15 @@ await test('同時只畫一張：畫的時候第二個人被請等一下', async
   assert.equal(draw.isDrawing(), false);
 });
 
+await test('行程、清單這類要寫字的不走固定句型，交給聊天大腦', async () => {
+  draw._reset();
+  for (const t of ['小帥 畫一下我們2026的滑雪行程', '小帥畫一張東京行程表', '幫我畫購物清單']) {
+    const r = await ask(t, { dm: false, mention: true, chatId: 'Ctx', userId: 'Ut' });
+    assert.equal(r.handled, false, t);
+  }
+  assert.ok(draw.PROMPT('a cat').includes('BOTTOM-RIGHT'), '客串固定在右下角');
+});
+
 await test('群組沒叫到小帥的「畫…」不處理；/畫 算叫', async () => {
   draw._reset();
   const a = await ask('畫一隻狗', { dm: false, mention: false, chatId: 'Cgroup' });
