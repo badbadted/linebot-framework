@@ -122,16 +122,16 @@ async function doRender(outDir) {
   if (!html) throw new Error('沒有排版檔或檔案不合格');
   const bg = readOwnFile(outDir, 'bg.png', BG_MAX);
   if (!browser?.isConnected()) browser = await launch();
-  const ctx = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, javaScriptEnabled: false, offline: true });
+  // 視窗一開始就開到最高，量出內容實際多高再截那一段（中途改視窗大小會把頁首重複接在底下）
+  const ctx = await browser.newContext({ viewport: { width: WIDTH, height: MAX_HEIGHT }, javaScriptEnabled: false, offline: true });
   try {
     const page = await ctx.newPage();
     await page.route('**/*', (route) => (route.request().url().startsWith('data:') ? route.continue() : route.abort()));
     await page.setContent(inlineHtml(html.toString('utf8'), bg), { waitUntil: 'load', timeout: 20_000 });
-    const full = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)).catch(() => HEIGHT);
+    // body 的 scrollHeight 會算進超出去的內容；documentElement 會被視窗高度撐大，不能用
+    const full = await page.evaluate(() => Math.max(document.body?.scrollHeight || 0, document.body?.offsetHeight || 0)).catch(() => HEIGHT);
     const h = Math.min(Math.max(HEIGHT, Math.ceil(full) || HEIGHT), MAX_HEIGHT);
-    if (h > HEIGHT) await page.setViewportSize({ width: WIDTH, height: h });
-    // 視窗已調成要的大小，直接截視窗（用 clip 超出版面時會把頁首重複接在底下）
-    return await page.screenshot({ type: 'png' });
+    return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: h } });
   } finally {
     await ctx.close().catch(() => {});
   }
