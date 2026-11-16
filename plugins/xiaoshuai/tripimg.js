@@ -79,6 +79,8 @@ let launch = () => chromium.launch({ executablePath: CHROME, headless: true });
 export function configure({ launch: l } = {}) { if (l) launch = l; }
 
 const BG_MAX = 15_000_000;
+export const MAX_HEIGHT = 2600; // 拉長最多到這裡（LINE 圖片長邊上限內）
+const GROW = `<style>html,body{height:auto !important;min-height:${HEIGHT}px !important;overflow:visible !important}</style>`;
 // 只准內嵌的圖與行內樣式；任何外部網址、本機檔都載不到
 export const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">`;
 
@@ -104,7 +106,8 @@ export function inlineHtml(html, bg) {
   const isPng = bg && bg.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
   const isJpg = bg && bg[0] === 0xff && bg[1] === 0xd8;
   const data = isPng || isJpg ? `data:image/${isPng ? 'png' : 'jpeg'};base64,${bg.toString('base64')}` : '';
-  return CSP + String(html).replace(/(?:\.\/)?bg\.png/g, data);
+  // 排版塞不下時不要切掉（11-16 LINE 實測最後一天被切）：放開高度，轉圖時照實際內容拉長
+  return CSP + String(html).replace(/(?:\.\/)?bg\.png/g, data) + GROW;
 }
 
 /** out/index.html → PNG（Buffer）；不合格丟錯 */
@@ -124,7 +127,10 @@ async function doRender(outDir) {
     const page = await ctx.newPage();
     await page.route('**/*', (route) => (route.request().url().startsWith('data:') ? route.continue() : route.abort()));
     await page.setContent(inlineHtml(html.toString('utf8'), bg), { waitUntil: 'load', timeout: 20_000 });
-    return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT } });
+    const full = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)).catch(() => HEIGHT);
+    const h = Math.min(Math.max(HEIGHT, Math.ceil(full) || HEIGHT), MAX_HEIGHT);
+    if (h > HEIGHT) await page.setViewportSize({ width: WIDTH, height: h });
+    return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: h } });
   } finally {
     await ctx.close().catch(() => {});
   }
