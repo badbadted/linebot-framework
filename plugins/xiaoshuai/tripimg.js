@@ -68,7 +68,7 @@ ${fullBleed}
 ${cameo}
 Copy the generated PNG to ./out/bg.png.
 
-Step 2 - layout: write ./out/index.html (one file, inline CSS only; no JavaScript, no external fonts, links or scripts; the only image allowed is bg.png). Page size exactly ${WIDTH}px wide x ${HEIGHT}px tall. Use bg.png as the full-page background (cover). On top, place the title and one card per day using semi-transparent cream (#FFF6E5, about 85% opacity) rounded panels so text is readable. Keep the bottom-right 260x260px area free of panels so the small shiba in the illustration stays visible. Copy every title, date, weekday, place, item and night text from trip.json EXACTLY (do not translate, shorten, reorder words or retype differently). Use font-family "PingFang TC", "Heiti TC", sans-serif. Text colors: dark brown #4A3428, and tomato red #E8553E for dates. Everything must fit inside ${WIDTH}x${HEIGHT} with no overflow; shrink font sizes if needed.
+Step 2 - layout: write ./out/index.html (one file, inline CSS only; no JavaScript, no external fonts, links or scripts; the only image allowed is bg.png). Page size exactly ${WIDTH}px wide x ${HEIGHT}px tall. Use bg.png as the full-page background (cover). On top, place the title and one card per day using semi-transparent cream (#FFF6E5, about 85% opacity) rounded panels so text is readable. Keep the bottom-right 260x260px area free of panels so the small shiba in the illustration stays visible. Copy every title, date, weekday, place, item and night text from trip.json EXACTLY (do not translate, shorten, reorder words or retype differently). Use font-family "PingFang TC", "Heiti TC", sans-serif. Text colors: dark brown #4A3428, and tomato red #E8553E for dates. Everything must fit inside ${WIDTH}x${HEIGHT} with no overflow: with more than 4 days use two columns, keep card padding small, and shrink font sizes if needed (body text at least 22px). Before finishing, check that the last card ends above y=${HEIGHT - 40}px.
 
 Do not run any other commands, do not read or list any other files, and do not access the network. Reply with just: done`;
 
@@ -132,11 +132,21 @@ async function doRender(outDir) {
     const doc = inlineHtml(html.toString('utf8'), bg);
     await page.setContent(doc, { waitUntil: 'load', timeout: 20_000 });
     // 量內容實際多高（body 已放開高度）；太長就整頁縮小（zoom 會讓版面變寬重排，寬度照樣填滿）
-    const full = await page.evaluate(() => Math.max(document.body?.scrollHeight || 0, document.body?.offsetHeight || 0)).catch(() => HEIGHT);
+    // 只看「最下面那行字」：用整頁高度會把排版本身的留白算進去，明明塞得下也被縮小（11-16 實測右邊、下面空一塊）
+    const full = await page.evaluate(() => {
+      let bottom = 0;
+      for (const el of document.body?.querySelectorAll('*') || []) {
+        if (el.childElementCount || !el.textContent.trim()) continue;
+        const r = el.getBoundingClientRect();
+        if (r.height > 0) bottom = Math.max(bottom, r.bottom);
+      }
+      return bottom + 24;
+    }).catch(() => HEIGHT);
     if (full > HEIGHT) {
       const z = Math.max(MIN_ZOOM, Math.floor((HEIGHT / full) * 100) / 100);
       // 關掉 JavaScript 時 addStyleTag 會卡住，改成把縮放樣式接在後面重新載入一次
-      await page.setContent(`${doc}<style>html{zoom:${z}}</style>`, { waitUntil: 'load', timeout: 20_000 });
+      // 縮小後置中，旁邊空出來的地方用奶油白底（色盤底色）
+      await page.setContent(`${doc}<style>html{zoom:${z};background:#FFF6E5 !important}body{margin-left:auto !important;margin-right:auto !important}</style>`, { waitUntil: 'load', timeout: 20_000 });
     }
     return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT } });
   } finally {
