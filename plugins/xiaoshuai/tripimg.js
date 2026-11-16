@@ -79,8 +79,9 @@ let launch = () => chromium.launch({ executablePath: CHROME, headless: true });
 export function configure({ launch: l } = {}) { if (l) launch = l; }
 
 const BG_MAX = 15_000_000;
-export const MAX_HEIGHT = 2600; // 拉長最多到這裡（LINE 圖片長邊上限內）
-const GROW = `<style>html,body{height:auto !important;min-height:${HEIGHT}px !important;overflow:visible !important}</style>`;
+export const MIN_ZOOM = 0.55; // 縮到這樣字還看得清楚；比這還長就只好切掉
+const PAD = 160; // 視窗比圖多開的高度（見 doRender）
+const GROW = `<style>html,body{height:auto !important;min-height:${HEIGHT}px !important;overflow:visible !important;width:auto !important}</style>`;
 // 只准內嵌的圖與行內樣式；任何外部網址、本機檔都載不到
 export const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">`;
 
@@ -106,7 +107,7 @@ export function inlineHtml(html, bg) {
   const isPng = bg && bg.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
   const isJpg = bg && bg[0] === 0xff && bg[1] === 0xd8;
   const data = isPng || isJpg ? `data:image/${isPng ? 'png' : 'jpeg'};base64,${bg.toString('base64')}` : '';
-  // 排版塞不下時不要切掉（11-16 LINE 實測最後一天被切）：放開高度，轉圖時照實際內容拉長
+  // 排版塞不下時不要切掉（11-16 LINE 實測最後一天被切）：放開高度，轉圖時量實際內容，太長就整頁縮小塞進 1440
   return CSP + String(html).replace(/(?:\.\/)?bg\.png/g, data) + GROW;
 }
 
@@ -122,16 +123,22 @@ async function doRender(outDir) {
   if (!html) throw new Error('沒有排版檔或檔案不合格');
   const bg = readOwnFile(outDir, 'bg.png', BG_MAX);
   if (!browser?.isConnected()) browser = await launch();
-  // 視窗一開始就開到最高，量出內容實際多高再截那一段（中途改視窗大小會把頁首重複接在底下）
-  const ctx = await browser.newContext({ viewport: { width: WIDTH, height: MAX_HEIGHT }, javaScriptEnabled: false, offline: true });
+  // 這台 Mac 的 Chrome 截圖時，視窗最底下約 87px 一定會畫成頁首（11-16 實測：新舊無頭模式、整頁截圖、加大視窗都一樣）
+  // → 視窗開高 PAD、只截上面 1440，壞掉那段落在切掉的部分；內容太長就整頁縮小塞進 1440
+  const ctx = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT + PAD }, javaScriptEnabled: false, offline: true });
   try {
     const page = await ctx.newPage();
     await page.route('**/*', (route) => (route.request().url().startsWith('data:') ? route.continue() : route.abort()));
-    await page.setContent(inlineHtml(html.toString('utf8'), bg), { waitUntil: 'load', timeout: 20_000 });
-    // body 的 scrollHeight 會算進超出去的內容；documentElement 會被視窗高度撐大，不能用
+    const doc = inlineHtml(html.toString('utf8'), bg);
+    await page.setContent(doc, { waitUntil: 'load', timeout: 20_000 });
+    // 量內容實際多高（body 已放開高度）；太長就整頁縮小（zoom 會讓版面變寬重排，寬度照樣填滿）
     const full = await page.evaluate(() => Math.max(document.body?.scrollHeight || 0, document.body?.offsetHeight || 0)).catch(() => HEIGHT);
-    const h = Math.min(Math.max(HEIGHT, Math.ceil(full) || HEIGHT), MAX_HEIGHT);
-    return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: h } });
+    if (full > HEIGHT) {
+      const z = Math.max(MIN_ZOOM, Math.floor((HEIGHT / full) * 100) / 100);
+      // 關掉 JavaScript 時 addStyleTag 會卡住，改成把縮放樣式接在後面重新載入一次
+      await page.setContent(`${doc}<style>html{zoom:${z}}</style>`, { waitUntil: 'load', timeout: 20_000 });
+    }
+    return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT } });
   } finally {
     await ctx.close().catch(() => {});
   }
