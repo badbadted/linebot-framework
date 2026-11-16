@@ -130,7 +130,8 @@ async function doRender(outDir) {
     const full = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)).catch(() => HEIGHT);
     const h = Math.min(Math.max(HEIGHT, Math.ceil(full) || HEIGHT), MAX_HEIGHT);
     if (h > HEIGHT) await page.setViewportSize({ width: WIDTH, height: h });
-    return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: h } });
+    // 視窗已調成要的大小，直接截視窗（用 clip 超出版面時會把頁首重複接在底下）
+    return await page.screenshot({ type: 'png' });
   } finally {
     await ctx.close().catch(() => {});
   }
