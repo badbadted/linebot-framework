@@ -12,6 +12,7 @@ writeFileSync(fake, `
 const cmd = process.argv[2];
 const out = {
   start: { ok: true, url: 'https://example.test', closesAtText: '18:00', minutesLeft: 120 },
+  'start-diet': { ok: true, scope: 'diet', url: 'https://example.test', closesAtText: '18:00', minutesLeft: 120 },
   status: { ok: true, open: false },
   stop: { ok: true, wasOpen: true },
   extend: { ok: true, closesAtText: '19:00', minutesLeft: 180 },
@@ -49,6 +50,12 @@ check('群組成員 /遊戲狀態 可查', (await run('gate-status', group, '/�
 check('群組成員 /關遊戲 被擋', (await run('gate-close', group, '/關遊戲')).includes('只有管理員'));
 check('群組成員 /延長 被擋', (await run('gate-extend', group, '/延長 1小時')).includes('只有管理員'));
 check('私訊非管理員 /開遊戲 被擋', (await run('gate-open', priv, '/開遊戲')) === '這個指令只有管理員能用。');
+
+// 只開熱量本（2026-11-17）：群組成員可以開，私訊非管理員擋；回覆附熱量本網址
+const diet = await run('gate-diet', group, '/開熱量本 2小時');
+check('群組成員 /開熱量本 成功、附熱量本網址', diet.includes('小帥熱量本已開放外網') && diet.includes('https://example.test/home/diet.html') && diet.includes('遊戲照樣關著'));
+check('私訊非管理員 /開熱量本 被擋', (await run('gate-diet', priv, '/開熱量本')) === '這個指令只有管理員能用。');
+check('/開熱量本 不吃亂打的字', !'/開熱量本吧'.match(cmd('gate-diet').pattern));
 
 // 已經開著又按 /開遊戲：從現在起算延後，群組成員也可以
 writeFileSync(fake, `console.log(JSON.stringify({ ok: true, renewed: true, url: 'https://example.test', closesAtText: '21:30', minutesLeft: 120 }));`);

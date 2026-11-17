@@ -2,13 +2,14 @@
  * Gate Plugin — 家用遊戲大廳的對外開關
  *
  * - /開遊戲 [2小時｜30分]  打開外網，預設 2 小時，單次最長 6 小時；已經開著再按就從現在起算（2026-11-03）
- * - /關遊戲               立刻關閉外網
+ * - /開熱量本 [2小時]     只開小帥熱量本（外面的大人拍照記熱量），遊戲照樣關著；到期自動關（2026-11-17）
+ * - /關遊戲               立刻關閉外網（只開熱量本時也一起關）
  * - /遊戲狀態             查看是否開放、幾點關
  * - /延長 [1小時]          延後關門時間（單次最多 6 小時，沒有總上限，2026-11-03）
  * - /放行 帳號 [取消]       （管理員）今天不用做完今日任務也能玩遊戲，晚上 12 點自動失效（2026-11-02）
  *
  * 誰能用：私訊只限管理員。群組要先 `/開通 gate`，開通後群組成員可以
- * /開遊戲、/遊戲狀態；/關遊戲、/延長 仍只限管理員。
+ * /開遊戲、/開熱量本、/遊戲狀態；/關遊戲、/延長 仍只限管理員。
  *
  * 實際開關由 Mac mini 的 ~/apps/web-hub/bin/web-gate.mjs 執行；
  * 自動關閉與通知由 web-hub 的 launchd 每分鐘檢查，不靠這個 plugin。
@@ -112,6 +113,30 @@ export default {
       },
     },
     {
+      // 只開小帥熱量本（2026-11-17 使用者：別的大人在外面也要用）：同一條通道、同樣到期自動關，大廳只放熱量本那一頁
+      name: 'gate-diet',
+      pattern: new RegExp(`^\\/開熱量本${DURATION}$`),
+      describe: '/開熱量本 [2小時] — 只開小帥熱量本到外網，遊戲照樣關著（私訊限管理員；開通的群組成員可用）',
+      type: 'query',
+      handler: async (m, ctx) => {
+        const admin = isAdmin(ctx.userId);
+        if (!canUse({ admin, sourceType: ctx.sourceType, memberOk: true })) return deny(ctx);
+        const hours = parseHours(m[1], m[2]);
+        const r = await gate('start-diet', ...(hours ? [String(hours)] : []));
+        const link = `${r.url}/home/diet.html`;
+        if (r.ok && r.renewed) return `⏰ 熱量本開到 ${r.closesAtText}（還剩 ${r.minutesLeft} 分鐘）${r.scope === 'all' ? '；遊戲的外網時間不變' : ''}\n🍱 ${link}`;
+        if (r.ok) {
+          return [
+            `🍱 小帥熱量本已開放外網，${r.closesAtText} 自動關閉（約 ${r.minutesLeft} 分鐘）`,
+            link,
+            '只開熱量本，遊戲照樣關著；第一次在外面打開要登入一次。',
+            admin ? '要延長傳「/延長 1小時」，提早關傳「/關遊戲」。' : '要延長或提早關請找管理員。',
+          ].join('\n');
+        }
+        return failText(admin, '開啟', r);
+      },
+    },
+    {
       name: 'gate-close',
       pattern: /^\/關遊戲$/,
       describe: '/關遊戲 — （管理員）關閉遊戲大廳外網',
@@ -133,6 +158,8 @@ export default {
         if (!canUse({ admin, sourceType: ctx.sourceType, memberOk: true })) return deny(ctx);
         const r = await gate('status');
         if (!r.ok) return failText(admin, '查詢', r);
+        if (r.open && r.scope === 'diet') return `🍱 外網只開小帥熱量本，${r.dietUntilText || r.closesAtText} 關閉（還剩 ${r.minutesLeft} 分鐘）\n${r.url}/home/diet.html`;
+        if (r.open && r.allUntilText && r.dietUntilText && r.dietUntilText !== r.allUntilText) return `🔓 外網開放中：遊戲 ${r.allUntilText} 關、小帥熱量本 ${r.dietUntilText} 關\n🌐 ${r.url}/`;
         return r.open
           ? `🔓 外網開放中，${r.closesAtText} 關閉（還剩 ${r.minutesLeft} 分鐘）\n🌐 ${r.url}/`
           : `🔒 外網目前關閉。\n🏠 家裡 Wi-Fi：${LAN_URL}`;
