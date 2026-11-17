@@ -124,7 +124,7 @@ remember：只記「已經定案、之後會用到」的事，就算這次不說
 
 const SITUATION = {
   mention: '有人在叫你，要回話。最重要的是回應【叫你的那句】；前面的對話只是背景，不要跳去回別的話題。例外：那句是在說「不是在說你／沒事／不是叫你」這類，表示他其實不是要找你，就 reply 空字串，不用道歉也不用解釋。',
-  idle: '大家聊了一陣子沒找你。如果你能幫上忙、或有一句貼心的話，就自然地插一句；沒什麼好說就 reply 空字串。寧可不說，也不要硬聊。',
+  idle: '大家聊了一陣子沒找你。只有在【有人問了問題沒人回答、而你能給具體有用的答案】時才插一句；安慰、祝福、關心身體、建議看醫生、開玩笑、附和、評論別人的事，都不要插話，reply 空字串。你一天最多只能插一句，寧可不說，大家不喜歡你常常冒出來。',
   window: '你剛剛有參與聊天。先判斷【最新那則訊息】是不是在跟你說話：回應你剛說的話、問你問題、接著你參與的話題講下去並等你回應，都算；在跟別人說話、聊跟你無關的事、或只是在笑，都不算。用「回覆」引用你說過的話，不一定是在跟你說話：常常是把你那句拿給別人看（例如「你看看」「明明就有」「沒人回」），或是在 @ 別人，這些都不算；講到「小帥」但是在跟別人聊你（例如「小帥不是說你」「問小帥啊」），也不算。這次的 JSON 要多一個欄位 "to_me"（true／false）。to_me 是 true 時 reply 可以留空（會另外請你回）。to_me 是 false 時，預設 reply 空字串，不要搶話。',
   followup: '這句是在接你的話（延續你們剛剛聊的），一定要回，reply 不可以是空字串。重點是回應【接你話的那句】，前面的對話只是背景。',
 };
@@ -1457,7 +1457,7 @@ function nudgeSweep() {
 async function nudgeCommand(match, ctx) {
   const chatId = ctx.groupId || ctx.roomId;
   if (!chatId) return '主動提議要在群組裡設定';
-  const label = { on: '開（每天最多問 4 次）', low: '少（每天最多問 2 次）', off: '關（不主動問）' };
+  const label = { on: '開（每天最多問 4 次、自己插話 3 句）', low: '少（每天最多問 2 次、自己插話 1 句）', off: '關（不主動問、不自己插話，叫小帥才回）' };
   const want = { 開: 'on', 少: 'low', 關: 'off' }[match[1] || ''];
   if (want) {
     if (!isAdmin(ctx.userId)) return '⛔ 只有管理員能調整主動提議';
@@ -1466,7 +1466,7 @@ async function nudgeCommand(match, ctx) {
   }
   const s = nudge.stateOf(chatId);
   const st = nudge.stats(chatId);
-  return [`💡 小帥主動提議：${label[s.mode]}`, `今天問了 ${s.asked} 次`,
+  return [`💡 小帥主動提議：${label[s.mode]}`, `今天問了 ${s.asked} 次、自己插話 ${nudge.chimesToday(chatId)} 句`,
     `最近 14 天：問 ${st.asked || 0}、有人說好 ${st.yes || 0}、說不要 ${st.no || 0}、沒人反對就記 ${st.silent || 0}、沒人理 ${st.ignored || 0}`,
     '改：/小帥 主動 開｜少｜關'].join('\n');
 }
@@ -2529,7 +2529,10 @@ async function stickerOnly(chatId, mode, replyToken, parsed) {
 }
 
 async function thinkInner(chatId, job) {
-  const { mode, replyToken, trigger, transcript, allowChimeIn } = job;
+  const { mode, replyToken, trigger, transcript } = job;
+  // 自己插話（idle、window 裡不是跟小帥說話的那種）跟主動提議同一個開關與每日上限（2026-11-17 群組嫌太多）
+  const allowChimeIn = job.allowChimeIn && nudge.chimeOk(chatId);
+  if (mode === 'idle' && !allowChimeIn) { console.log(`[xiaoshuai] ${chatId.slice(0, 8)} idle：今天插話額度用完，不問 AI`); return { replied: false }; }
   if (mode === 'window') {
     // 第一段：Haiku 用語意判斷這句是不是在跟小帥說話
     const judged = await ask(chatId, 'window', { trigger, transcript, allowChimeIn });
@@ -2555,7 +2558,9 @@ async function thinkInner(chatId, job) {
       console.log(`[xiaoshuai] ${chatId.slice(0, 8)} window：不是在跟小帥說話，不說話`);
       return { replied: false };
     }
-    return (await send(chatId, 'window', replyToken, judged.reply)) ? { replied: true, text: judged.reply } : { replied: false };
+    if (!await send(chatId, 'window', replyToken, judged.reply)) return { replied: false };
+    nudge.countChime(chatId);
+    return { replied: true, text: judged.reply };
   }
 
   // 卡片上的「📸 截這天」按鈕會送「小帥 截 D3」：不經 AI，直接截這群綁的行程
@@ -2587,7 +2592,9 @@ async function thinkInner(chatId, job) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} ${mode}：不說話`);
     return { replied: false };
   }
-  return (await send(chatId, mode, replyToken, reply, withSticker(chatId, parsed, reply))) ? { replied: true, text: reply } : { replied: false };
+  if (!await send(chatId, mode, replyToken, reply, withSticker(chatId, parsed, reply))) return { replied: false };
+  if (mode === 'idle') nudge.countChime(chatId);
+  return { replied: true, text: reply };
 }
 
 // ── 名字 ───────────────────────────────────────────
@@ -2901,7 +2908,7 @@ export default {
     router = ctx.router;
     llm = ctx.providers?.llm;
     isAdmin = ctx.isAdmin;
-    brain = createBrain({ isEnabled: (id) => enabled.has(id), onFire: think, onObserve: saveLog,
+    brain = createBrain({ cfg: { idleThreshold: 30 }, isEnabled: (id) => enabled.has(id), onFire: think, onObserve: saveLog,
       // 小帥這次沒輪到開口（冷場、還在想上一句）：回覆沒用到 → 拿來貼查好的答案
       onSkip: (chatId, job) => { if (heldAnswers(chatId, 1).length) deliverHeld(chatId, job.replyToken).catch(() => {}); } });
     if (!db) { console.warn('[xiaoshuai] 沒有 db provider，小帥停用'); return; }

@@ -113,4 +113,19 @@ test('問句是一句話', () => {
   assert.equal(nudge.foodQuestion('妞媽'), '妞媽，要把這家收進我們的美食嗎？');
 });
 
+test('自己插話：少＝每天 1 句、開＝3 句、關＝0；換日歸零', () => {
+  const g = 'Cchime';
+  assert.equal(nudge.chimeOk(g, NOW), true);
+  nudge.countChime(g, NOW);
+  assert.equal(nudge.chimeOk(g, NOW), false);
+  assert.equal(nudge.chimesToday(g, NOW), 1);
+  nudge.setMode(g, 'on', NOW);
+  assert.equal(nudge.chimeOk(g, NOW), true);
+  nudge.countChime(g, NOW); nudge.countChime(g, NOW);
+  assert.equal(nudge.chimeOk(g, NOW), false);
+  assert.equal(nudge.chimeOk(g, NOW + 24 * 3600_000), true);
+  nudge.setMode(g, 'off', NOW + 24 * 3600_000);
+  assert.equal(nudge.chimeOk(g, NOW + 24 * 3600_000), false);
+});
+
 console.log(`\n${pass} 項通過`);

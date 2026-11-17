@@ -56,6 +56,11 @@ export function initNudge(database) {
       asked_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS nudge_chime (
+      chat_id TEXT PRIMARY KEY,
+      day TEXT NOT NULL,
+      n INTEGER NOT NULL DEFAULT 0
+    );
     CREATE TABLE IF NOT EXISTS nudge_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id TEXT NOT NULL,
@@ -206,6 +211,27 @@ export function log(chatId, kind, key, outcome, now = Date.now()) {
 export function stats(chatId, now = Date.now()) {
   const rows = db.all('SELECT outcome, COUNT(*) AS n FROM nudge_log WHERE chat_id = ? AND at >= ? GROUP BY outcome', chatId, now - 14 * 86400_000);
   return Object.fromEntries(rows.map(r => [r.outcome, r.n]));
+}
+
+// ── 自己插話（沒人叫、也不是在跟小帥說話時插一句；2026-11-17 群組嫌太多）──
+// 跟主動提議用同一個開關：關＝不插話、少＝每天 1 句、開＝每天 3 句
+
+export const CHIME_CAP = { low: 1, on: 3, off: 0 };
+
+export function chimeOk(chatId, now = Date.now()) {
+  if (!db) return true;
+  const s = stateOf(chatId, now);
+  const r = db.get('SELECT n FROM nudge_chime WHERE chat_id = ? AND day = ?', chatId, dayKey(now));
+  return (r?.n || 0) < (CHIME_CAP[s.mode] ?? CHIME_CAP.low);
+}
+
+export function countChime(chatId, now = Date.now()) {
+  if (!db) return;
+  db.run('INSERT INTO nudge_chime (chat_id, day, n) VALUES (?, ?, 1) ON CONFLICT(chat_id) DO UPDATE SET n = CASE WHEN day = excluded.day THEN n + 1 ELSE 1 END, day = excluded.day', chatId, dayKey(now));
+}
+
+export function chimesToday(chatId, now = Date.now()) {
+  return db?.get('SELECT n FROM nudge_chime WHERE chat_id = ? AND day = ?', chatId, dayKey(now))?.n || 0;
 }
 
 // ── 偵測（規則粗篩；命中才請 AI 判斷，平常聊天不花錢） ──
