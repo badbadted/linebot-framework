@@ -1460,6 +1460,7 @@ async function nudgeCommand(match, ctx) {
   const label = { on: '開（每天最多問 4 次）', low: '少（每天最多問 2 次）', off: '關（不主動問）' };
   const want = { 開: 'on', 少: 'low', 關: 'off' }[match[1] || ''];
   if (want) {
+    if (!isAdmin(ctx.userId)) return '⛔ 只有管理員能調整主動提議';
     nudge.setMode(chatId, want);
     return `好，小帥主動提議改成：${label[want]}`;
   }

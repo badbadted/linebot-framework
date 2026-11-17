@@ -139,12 +139,14 @@ await test('美食：貼地圖連結 → 只問貼的人；別人回好不算；
   assert.deepEqual(b.foodCalls, [{ text: '/美食 https://maps.app.goo.gl/xyz', userId: 'U2' }]);
 });
 
-await test('/小帥 主動：顯示狀態、可以關', async () => {
+await test('/小帥 主動：大家都能看狀態，只有管理員能改', async () => {
   const b = await bot();
   const route = xiaoshuai.commands.find(c => c.name === 'xiaoshuai-nudge');
   const m = (t) => route.pattern.exec(t);
   assert.match(await route.handler(m('/小帥 主動'), { groupId: 'GC', userId: 'U1' }), /小帥主動提議：少/);
-  assert.match(await route.handler(m('/小帥 主動 關'), { groupId: 'GC', userId: 'U1' }), /關/);
+  assert.match(await route.handler(m('/小帥 主動 關'), { groupId: 'GC', userId: 'U1' }), /只有管理員/); // 一般成員（可能是外人）不能改
+  assert.notEqual(nudge.canAsk('GC', 'vote').why, 'off');
+  assert.match(await route.handler(m('/小帥 主動 關'), { groupId: 'GC', userId: 'UADMIN' }), /關/);
   assert.equal(nudge.canAsk('GC', 'vote').why, 'off');
 });
 
