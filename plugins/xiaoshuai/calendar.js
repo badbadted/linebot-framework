@@ -70,6 +70,8 @@ export function initCalendar(database, { dir, base, trips } = {}) {
     );
   `);
   meta.initMeta(db, pageDir);
+  const calCols = db.all('PRAGMA table_info(cal_events)').map(c => c.name);
+  if (!calCols.includes('auto_shown')) db.exec('ALTER TABLE cal_events ADD COLUMN auto_shown INTEGER NOT NULL DEFAULT 0'); // 小帥自動記的，在摘要／查詢出現過了沒
   edits.initEdit(db);
   prune();
 }
@@ -322,6 +324,59 @@ export function prune(now = Date.now()) {
   db?.run('DELETE FROM cal_events WHERE day < ?', addDays(todayKey(now), -KEEP_DAYS));
 }
 
+// ── 小帥從群組對話自動記（2026-11-19 使用者定：「只要群組上有提到，他就可以自行決定」）──
+// AI 在一般回覆的 JSON 順便給 calendar 欄位（不另外呼叫 AI）；這裡只收「已定案、有明確日期、還沒過」的，
+// 同一天標題相近（含被刪掉的）不再記，每個聊天每天最多 AUTO_MAX_PER_DAY 件
+export const AUTO_BY = 'xiaoshuai-auto';
+export const AUTO_MAX_PER_DAY = 5;
+export const AUTO_LABEL = '（小帥從對話記的）';
+const HESITATE_RE = /要不要|可能|再看看|看看再|也許|或許|考慮|大概|不確定|再說|待定|未定|還沒(?:確定|決定|定)|好像|如果|假如|說不定|[?？]|嗎/;
+const squash = (x) => String(x || '').normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+/** 標題相近：一個包含另一個，或兩字詞有一半以上相同 */
+export function similarTitle(a, b) {
+  const x = squash(a); const y = squash(b);
+  if (!x || !y) return false;
+  if (x.includes(y) || y.includes(x)) return true;
+  const g = (z) => new Set(Array.from({ length: Math.max(0, [...z].length - 1) }, (_, i) => [...z].slice(i, i + 2).join('')));
+  const gx = g(x); const gy = g(y);
+  if (!gx.size || !gy.size) return false;
+  const same = [...gx].filter(k => gy.has(k)).length;
+  return same / Math.min(gx.size, gy.size) >= 0.5;
+}
+/**
+ * 小帥從對話判斷要記的 → 檢查後記進行事曆。items：[{ title, when, place }]；skipDays：不要自動記的日子（例：綁了旅遊行程的那幾天）
+ * 回 { added: [event], skipped: [{ title, why }] }
+ */
+export function autoAdd(chatId, items, { now = Date.now(), skipDays = new Set() } = {}) {
+  const added = []; const skipped = [];
+  if (!db || !Array.isArray(items)) return { added, skipped };
+  const p = parts(now);
+  const start = Date.UTC(p.y, p.m - 1, p.d) - TZ;
+  let used = db.get('SELECT COUNT(*) n FROM cal_events WHERE chat_id = ? AND created_by = ? AND created_at >= ?', chatId, AUTO_BY, start)?.n || 0;
+  for (const it of items.slice(0, 3)) {
+    const title = cards.clean(it?.title, 30);
+    const when = cards.clean(it?.when, 40);
+    const skip = (why) => { skipped.push({ title: title || when, why }); };
+    if (!title || !when) { skip('缺標題或日期'); continue; }
+    if (HESITATE_RE.test(title) || HESITATE_RE.test(when)) { skip('還沒定案'); continue; }
+    const w = parseWhen(when, now);
+    if (!w || w.error || !w.day) { skip('沒有明確日期'); continue; }
+    if (w.day < todayKey(now)) { skip('日期已經過了'); continue; }
+    if (skipDays.has(w.day)) { skip('旅遊行程那幾天（交給行程）'); continue; }
+    const same = db.all('SELECT id, title FROM cal_events WHERE chat_id = ? AND day = ?', chatId, w.day).find(e => similarTitle(e.title, title));
+    if (same) { skip(`同一天已經有（#${same.id}）`); continue; }
+    if (used >= AUTO_MAX_PER_DAY) { skip('今天自動記滿了'); continue; }
+    const r = add(chatId, { day: w.day, time: w.time, title, place: it?.place || '', by: AUTO_BY, byName: '小帥' }, now);
+    if (r.ok) { added.push(r.event); used++; } else skip(r.error || '重複');
+  }
+  return { added, skipped };
+}
+/** 自動記的那幾件在摘要／查詢出現過了：之後不再標「小帥從對話記的」 */
+export function markAutoShown(items) {
+  const ids = [...new Set((items || []).filter(i => i?.auto && i.id).map(i => i.id))];
+  for (const id of ids) db?.run('UPDATE cal_events SET auto_shown = 1 WHERE id = ?', id);
+}
+
 /** 新增；回 { ok, event } 或 { error }（重複的回 { dup: event }） */
 export function add(chatId, { day, time = null, title, place = '', by = '', byName = '' }, now = Date.now()) {
   const tt = cards.clean(title, 30);
@@ -341,7 +396,7 @@ export function add(chatId, { day, time = null, title, place = '', by = '', byNa
   return { ok: true, event: getEvent(r.lastInsertRowid) };
 }
 
-const canTouch = (ev, userId, admin) => ev.created_by === userId || admin;
+const canTouch = (ev, userId, admin) => ev.created_by === userId || ev.created_by === AUTO_BY || admin; // 小帥自動記的大家都能刪
 const denied = (ev) => ({ error: `只有加的人（${ev.created_by_name || '加的人'}）或 TED 可以改` });
 
 /** 刪除（軟刪除，30 天內可以從網頁還原；記在修改紀錄） */
@@ -409,6 +464,7 @@ export function itemsBetween(sources, from, to, now = Date.now()) {
   const byChat = new Map(sources.map(s => [s.chatId, s]));
   const items = eventsBetween([...byChat.keys()], from, to).map(e => ({
     id: e.id, chatId: e.chat_id, day: e.day, time: e.time, title: e.title, place: e.place, by: e.created_by_name, poll: false, src: byChat.get(e.chat_id)?.label || '',
+    auto: e.created_by === AUTO_BY && !e.auto_shown,
     short: e.short || meta.fallbackShort(e.title), who: parseWho(e.who), ref: `e${e.id}`, version: e.version || 0, manual: Object.keys(edits.parseManual(e.manual)),
   }));
   for (const s of sources) {
@@ -1171,6 +1227,7 @@ function dayBubble(day, items, { sub, today, url, showSrc }) {
       { type: 'box', layout: 'vertical', flex: 6, contents: [
         t(`${i.poll ? '🗳️ ' : ''}${cards.clean(i.title, 30)}`, { size: 'sm', maxLines: 2 }),
         ...(i.trip ? [t('🧳 旅遊行程', { size: 'xxs', color: '#64748b', wrap: false })] : []),
+        ...(i.auto ? [{ type: 'box', layout: 'baseline', spacing: 'sm', contents: [t(AUTO_LABEL, { size: 'xxs', color: '#64748b', flex: 0, wrap: false }), t('🗑️ 刪掉', { size: 'xxs', color: CAL_COLOR, flex: 0, wrap: false, action: { type: 'postback', label: '刪掉', data: `cal:del:${i.id}`, displayText: `🗑️ 刪掉 ${cards.clean(i.title, 20)}` } })] }] : []),
         ...([i.place ? `📍 ${cards.clean(i.place, 20)}` : '', showSrc && i.src ? `${i.src === '我的' ? '🙋' : '👥'} ${cards.clean(i.src, 16)}` : ''].filter(Boolean)
           .map(x => t(x, { size: 'xxs', color: '#64748b', wrap: false }))),
       ] },
@@ -1207,7 +1264,8 @@ export function queryMessages(range, byDay, { url = null, showSrc = false, now =
   const today = todayKey(now);
   const shown = days.slice(0, MAX_DAY_CARDS);
   const bubbles = shown.map(d => dayBubble(d, byDay.get(d), { sub: rangeSub(range), today, url, showSrc }));
-  const alt = shown.map(d => `${dayLabel(d)}\n${byDay.get(d).map(i => `${i.time || '全天'} ${i.poll ? '🗳️' : ''}${i.title}${i.place ? `（${i.place}）` : ''}`).join('\n')}`).join('\n');
+  const alt = shown.map(d => `${dayLabel(d)}\n${byDay.get(d).map(i => `${i.time || '全天'} ${i.poll ? '🗳️' : ''}${i.title}${i.place ? `（${i.place}）` : ''}${i.auto ? AUTO_LABEL : ''}`).join('\n')}`).join('\n');
+  markAutoShown(shown.flatMap(d => byDay.get(d)));
   const more = days.length > MAX_DAY_CARDS ? `，先列前 ${MAX_DAY_CARDS} 天，其他的看整個月` : '';
   const head = range.single ? `${name}有 ${n} 件事 👇`
     : `${range.label} ${days.length} 天有事（共 ${n} 件）${more}${shown.length > 1 ? '，往右滑 👉' : ' 👇'}`;
@@ -1230,9 +1288,10 @@ export function morningDigest(chatId, { sources = null, url = null, now = Date.n
   const items = byDay.get(today) || [];
   if (!items.length) return null;
   const b = dayBubble(today, items, { sub: '☀️ 今天的行程', today, url, showSrc: false });
+  markAutoShown(items);
   return {
     text: `☀️ 早，今天有 ${items.length} 件事 👇`,
-    msgs: [cards.flex([b], `☀️ 今天 ${dayLabel(today)}\n${items.map(i => `${i.time || '全天'} ${i.title}`).join('\n')}`)],
+    msgs: [cards.flex([b], `☀️ 今天 ${dayLabel(today)}\n${items.map(i => `${i.time || '全天'} ${i.title}${i.auto ? AUTO_LABEL : ''}`).join('\n')}`)],
     keepMs: Math.max(60_000, Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8) + 1) - TZ - now), // 今天內有效
   };
 }
