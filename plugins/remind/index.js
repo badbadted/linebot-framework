@@ -254,15 +254,26 @@ function commitDelivered(items) {
   }
 }
 
+const squash = (s) => String(s || '').normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '');
+/** 回覆內文裡已經有這件事（內容前 8 個字出現在回覆裡） */
+export function coveredBy(baseText, content) {
+  const c = squash(content);
+  if (c.length < 4) return false;
+  return squash(baseText).includes(c.slice(0, Math.min(8, c.length)));
+}
+
 export const replyProvider = {
   has: (scopeId) => dueFor(scopeId).length > 0,
-  take: (scopeId) => {
+  take: (scopeId, { baseText = '' } = {}) => {
     const items = dueFor(scopeId);
     if (!items.length) return null;
+    // 同一次回覆裡已經講到的（例：今日行程有同一件事）不再講一次，送出後一樣算送過
+    const fresh = items.filter(it => !coveredBy(baseText, it.row.content));
     for (const it of items) inflight.add(it.row.id);
     const release = () => { for (const it of items) inflight.delete(it.row.id); };
     return {
-      messages: [dueMessage(items)],
+      messages: fresh.length ? [dueMessage(fresh)] : [],
+      covered: fresh.length < items.length,
       commit: () => {
         try { commitDelivered(items); } finally { release(); }
         console.log(`[remind] ${String(scopeId).slice(0, 8)}... 用回覆送出提醒 ${items.length} 筆：${items.map(i => `#${i.row.id}${i.kind === 'digest' ? '(預告)' : ''}`).join(' ')}`);
@@ -318,7 +329,7 @@ export default {
 　/提醒 晚上6:20 東區衛生所
 　/提醒 30分鐘後 倒垃圾　/提醒 2小時後 回電
 　（內容可緊接時間，不用空格；可加上下午/晚上/星期）
-有開小帥的地方也可以直接說：「小帥 提醒我 11/25 交報告」（沒講幾點就排早上 9:00）
+有開小帥的地方說「小帥 提醒我 11/25 交報告」→ 小帥記進行事曆（當天早上貼今日行程提醒）
 
 看清單：/提醒
 取消：/提醒取消 1（或點清單的 ✕）

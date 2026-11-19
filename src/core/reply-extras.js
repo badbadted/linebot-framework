@@ -98,21 +98,24 @@ export function attachReplyExtras(lineApi, { now = () => Date.now() } = {}) {
     const base = toMessages(payload);
     const scopeId = scopeOfToken(replyToken);
     const takes = [];
+    const baseText = base.map(plainOf).join('\n');
     if (scopeId && hasReplyExtras(scopeId)) {
       for (const p of providers) {
         try {
           if (!p.has(scopeId)) continue;
-          const t = await p.take(scopeId);
-          if (t?.messages?.length) takes.push({ ...t, name: p.name });
+          const t = await p.take(scopeId, { baseText });
+          if (t && (t.messages?.length || t.covered)) takes.push({ ...t, messages: t.messages || [], name: p.name });
           else t?.release?.();
         } catch (err) { console.error(`[reply-extras] ${p.name}.take: ${err.message}`); }
       }
     }
     const extra = takes.flatMap(t => t.messages);
-    const { messages, used } = combine(base, extra);
+    const { messages, used: placed } = combine(base, extra);
+    // 原本的回覆已經講到了（例：今日行程裡有同一件事）→ 那幾筆不再附，送出後一樣標已送
+    const used = placed || (!extra.length && takes.length > 0 && base.length > 0);
     const release = () => { for (const t of takes) { try { t.release?.(); } catch { /* ignore */ } } };
     if (!used) release();
-    if (!messages.length) return { skipped: true };
+    if (!messages.length) { release(); return { skipped: true }; }
 
     let res;
     try {

@@ -19,6 +19,7 @@ import { createWebhookHandler } from '../src/core/webhook.js';
 import { createRouter } from '../src/core/router.js';
 import remindPlugin, * as remind from '../plugins/remind/index.js';
 const { remindSpecOf } = remind;
+import * as cal from '../plugins/xiaoshuai/calendar.js';
 
 let pass = 0;
 const test = async (name, fn) => { await fn(); pass++; console.log(`  ✓ ${name}`); };
@@ -100,6 +101,23 @@ await test('「提醒我 11/25 ○○」、問句與道謝不算', () => {
   assert.equal(remindSpecOf('小帥你會提醒我嗎？'), null);
   assert.equal(remindSpecOf('今天天氣很好'), null);
   assert.equal(remind.parseReminder('交報告', { defaultTime: true }), null, '沒日期沒時間不設');
+});
+await test('小帥「提醒我…」→ 行事曆的日期／時間／標題（不建 remind）', () => {
+  const now = Date.UTC(2026, 10, 19, 6, 0); // 台北 11/19 14:00
+  const cases = [
+    ['小帥 11/25 提醒日本行前待辦', '2026-11-25', null, '日本行前待辦'],
+    ['小帥 提醒我 11/29 買機場巴士', '2026-11-29', null, '買機場巴士'],
+    ['小帥 明天 9 點提醒大家交報告', '2026-11-20', '09:00', '交報告'],
+    ['小帥 提醒我下週三晚上七點家長會', '2026-11-25', '19:00', '家長會'],
+  ];
+  for (const [text, day, time, title] of cases) {
+    const spec = remindSpecOf(text);
+    const w = cal.parseWhen(spec, now);
+    assert.equal(cal.resolveDay(w, now), day, text);
+    assert.equal(w.time, time, text);
+    assert.equal(cal.titleOf(spec, w).title, title, text);
+  }
+  assert.equal(cal.parseWhen(remindSpecOf('小帥 30分鐘後提醒我倒垃圾') || '', now)?.day ?? null, null, '沒講哪天不記');
 });
 await test('原本 /提醒 格式照舊', () => {
   const now = new Date(2026, 10, 19, 14, 0);
@@ -213,6 +231,15 @@ await test('對齊小帥 held_answers：小帥要用這則回覆時 remind 讓�
   assert.equal(lastMsgs()[0].text, '☀️ 今天的行程');
   assert.match(lastMsgs()[1].altText, /跟今日行程一起/);
   held = false;
+});
+
+await test('同一次回覆已經講到（今日行程有同一件事）→ 不再講一次，但算送過', async () => {
+  const r = remind.createReminder({ userId: 'Uabc', scopeId: G }, { remindAt: new Date(Date.now() + 3600_000), content: '日本行前：旅平險、不便險' }, '', { mode: 'exact' });
+  setAt(r.id, Date.now() - 60_000);
+  await sendReply([{ type: 'text', text: '☀️ 早，今天有 1 件事' }, { type: 'flex', altText: '☀️ 今天 11/25\n09:00 日本行前：旅平險、不便險、網路', contents: {} }]);
+  assert.equal(lastMsgs().length, 2, '沒有多附提醒卡');
+  assert.equal(db.get('SELECT fired FROM reminders WHERE id = ?', r.id).fired, 1, '算送過');
+  assert.equal(remind.coveredBy('今天 09:00 買機場巴士（葶提醒）', '日本行機場巴士今天要買'), false, '不同的事不算');
 });
 
 console.log('③ 重啟');
