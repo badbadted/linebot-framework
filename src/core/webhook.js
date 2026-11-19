@@ -77,6 +77,9 @@ export function createWebhookHandler({ channelSecret, router, lineApi, allowlist
         seen.add(eventId);
       }
 
+      // 記下這個 replyToken 是哪個聊天的：回覆時可以把排著的東西（到期提醒）一起帶上（core/reply-extras.js）
+      lineApi.noteReplyEvent?.(event);
+
       const evUserId = event.source?.userId;
 
       // 加好友 / 封鎖（unfollow 無 replyToken）
