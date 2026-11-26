@@ -10,7 +10,8 @@
  *
  * 妞揪開團：口語叫小帥開團 → 整理成草稿、缺的問到齊 → 發起人本人回「好」才建立活動（njevent.js）
  *
- * 綁了行程的群：被叫時看得到行程表，有人要改行程 → 小帥列出要改的內容問大家 → 有人說好才寫進網頁（trip.js）
+ * 綁了行程的群：被叫時看得到行程表；小帥不改行程（2026-11-26 起行程由 TED 在電腦上改），
+ * 只把群組成員的留言寫到網頁那天底下：「小帥 12/26 留言：內容」（commentIntercept，關鍵字直達、不經 AI，trip.js）
  *
  * 什麼時候開口（判斷在 brain.js）：被點名一定回、連續 20 則沒提到就看情況插話、
  * 開口後 5 分鐘內自己判斷要不要接；只在 09:00～22:30，回前隨機等 2～6 秒。
@@ -36,6 +37,7 @@ import * as media from './media.js';
 import * as photo from './photo.js';
 import { parseLlmJson } from '../../src/utils/llm-json.js';
 import * as coach from '../coach/index.js';
+import * as remind from '../remind/index.js';
 import * as cards from './cards.js';
 import * as kb from './kb.js';
 import * as polls from './polls.js';
@@ -62,7 +64,6 @@ const LONG_TIMEOUT_MS = 150_000;
 const LONG_PER_DAY = 10;    // 每群每天最多背景查幾次（控制 AI 花費）
 const HOLD_KEEP_MS = 12 * 3600_000; // 查好的答案等人講話時才貼，最多等 12 小時（查過的資料另外存 3 天，之後問還接得上）
 const HOLD_MAX = 3;                 // 每群最多積幾則還沒貼出去的
-const PENDING_TTL_MS = 15 * 60_000; // 行程修改等確認的有效時間
 const REST_NOTICE_MS = 30 * 60_000; // 時段外被叫：同一群多久內只回一次「休息中」
 const MENTION_RE = /小帥/;
 export const SHOT_CMD_RE = /^小帥\s*截\s*(D\d{1,2}|一覽表?)$/i; // 行程卡上「📸 截這天／截一覽表」按鈕送的字
@@ -73,7 +74,6 @@ let kbTimer = null;
 const enabled = new Set();
 const nameCache = new Map(); // `${chatId}:${userId}` → displayName
 const lastItem = new Map();  // chatId → 最近 observe 的那則（onUnmatched 拿來當觸發訊息）
-const pendingEdits = new Map(); // chatId → { name, ops, changes, at }：等群組成員說好的行程修改
 const restNoticeAt = new Map(); // chatId → 上次回「休息中」的時間
 const dmQueue = new Map();      // userId → 私訊正在處理的那句
 // 私訊講到家裡設備：直接交給 Luna（不花小帥的 AI）；沒抓到的由 AI 回 to_luna
@@ -88,7 +88,8 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
 說話：台灣口語、全中文（不要夾英文單字），像朋友打字，一次 1～2 句、大約 30 字，最多 60 字；不用條列、不用 Markdown；大多數時候不用 emoji，要用最多一個。
 你是 AI 角色，不用主動強調；有人認真問你是不是 AI、是什麼模型，就老實說：你是用 Anthropic 的 Claude 做的。
 界線：
-- 你只能聊天、上網查資料、畫圖和修圖，以及下面寫到的收藏連結、改行程、妞揪開團、把妞揪活動分享到 bot 所在的群組（只限 TED：他說「小帥 把○○活動分享到△△群」時系統會處理，你不要說做不到）、健身教練；自己沒辦法控制設備、訂東西、設提醒。其他事請他打 /help 看指令，不要假裝做了。
+- 你只能聊天、上網查資料、畫圖和修圖，以及下面寫到的收藏連結、行程網頁（看、截圖、教大家留言；行程本身你不能改）、妞揪開團、把妞揪活動分享到 bot 所在的群組（只限 TED：他說「小帥 把○○活動分享到△△群」時系統會處理，你不要說做不到）、健身教練、把有日期的事記進行事曆（見下面「提醒、行程」）；自己沒辦法控制設備、訂東西。其他事請他打 /help 看指令，不要假裝做了。
+- 提醒、行程（2026-11-19 起一律記進行事曆）：有人說「提醒我 11/25 交報告」「明天 9 點提醒大家交報告」「小帥 11/5 晚上七點 家長會」，系統會自己記進這個聊天的行事曆並回卡片；當天早上 7 點後有人講話時，系統會貼「今天的行程」提醒大家。會輪到你回，表示系統沒看懂是哪一天：不要說「記好了」「設好提醒了」，請他把日期講清楚，例如「小帥 提醒我 11/25 交報告」。有日期的事一律記行程，不要寫進 remember。
 - 家裡的事：私訊時他要控制家裡設備（開關燈、冷氣、電視、掃地機…）或問家裡設備的狀態，JSON 加 "to_luna": true、reply 空字串，系統會交給家裡的管家 Luna 處理；群組裡沒有這個功能，直接說做不到。
 - 畫圖、修圖（2026-11-14 起你會畫）：有人要你畫圖（「畫一張…」「弄成一張圖」「做成插圖」「兩個都畫」），JSON 加 "draw": {"what":"要畫什麼，用中文寫清楚，把「這個、兩個、那趟」換成對話裡具體的東西","style":"他有指定畫風才填，例如蠟筆、日系動漫"}；要你改一張圖（剛傳的照片，或你剛畫好的那張，例如「加點腹肌」「背景換成海邊」「改成Q版」），給 "draw": {"edit": true, "what":"要怎麼改"}，系統會自己挑那張圖。給 draw 時 reply 填空字串，系統會自己回「開始畫了」。一次只能畫一張：要畫兩張就先畫第一張，系統畫好後再請他叫你畫下一張。行程圖：有人要把這群綁的行程畫成圖（「畫一下我們的滑雪行程」「把行程弄成一張圖」），給 "draw": {"trip": "哪一份行程（標題或年份，例如 2026 聖誕滑雪旅行）"}，系統會把行程內容交給畫圖的排成一張有字的行程圖；這群綁了不只一份、又看不出是哪一份，才先問「是哪一份行程」，不要問要插圖還是卡片。清單、時間表這類不是行程、又要寫一堆字的，不要給 draw，用文字回答。對話裡「🎨 畫好了：…」「🎨 修好了：…」就是你畫好貼出來的圖，有人誇或問那張圖，就是在講你畫的。
 - 不確定就先問（使用者 2026-11-14 定）：要不要畫、畫什麼、改哪一張，只要有一點不確定就不要給 draw，reply 用一句話問清楚，等他回了再畫。例如：分不清他是在聊天還是要你畫（「這個好可愛喔」）、「兩個都畫」「那個」指的是哪些沒辦法從對話確定、不知道要畫新的一張還是改你剛畫好的那張、要改的圖不只一張、他講的畫風聽不懂。問的時候把你猜的選項講出來（例如「你是要我重畫一張，還是改剛剛那隻恐龍？」）。意思清楚就直接畫，不要每次都問；他回答之後，照他的回答給 draw。
@@ -117,10 +118,14 @@ export const PERSONA = `你是「小帥」，在 LINE 上跟大家聊天的年�
 輸出格式：只輸出一個 JSON 物件，前後不要有其他文字：
 {"reply":"要說的話，不說就空字串","remember":["值得長期記住的事，0～2 條，沒有就空陣列"]}
 remember：只記「已經定案、之後會用到」的事，就算這次不說話也要記；一條一件事，寫清楚是誰、什麼事。已經在記憶裡的不要重複記。
-- 該記（格式範例，不是真的記憶）：「1/18 尾牙訂在信義區火鍋店」「小美不吃牛」「露營決定帶兩頂帳篷」「阿傑週五負責買飲料」
-- 不該記：天氣、心情、玩笑、問句（「阿豪在問幾點到機場」）、還沒決定的事、電話地址等個資
+- 該記（格式範例，不是真的記憶）：「尾牙餐廳選信義區火鍋店」「小美不吃牛」「露營決定帶兩頂帳篷」「阿傑週五負責買飲料」
+- 不該記：天氣、心情、玩笑、問句（「阿豪在問幾點到機場」）、還沒決定的事、電話地址等個資、有日期的事（放 calendar）
+calendar（2026-11-19 起你可以自己決定記進這群的行事曆）：對話裡有人講定了某一天要做的事（已經定案、有明確日期，幾點可以沒講），就算這次不說話也要列，JSON 加 "calendar": [{"title":"什麼事，15 字內，不含日期時間地點","when":"日期時間，照對話原文抄，例如「11/25 晚上七點」「下週六」","place":"地點，有講才填"}]，最多 3 筆，沒有就不要給這個欄位。系統會檢查後記進行事曆，不會另外講話。
+- 該列：「12/6 中午聚餐就訂鼎泰豐了」「下週六早上 9 點球賽，大家 8 點半到」「11/30 繳團費」
+- 不該列：還在討論的（「要不要」「可能」「再看看」「好像」「如果」）、問句、已經過去的日子、別人家（群組外）的事、沒有日期的（「改天」「之後」）、已經在【這個聊天的行事曆】裡的、綁了旅遊行程那幾天的安排（那是行程網頁的事）
+- 有日期的事只放 calendar，不要寫進 remember
 - 統計人數、收名單、投票：請他們用「小帥 開報名 標題」（之後直接打「我家 2大1小」）或「小帥 開投票 標題：選項A、選項B，截止時間」，系統會記在資料庫；這類人數不要寫進 remember。有人問人數或投票結果時，照【這群的投票／報名紀錄】回答（比記憶裡的新）。
-- 行事曆：要記某天某時的事，請他們說「小帥 11/5 晚上七點 家長會」，查「小帥 這週有什麼」，刪「小帥 刪掉 家長會」，系統會記在資料庫並回卡片；你自己不能說「記到行事曆了」，這類日期行程也不要寫進 remember。`;
+- 行事曆：有人叫你記（「提醒我 11/25…」「小帥 11/5 晚上七點 家長會」）由系統記並回卡片；查「小帥 這週有什麼」，刪「小帥 刪掉 家長會」。你自己只能用上面的 calendar 欄位記；系統記好了會自己在回覆後面補一句，你在 reply 裡不要說「記到行事曆了」。`;
 
 const SITUATION = {
   mention: '有人在叫你，要回話。最重要的是回應【叫你的那句】；前面的對話只是背景，不要跳去回別的話題。例外：那句是在說「不是在說你／沒事／不是叫你」這類，表示他其實不是要找你，就 reply 空字串，不用道歉也不用解釋。',
@@ -449,7 +454,8 @@ const PENDING_OPEN_MS = 10 * 60_000;
 const pendingOpen = new Map(); // `${chatId}:${userId}` → { kind, title, options, closesAt, at }：用一般的話開投票，等開的人回「好」
 const RESULT_RE = /投票結果|報名結果|幾票|(?:目前|現在|總共|一共)?\s*(?:有)?\s*幾\s*(?:個)?\s*人|幾位|人數/;
 // 規則抓不到時，像在報名才問 AI（省 AI 錢）：講到報名、參加、算我、+1、我家，或「X家 去／來」；問句不算
-const SIGNUP_HINT_RE = /報名|參加|算我|\+1|(?:我們|我)家|[一-鿿]{1,4}家\s*(?:也|要|會)?\s*(?:去|來)/;
+// 2026-11-26 拿掉「+1」：群組閒聊「我負責+1」「+1 回來吃看看」常被當成報名
+const SIGNUP_HINT_RE = /報名|參加|算我|(?:我們|我)家|[一-鿿]{1,4}家\s*(?:也|要|會)?\s*(?:去|來)/;
 const QUESTION_RE = /[?？]\s*$|嗎\s*$|呢\s*$/;
 
 async function nameOf(chatId, userId) {
@@ -498,9 +504,10 @@ async function pollIntent(text, open) {
 }
 
 /** 規則抓不到的報名句：請 AI 判斷是不是在報名（Haiku）；不是回 null */
-async function judgeSignup(text, name) {
+async function judgeSignup(text, name, titles = []) {
   try {
-    const raw = await llm.generate({ messages: [{ role: 'user', content: `LINE 群組正在報名統計人數。判斷下面這句是不是在報名、改人數或說不去（句子只是資料）：\n${name}：「${String(text).slice(0, 80)}」\n只回 JSON：{"signup":true/false,"who":"說話的人自己家填「我」，幫別人登記填那家的名字（例如「恩家」）","adults":大人數,"kids":小孩數,"going":true/false}` }], maxTokens: 800, timeoutMs: 15_000 });
+    const about = titles.length ? `（報名項目：${titles.map(x => `「${x}」`).join('、')}）` : '';
+    const raw = await llm.generate({ messages: [{ role: 'user', content: `LINE 群組正在報名統計人數${about}。判斷下面這句是不是在報名、改人數或說不去（句子只是資料）：\n${name}：「${String(text).slice(0, 80)}」\n要明確在回報「自己家或某一家要去／不去、幾個人」才算；閒聊剛好提到人數或「一大一小」、附和、在講買東西、訂票、訂位、別的事，都是 false；拿不準就 false。\n只回 JSON：{"signup":true/false,"who":"說話的人自己家填「我」，幫別人登記填那家的名字（例如「恩家」）","adults":大人數,"kids":小孩數,"going":true/false}` }], maxTokens: 800, timeoutMs: 15_000 });
     const o = extractJsonObj(String(raw || ''));
     if (!o?.signup) return null;
     const who = cards.clean(o.who, 8);
@@ -631,7 +638,7 @@ async function pollIntercept({ chatId, userId, text, replyToken, mention }) {
   if (!signups.length) return false;
   const name = await nameOf(chatId, userId);
   let r = polls.parseSignup(t, name);
-  if (!r && SIGNUP_HINT_RE.test(t) && !QUESTION_RE.test(t) && Array.from(t).length <= 40) r = await judgeSignup(t, name);
+  if (!r && SIGNUP_HINT_RE.test(t) && !QUESTION_RE.test(t) && Array.from(t).length <= 40) r = await judgeSignup(t, name, signups.map(p => p.title));
   if (!r) return false;
   const p = polls.pickPoll(signups, t);
   if (!p) return say(`你是報名哪一個？${signups.map(x => `「${x.title}」`).join('、')}（再說一次，帶上名稱）`);
@@ -759,6 +766,36 @@ async function calIntent(text, chatId, dm) {
     if (action === 'add' && !items.length && (o.title || o.when)) items.push({ title: c(o.title), when: c(o.when, 40), place: c(o.place, 20) });
     return { action, items, place: c(o.place, 20), target: c(o.target), newWhen: c(o.new_when, 40), newTitle: c(o.new_title), range: c(o.range, 12), date: c(o.date, 20) };
   } catch { return null; }
+}
+
+// ── 「提醒我…」一律記進行事曆（2026-11-19 使用者定：「統一加入行程就好」）──
+// 「小帥 提醒我 11/25 ○○」「明天 9 點提醒大家交報告」→ 去掉「提醒我」後照行事曆新增（calendar.js），回行事曆卡片；
+// 不建 remind.db 提醒。當天 7:00 後第一個人講話時的「☀️ 今天的行程」（免費回覆）就是提醒。
+// 沒講幾點記成全天。看不出日期的（「30 分鐘後提醒我」）交給後面照常聊。綁了旅遊行程的群也照記（講了「提醒」就是要記）
+const remindSpecOf = remind.remindSpecOf; // 去掉「小帥」「提醒我／大家」，剩「日期 時間 內容」（放在 remind，共用）
+export const CAL_REMIND_NOTE = '當天早上 7 點後有人在這裡說話時，小帥會貼「今天的行程」提醒大家';
+/** 回 true＝處理掉了（回覆已用掉）。群組要叫小帥；私訊（TED）每句都看 */
+async function remindIntercept({ chatId, userId, text, replyToken, mention, dm }) {
+  if (!userId || (!dm && !mention) || !db) return false;
+  const spec = remindSpecOf(text);
+  if (!spec) return false;
+  const now = Date.now();
+  const w = cal.parseWhen(spec, now);
+  if (!w || w.error || !w.day) return false; // 沒講哪一天：交給後面照常聊（prompt 會請他講清楚）
+  const say = async (msgs) => {
+    try { await replyMsgs(replyToken, typeof msgs === 'string' ? [{ type: 'text', text: msgs }] : msgs.filter(Boolean)); } catch (err) { console.warn(`[xiaoshuai-cal] 回覆失敗：${err.message}`); }
+    return true;
+  };
+  const own = cal.titleOf(spec, w);
+  if (!own.title) return say('要記什麼事？例如「小帥 提醒我 11/25 交報告」');
+  const byName = dm ? ((await lineApi.getProfile?.(userId).catch(() => null))?.displayName || '我') : await nameOf(chatId, userId);
+  const r = cal.add(chatId, { day: cal.resolveDay(w, now), time: w.time, title: own.title, place: own.place, by: userId, byName }, now);
+  if (r.dup) return say([{ type: 'text', text: `行事曆已經有了，沒重複記：${cal.whenLabel(r.dup)} ${r.dup.title}\n${CAL_REMIND_NOTE}` }]);
+  if (r.error) return say(r.error);
+  console.log(`[xiaoshuai-cal] ${chatId.slice(0, 8)} 提醒→行事曆 #${r.event.id} ${r.event.day} ${r.event.time || '全天'}「${r.event.title}」`);
+  if (!dm) calRefreshDmPages();
+  const url = await calPage(chatId, dm);
+  return say([{ type: 'text', text: `記到行事曆了 📅\n${CAL_REMIND_NOTE}` }, cal.eventFlex(r.event, { dm, url })]);
 }
 
 /** 行事曆相關的話，回 true＝處理掉了（回覆已用掉）。群組要叫小帥；私訊（TED）每句都看 */
@@ -1309,7 +1346,7 @@ function sendCardEntry() {
 
 /** 有人回提議：yes 就做（用這則的回覆送結果），no 回一句好。回 true＝回覆用掉了 */
 async function nudgeAnswer({ chatId, userId, text, replyToken }) {
-  if (!userId || pendingEdits.has(chatId) || pendingOpen.has(`${chatId}:${userId}`)) return false;
+  if (!userId || pendingOpen.has(`${chatId}:${userId}`)) return false;
   const r = nudge.answer(chatId, userId, text);
   if (!r) return false;
   const say = async (msgs) => {
@@ -1396,7 +1433,7 @@ ${foods ? `\n這群收藏過的美食（可以拿來當選項）：\n${String(fo
 
 /** 沒人叫小帥的一句話：值得問就問一句。回 true＝回覆用掉了 */
 async function nudgeMaybe({ chatId, userId, text, replyToken }) {
-  if (!userId || !brain.inHours() || pendingEdits.has(chatId)) return false;
+  if (!userId || !brain.inHours()) return false;
   const buf = brain._state(chatId).buf;
   const kind = nudge.prefilter(text, buf, { looksLikeCalendar: cal.looksLikeCalendar });
   if (!kind || !nudge.canAsk(chatId, kind, { buf }).ok) return false;
@@ -1637,12 +1674,6 @@ export function pickTripDetail(text, cands, { pendingName = null, lastName = nul
   return { name: (upcoming[0] || cands[cands.length - 1]).name, how: 'guess' };
 }
 
-function pendingOf(chatId) {
-  const p = pendingEdits.get(chatId);
-  if (p && Date.now() - p.at > PENDING_TTL_MS) { pendingEdits.delete(chatId); return null; }
-  return p || null;
-}
-
 function listMemories(chatId) {
   return db.all('SELECT id, content FROM memories WHERE chat_id = ? ORDER BY id', chatId);
 }
@@ -1702,24 +1733,8 @@ export function addMemories(chatId, items) {
 
 // ── AI ─────────────────────────────────────────────
 
-const TRIP_OPS_GUIDE = `有人明確要求改、加、刪行程時，JSON 加 "trip_edit": {"ops": [...]}，reply 用一句話說你打算怎麼改，最後問「這樣改可以嗎？」。沒人要求就不要改；看不懂要改哪裡就先反問。
-ops（day 用 D1～D6，index 是上面行程的編號數字）：
-- {"op":"update_item","day":"D2","index":3,"fields":{"when":"16:00","title":"粗體標題","text":"一般文字","sub":"小字說明"}}（只放要改的欄位，空字串＝拿掉；原本小字說明（括號裡那段）的內容不要再抄進 title，不然網頁會重複出現）
-- {"op":"add_item","day":"D4","after":2,"item":{"when":"18:30","title":"燒肉晚餐","sub":"木更津站附近"}}（after＝插在第幾項後面，0＝最前面）
-- {"op":"remove_item","day":"D4","index":3}
-- {"op":"set_day","day":"D4","date":"12/27（日）","place":"🛍️ 木更津 Outlet → 🍖 燒肉"}（每日行程標題）
-- {"op":"set_glance","day":"D4","emoji":"🍖","place":"…","note":"…"}（最上面「這幾天要去哪」那一行）
-- {"op":"set_more","day":"D2","title":"晴空塔聖誕市集資訊","lines":["📍 …","🕔 …"]}（整個換掉那天的「補充資訊」收合框，最多 8 行、每行 80 字；資訊要上網查確實再寫）
-- {"op":"remove_more","day":"D2"}（拿掉那天的補充資訊）
-行程表第一行寫「通用版面」的，另外還能用（手刻版面不能用，會被擋）：
-- {"op":"add_day","after":2,"date":"1/30","weekday":"六","emoji":"⛷️","place":"岩原滑雪場","note":"晚上：東京巨蛋點燈","color":"ski"}（新增一天；after＝插在第幾天後面，不給就加在最後；color：fly 交通日／city 城市／ski 雪場戶外；插在中間時後面的天數會往後重新編號）
-- {"op":"remove_day","day":"D3"}（刪掉一整天，後面往前遞補）
-- {"op":"set_meta","title":"頁面標題","dates":"1/30（六）— 2/6（六）・8 天","subtitle":"高雄 ⇄ 東京｜幾家幾人"}（只放要改的）
-- {"op":"set_info","title":"🏨 住宿","hint":"錦糸町 5 晚","lines":["…","…"]}（資訊區一塊，同標題就整塊換掉，最多 12 行）／{"op":"remove_info","title":"🏨 住宿"}
-- {"op":"add_link","title":"🚌 巴士時刻表","url":"https://…"}（只收 https）／{"op":"remove_link","index":2}
-有人要你照一份貼上來的行程（文字，或【附上的照片】裡的行程表）排進去：直接在這次的 JSON 給出 trip_edit（新增的天用 add_day，加在最後的話它的編號就是現有天數＋1，同一批就能接著 add_item 填細項；原本的天有變也一起改），系統會把完整修改列出來給大家確認、有人回「好」才改，所以不要只用文字問「對的話說好」而不給 trip_edit。看不清楚或跟現有行程衝突的地方，在 reply 說明你怎麼處理。一次最多 15 個修改，太多就先做前面幾天，reply 說剩下的下一輪再補。
-行程改了地點或活動，那天的補充資訊如果還在講舊的東西，要提醒大家，問要不要一起更新或拿掉。
-改到某天主要去哪，set_day 的 place 和 set_glance 也要一起改。
+const TRIP_GUIDE = `行程網頁由 TED 在電腦上改，你不能改行程：有人要你改、加、刪行程，或貼一份行程請你排進去，就說「行程請 TED 改喔」，不要說你改好了。
+有人想在網頁某天底下留言（例如提醒大家帶什麼），請他照這個格式說：「小帥 12/26 留言：內容」（100 字內，系統會直接寫上去，網頁會顯示他的 LINE 名稱）；要刪就說「小帥 刪掉 12/26 留言 2」。你自己不要寫留言、也不要說留好了。
 有人問整趟行程大概怎樣、或某幾天要幹嘛，JSON 加 "trip_cards": ["D3"]（整趟給 ["all"]），系統會用行程表做成一天一張的卡片；reply 只要一句「行程在這，左右滑看每天👇」，不要自己再列一次行程。
 有人要看行程某一段的圖（截圖、傳圖、「給我看 D4」「住宿長怎樣」），JSON 加 "trip_shot": "段落"，段落只能是：${shot.SECTION_KEYS}；reply 一句帶過就好（圖會另外附上）。只是問問題、用文字回答就夠的不用截。`;
 
@@ -1754,13 +1769,9 @@ function tripSection(tripCtx) {
     const list = tripCtx.all.map(t => `${t.title} ${t.url}`).join('；');
     return `\n\n【這個群有綁行程網頁】${list}（這次沒附內容；有人要行程網址就直接把上面的網址貼給他，這是例外，可以貼；問到行程細節，請他直接問哪一天或哪件事，你就看得到）`;
   }
-  const lines = [`\n\n【這個群的行程表】${tripCtx.title ? `「${tripCtx.title}」` : ''}（網頁：${tripCtx.url}；有人要網址、連結就直接貼這個網址，這是例外，可以貼）`, tripCtx.outline, '', TRIP_OPS_GUIDE];
+  const lines = [`\n\n【這個群的行程表】${tripCtx.title ? `「${tripCtx.title}」` : ''}（網頁：${tripCtx.url}；有人要網址、連結就直接貼這個網址，這是例外，可以貼）`, tripCtx.outline, '', TRIP_GUIDE];
   if (tripCtx.others?.length) {
     lines.push('', `【這個群還綁了別的行程】${tripCtx.others.map(t => `「${t.title}」`).join('、')}（這次沒附內容）。上面附的是系統判斷這句在講的那份；如果他其實在講另一份（例如這份裡找不到他問的日期、地點或活動），不要改、也不要上網去開那份網頁，直接說「你是說『那份的標題』嗎？再講一次，帶上年份或月份（例如 2027、一月），我就叫得出來」。`);
-  }
-  if (tripCtx.pending) {
-    lines.push('', '【等大家確認的行程修改】', ...tripCtx.pending.map(c => `・${c}`),
-      '最新那句如果是同意這些修改（好、OK、可以、改吧），JSON 加 "trip_confirm": true，reply 簡短回一句就好；如果是不要、取消，加 "trip_confirm": false；跟這件事無關就不要加。');
   }
   return lines.join('\n');
 }
@@ -1818,6 +1829,28 @@ export function parseDraw(d) {
   return { what: what || (trip ? '行程圖' : ''), style, edit: d.edit === true, trip };
 }
 
+/** 小帥從對話自己記行事曆：綁了旅遊行程的那幾天跳過（那是改行程）；記好重寫月曆網頁，回記進去的 event */
+function autoCalendar(chatId, items, now = Date.now()) {
+  let skipDays = new Set();
+  try { skipDays = new Set(tripsOf(chatId).flatMap(n => trip.daysOf(n)).map(d => d.day)); } catch { /* 讀不到行程就不跳 */ }
+  const r = cal.autoAdd(chatId, items, { now, skipDays });
+  for (const x of r.skipped) console.log(`[xiaoshuai-cal] ${chatId.slice(0, 8)} 自動記略過「${x.title}」：${x.why}`);
+  if (r.added.length) {
+    for (const e of r.added) console.log(`[xiaoshuai-cal] ${chatId.slice(0, 8)} 從對話自動記 #${e.id} ${e.day} ${e.time || '全天'}「${e.title}」`);
+    calPage(chatId, false).then(() => calRefreshDmPages()).catch(() => {});
+  }
+  return r.added;
+}
+
+/** AI 給的 calendar 欄位 → [{ title, when, place }]（最多 3 筆），沒有回 null */
+export function parseCalendar(v) {
+  const arr = Array.isArray(v) ? v : v && typeof v === 'object' ? [v] : [];
+  const out = arr.filter(x => x && typeof x === 'object' && typeof x.title === 'string' && typeof x.when === 'string')
+    .map(x => ({ title: cards.clean(x.title, 30), when: cards.clean(x.when, 40), place: typeof x.place === 'string' ? cards.clean(x.place, 20) : '' }))
+    .filter(x => x.title && x.when).slice(0, 3);
+  return out.length ? out : null;
+}
+
 /** AI 回的文字 → { reply, remember }；壞掉的 JSON 盡量救回來 */
 export function parseReply(raw, mode) {
   const { obj: o, text } = parseLlmJson(raw);
@@ -1826,8 +1859,6 @@ export function parseReply(raw, mode) {
       reply: typeof o.reply === 'string' ? o.reply.trim() : '',
       remember: Array.isArray(o.remember) ? o.remember : [],
       toMe: o.to_me === true,
-      tripEdit: Array.isArray(o.trip_edit?.ops) && o.trip_edit.ops.length ? o.trip_edit.ops : null,
-      tripConfirm: typeof o.trip_confirm === 'boolean' ? o.trip_confirm : null,
       tripShot: typeof o.trip_shot === 'string' && shot.sectionOf(o.trip_shot) ? o.trip_shot : null,
       saveLink: o.save_link && typeof o.save_link === 'object' && typeof o.save_link.url === 'string' ? o.save_link : null,
       listLinks: o.list_links && typeof o.list_links === 'object' ? o.list_links : null,
@@ -1846,12 +1877,13 @@ export function parseReply(raw, mode) {
       cards: Array.isArray(o.cards) && o.cards.length ? o.cards.slice(0, 5) : null,
       fitness: coach.parseFitness(o),
       draw: parseDraw(o.draw),
+      calendar: parseCalendar(o.calendar),
     };
   }
   // 沒有完整 JSON：被點名時用救回的 reply（或 JSON 前的話）當回覆，絕不送 JSON 原文；其他情況當作不說話
   const plain = mode === 'mention' || mode === 'followup' ? text.slice(0, 400) : '';
   if (/\{\s*"/.test(String(raw || ''))) console.warn(`[xiaoshuai] AI 回覆的 JSON 不完整（${String(raw).length} 字，結尾：${JSON.stringify(String(raw).slice(-40))}）`);
-  return { reply: plain, remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null };
+  return { reply: plain, remember: [], toMe: false, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null, calendar: null };
 }
 
 // 講到行程才把整份行程（含補充資訊，幾千字）給 AI；閒聊只給一行「有綁行程」，省 token
@@ -1868,19 +1900,103 @@ export function tripNamedInLastReply(infos, transcript, now = Date.now()) {
   return hit.length === 1 ? hit[0].name : null;
 }
 
+// ── 行程網頁留言（2026-11-26）：小帥不改行程，只把群組成員的留言寫到網頁那天底下 ──
+// 關鍵字直達、不經 AI、不用回「好」：內容是從訊息原文切出來的，沒有 AI 誤解的問題；寫錯可以刪、git 有紀錄
+const COMMENT_MAX = 100;
+const COMMENT_RATE_N = 10, COMMENT_RATE_MS = 10 * 60_000; // 每群 10 分鐘最多 10 則（每則都是一次 commit＋網頁部署）
+const commentHits = new Map(); // chatId → [時間戳]
+
+/**
+ * 解析留言指令（只把全形數字、Ｄ、／轉半形，內容其他字照原樣存）：
+ * 「小帥 12/26 留言：內容」「小帥 聖誕 D3 留言 內容」「小帥 幫我在第3天留言:內容」→ { kind:'add', hint, day, text }
+ * 「小帥 刪掉 12/26 留言 2」「小帥 刪掉 D3 第 2 則留言」→ { kind:'del', hint, day, index }；「小帥 留言」→ { kind:'help' }；其他 null
+ */
+export function parseComment(raw) {
+  const t = String(raw || '').replace(/[０-９Ｄｄ／]/g, c => c.normalize('NFKC')).trim()
+    .replace(/^(?:@\S+\s+)*/, '').replace(/^小帥[\s,，、:：]*/, '');
+  const DAY = '(D\\s*\\d{1,2}|第\\s*\\d{1,2}\\s*天|\\d{1,2}\\s*/\\s*\\d{1,2})';
+  let m = new RegExp(`^(?:刪掉|刪除|拿掉)\\s*([^:：]{0,12}?)\\s*${DAY}\\s*(?:的)?\\s*(?:第\\s*(\\d{1,3})\\s*則\\s*留言|留言\\s*(?:第\\s*)?(\\d{1,3})\\s*則?)\\s*$`, 'i').exec(t);
+  if (m) return { kind: 'del', hint: m[1].trim(), day: m[2], index: +(m[3] || m[4]) };
+  m = new RegExp(`^(?:幫我)?\\s*(?:在)?\\s*([^:：]{0,12}?)\\s*${DAY}\\s*(?:那天)?\\s*(?:的)?\\s*留言\\s*[:：,，\\s]\\s*([\\s\\S]+)$`, 'i').exec(t);
+  if (m) return { kind: 'add', hint: m[1].trim(), day: m[2], text: m[3].trim() };
+  return /^(?:我要|怎麼|如何|可以)?\s*留言\s*[?？]?$/.test(t) ? { kind: 'help' } : null;
+}
+
+/** 行程裡哪一天：D3／第3天 → 'D3'；12/26 → 比對 days[].glance.d；找不到回 null */
+export function dayIdOf(t, day) {
+  const days = Array.isArray(t?.days) ? t.days : [];
+  const s = String(day || '').replace(/\s+/g, '');
+  const n = /^(?:D|第)(\d{1,2})天?$/i.exec(s);
+  if (n) return +n[1] >= 1 && +n[1] <= days.length ? `D${+n[1]}` : null;
+  const md = /^(\d{1,2})\/(\d{1,2})$/.exec(s);
+  if (!md) return null;
+  const i = days.findIndex(d => { const g = /^(\d{1,2})\/(\d{1,2})/.exec(d.glance?.d || d.date || ''); return g && +g[1] === +md[1] && +g[2] === +md[2]; });
+  return i >= 0 ? `D${i + 1}` : null;
+}
+
+async function commentIntercept({ chatId, userId, text, replyToken, mention }) {
+  if (!mention || !userId) return false;
+  const c = parseComment(text);
+  if (!c) return false;
+  const names = tripsOf(chatId);
+  if (!names.length) return false;
+  const tag = `[xiaoshuai-trip] ${chatId.slice(0, 8)}`;
+  const say = async (msg) => {
+    try { await replyMsgs(replyToken, [{ type: 'text', text: msg }]); } catch (err) { console.warn(`${tag} 留言回覆失敗：${err.message}`); }
+    return true;
+  };
+  if (c.kind === 'help') return say(`留言這樣說：小帥 12/26 留言：內容（${COMMENT_MAX} 字內）\n要刪：小帥 刪掉 12/26 留言 2（第幾則看網頁上留言前面的編號）`);
+  // 哪一份行程、哪一天：日期講法直接比對每份行程；D3／第3天在綁了好幾份時靠標題線索，沒線索就反問
+  const datas = (await Promise.all(names.map(async n => ({ name: n, t: await trip.data(n) })))).filter(x => x.t);
+  let hits = datas.map(x => ({ ...x, id: dayIdOf(x.t, c.day) })).filter(x => x.id);
+  if (hits.length > 1) {
+    const infos = hits.map(x => trip.info(x.name) || { name: x.name, title: x.name, start: null });
+    const pick = pickTripDetail(`${c.hint} ${c.day}`, infos);
+    if (pick.how === 'guess') {
+      return say(`這群綁了好幾份行程，${c.day} 是哪一份？\n${infos.map(i => `・${i.title}`).join('\n')}\n請在日期前加上行程名稱再說一次，例如：小帥 ${infos[0].title.slice(0, 6)} ${c.day} 留言：內容`);
+    }
+    hits = hits.filter(x => x.name === pick.name);
+  }
+  if (!hits.length) return say(`這群綁的行程裡沒有 ${c.day} 這天，請用網頁上的日期說，例如：小帥 12/26 留言：內容`);
+  const { name, id } = hits[0];
+  const url = `${trip.tripUrl(name)}#${id.toLowerCase()}`;
+  if (c.kind === 'del') {
+    const by = await nameOf(chatId, userId);
+    const r = await trip.comment(name, { op: 'remove_comment', day: id, index: c.index }, by === '某人' ? '' : by);
+    console.log(`${tag} 刪留言 ${name} ${id} 第 ${c.index} 則：${r.ok ? 'ok' : r.error}`);
+    return say(r.ok ? `已刪掉：${r.changes.join('；')}\n網頁約一分鐘後更新：${url}` : `沒刪成：${r.error}`);
+  }
+  const body = c.text;
+  if (/[<>]/.test(body)) return say('留言裡不能有 < 或 > 符號，拿掉再說一次');
+  if (Array.from(body).length > COMMENT_MAX) return say(`留言最多 ${COMMENT_MAX} 字，目前 ${Array.from(body).length} 字，縮短一點再說一次`);
+  const now = Date.now();
+  const recent = (commentHits.get(chatId) || []).filter(ts => now - ts < COMMENT_RATE_MS);
+  if (recent.length >= COMMENT_RATE_N) return say('留言太快了，過幾分鐘再留 🙏');
+  const who = await nameOf(chatId, userId);
+  if (!who || who === '某人') return say('抓不到你的 LINE 名稱，等一下再試一次');
+  const by = Array.from(who.replace(/</g, '＜').replace(/>/g, '＞')).slice(0, 12).join('');
+  const at = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 16);
+  const r = await trip.comment(name, { op: 'add_comment', day: id, text: body, by, at }, by);
+  console.log(`${tag} 留言 ${name} ${id} by ${by}：${r.ok ? 'ok' : r.error}`);
+  if (!r.ok) return say(`沒留成：${r.error}`);
+  recent.push(now);
+  commentHits.set(chatId, recent);
+  const no = /第 (\d+) 則留言/.exec(r.changes[0] || '')?.[1]; // 固定編號：別人刪留言不會讓它變
+  return say(`留言寫上去了：${r.changes.join('；')}\n網頁約一分鐘後更新：${url}${no ? `\n要刪掉說：小帥 刪掉 ${c.day} 留言 ${no}` : ''}`);
+}
+
 async function tripContext(chatId, text, transcript = []) {
   const names = tripsOf(chatId);
   if (!names.length) return null;
-  const pending = pendingOf(chatId);
   const infos = names.map(n => trip.info(n) || { name: n, title: n, start: null });
   const named = tripNamedInLastReply(infos, transcript);
   if (named) lastTrip.set(chatId, { name: named, at: Date.now() });
   const lastT = lastTrip.get(chatId);
   const tripRecent = lastT && Date.now() - lastT.at < LAST_TRIP_MS;
-  if (!pending && !tripRecent && !aboutTrip(text)) return { brief: true, all: infos.map(i => ({ title: i.title, url: trip.tripUrl(i.name) })) };
+  if (!tripRecent && !aboutTrip(text)) return { brief: true, all: infos.map(i => ({ title: i.title, url: trip.tripUrl(i.name) })) };
   const cands = await Promise.all(infos.map(async i => ({ ...i, outline: names.length > 1 ? await trip.outline(i.name) : '' })));
   const last = lastTrip.get(chatId);
-  const pick = pickTripDetail(text, cands, { pendingName: pending?.name, lastName: last && Date.now() - last.at < LAST_TRIP_MS ? last.name : null });
+  const pick = pickTripDetail(text, cands, { lastName: last && Date.now() - last.at < LAST_TRIP_MS ? last.name : null });
   const startText = (i) => i.start ? `${i.start.year ? `${i.start.year}/` : ''}${i.start.month}/${i.start.day} 出發` : '日期未定';
   // 綁了好幾份又看不出在講哪一份：不猜，讓小帥列出來問
   if (pick.how === 'guess') return { ambiguous: true, all: infos.map(i => ({ title: i.title, when: startText(i), url: trip.tripUrl(i.name) })) };
@@ -1889,7 +2005,7 @@ async function tripContext(chatId, text, transcript = []) {
   if (!outline) return null;
   lastTrip.set(chatId, { name, at: Date.now() });
   const others = infos.filter(i => i.name !== name).map(i => ({ title: i.title, url: trip.tripUrl(i.name) }));
-  return { name, url: trip.tripUrl(name), title: infos.find(i => i.name === name)?.title, outline, others, pending: pending?.name === name ? pending.changes : null };
+  return { name, url: trip.tripUrl(name), title: infos.find(i => i.name === name)?.title, outline, others };
 }
 
 // LINE 免費回覆（replyToken）收到訊息後大約一分鐘內有效：從收到那則開始算，總共留 55 秒，
@@ -1970,6 +2086,16 @@ async function ask(chatId, mode, { trigger, transcript, allowChimeIn = true, lon
   if (saved.length) console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 記住：${saved.join('｜')}`);
   // 這一輪程式真的做成的動作（宣稱檢查用；各功能做成時再加）
   parsed.done = new Set(saved.length ? ['memory'] : []);
+  // 小帥自己決定記行事曆（2026-11-19）：跟記憶同一套把關（上網、看照片、判斷輪、有人說不用記 → 不記）；只限開了小帥的群組
+  if (!dm && parsed.calendar && !parsed.webUsed && !image && !(mode === 'window' && parsed.toMe) && !claims.noMemoryAsked(trigger, transcript)) {
+    const added = autoCalendar(chatId, parsed.calendar);
+    if (added.length) {
+      parsed.done.add('cal');
+      parsed.calAdded = added;
+      // 被叫而且這輪本來就要回：回覆最後補一句記了什麼（不另外講話）
+      if ((mode === 'mention' || mode === 'followup') && parsed.reply) parsed.reply = `${parsed.reply}\n（我把 ${added.map(e => `${cal.dayLabel(e.day).replace(/（.）/, '')} ${e.title}`).join('、')} 記到行事曆了）`;
+    }
+  }
   return parsed;
 }
 
@@ -2159,10 +2285,26 @@ function drawDeps(chatId, replyToken, dm) {
   };
 }
 
-/** 群裡有人講話、小帥這次不用回：用這則的回覆把查好的答案貼出來 */
+/** 有排著要送的：查好的答案，或到期的提醒（remind 用 core/reply-extras.js 併進回覆） */
+function pendingOut(chatId) {
+  return heldAnswers(chatId, 1).length > 0 || !!lineApi?.hasReplyExtras?.(chatId);
+}
+
+/** 群裡有人講話、小帥這次不用回：用這則的回覆把查好的答案（和到期提醒）貼出來 */
 async function deliverHeld(chatId, replyToken) {
   const rows = heldFitting(chatId, 5);
-  if (!rows.length || !replyToken) return false;
+  if (!replyToken) return false;
+  if (!rows.length) {
+    // 沒有查好的答案，但有到期提醒（remind）：這則的回覆拿來只送提醒（core/reply-extras.js 會帶上）
+    if (!lineApi?.hasReplyExtras?.(chatId)) return false;
+    try {
+      const res = await lineApi.reply(replyToken, []);
+      return !res?.skipped;
+    } catch (err) {
+      console.warn(`[xiaoshuai] 用回覆送到期提醒失敗：${err.message}`); // 留著，下一個人講話再試
+      return false;
+    }
+  }
   try {
     const res = await replyMsgs(replyToken, rows.flatMap(heldMessages));
     releaseHeld(chatId, rows);
@@ -2199,10 +2341,7 @@ async function send(chatId, mode, replyToken, reply, images = [], label = '') {
   return true;
 }
 
-/**
- * 行程修改：有人提要改 → 程式檢查並列出要改的內容（不用 AI 寫的摘要，避免說一套改一套）→ 等人說好；
- * 有人說好 → 寫進網頁並推上 GitHub。回傳要接在 reply 後面的文字
- */
+/** 行程：卡片、截圖（2026-11-26 起不改行程）。回傳要接在 reply 後面的文字 */
 // 「同意」要由程式從觸發訊息本身認定，不能只靠 AI（AI 那輪若讀了網頁，可能被網頁內容誤導成「有人同意」）
 const AFFIRM_RE = /^(小帥\s*[,，、]?\s*)?(好|好啊|好喔|好的|好呀|ok|okay|可以|可以啊|可以喔|改吧|就這樣|沒問題|對|嗯|讚|go|確認|確定|確認無誤)\s*[!！。.~～]*$/i;
 export const isAffirm = (text) => AFFIRM_RE.test(String(text || '').normalize('NFKC').trim());
@@ -2225,60 +2364,7 @@ async function handleTrip(chatId, parsed, trigger) {
       if (r.cut) shotNote = `\n\n（${r.label}太長，只截了上面一段，完整的看網頁：${ctx.url}${/^d[1-9]$/i.test(parsed.tripShot) ? `#${parsed.tripShot.toLowerCase()}` : ""}）`;
     } else shotNote = `\n\n（${r.error}）`;
   }
-  return shotNote + await tripEdits(chatId, parsed, trigger, ctx);
-}
-
-/** 這批修改動到哪幾段（給改完附圖用）：set_glance → 最上面那段，其他看 day；最多 3 段 */
-export function shotKeysOf(ops) {
-  const keys = [];
-  for (const o of ops || []) {
-    const k = ['set_glance', 'add_day', 'remove_day'].includes(o?.op) ? 'glance'
-      : ['set_info', 'remove_info'].includes(o?.op) ? 'info'
-        : ['add_link', 'remove_link'].includes(o?.op) ? 'links'
-          : o?.op === 'set_meta' ? null
-            : (typeof o?.day === 'string' ? o.day.toUpperCase() : null);
-    if (k && shot.sectionOf(k) && !keys.includes(k)) keys.push(k);
-  }
-  return keys.slice(0, 3);
-}
-
-async function tripEdits(chatId, parsed, trigger, ctx) {
-  const pending = pendingOf(chatId);
-  if (pending && parsed.tripConfirm === true && !parsed.webUsed && isAffirm(trigger?.text)) {
-    pendingEdits.delete(chatId);
-    const r = await trip.apply(pending.name, pending.ops, trigger?.name);
-    if (!r.ok) return `\n\n⚠️ 行程沒改成：${r.error}`;
-    parsed.done?.add('trip');
-    console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 行程已更新：${r.changes.join('；')}`);
-    // 附上改過那幾段的截圖讓大家確認（本機檔已是改好的版本，不用等網頁更新）
-    const shots = [];
-    for (const key of shotKeysOf(pending.ops)) {
-      const s = await shot.capture(await trip.pagePath(pending.name), key);
-      if (s.ok) shots.push(shot.imageMessage(s));
-    }
-    if (shots.length) parsed.images = [...(parsed.images || []), ...shots].slice(0, 4);
-    return `\n\n✅ 行程改好了${shots.length ? '，改過的地方附圖給大家看' : ''}，網頁大約一分鐘後更新：\n${ctx.url}`;
-  }
-  if (pending && parsed.tripConfirm === true) {
-    // AI 認為是同意，但不是單純的同意句（或那輪有上網）→ 不改，請對方明確回「好」
-    parsed.reply = '';
-    return '要改的話請直接回一個「好」，我就改 👍';
-  }
-  if (pending && parsed.tripConfirm === false) {
-    pendingEdits.delete(chatId);
-    return '';
-  }
-  if (!parsed.tripEdit) return '';
-  // 那輪有上網：只准提「補充資訊框」的修改（本來就要查資料才寫得出來），其他照舊擋；
-  // 一樣只是提案，程式列出完整內容，要有人在沒上網的下一輪單純回「好」才會改
-  const webOk = parsed.tripEdit.every(o => o?.op === 'set_more' || o?.op === 'remove_more');
-  if (parsed.webUsed && !webOk) return '\n\n（剛剛有上網查資料，為了安全這次先不改行程，要改的話請再說一次）';
-  const d = await trip.describe(ctx.name, parsed.tripEdit);
-  if (!d.ok) return `\n\n（這樣改不了：${d.error}）`;
-  pendingEdits.set(chatId, { name: ctx.name, ops: parsed.tripEdit, changes: d.changes, at: Date.now() });
-  parsed.done?.add('trip_pending');
-  const fromWeb = parsed.webUsed ? '\n（內容是網路上查到的，請先看過對不對）' : '';
-  return `\n\n📝 要改的內容：\n${d.changes.map(c => `・${c}`).join('\n')}${fromWeb}\n說「好」我就改（15 分鐘內有效）`;
+  return shotNote;
 }
 
 const savedText = (r) => [
@@ -2442,7 +2528,7 @@ async function handleCards(chatId, parsed) {
 
 /** AI 的 reply 裡「已經做好了」的宣稱，對應的動作這一輪沒做成就拿掉、改成如實說明（claims.js） */
 function guardReply(chatId, parsed) {
-  const g = claims.guardClaims(parsed.reply, parsed.done || new Set(), { structured: !!(parsed.tripEdit || parsed.njEvent || parsed.saveLink || parsed.fitness) });
+  const g = claims.guardClaims(parsed.reply, parsed.done || new Set(), { structured: !!(parsed.njEvent || parsed.saveLink || parsed.fitness) });
   if (g.removed.length) {
     console.log(`[xiaoshuai] ${chatId.slice(0, 8)} 擋下沒做成的宣稱（${g.removed.join('、')}）：${String(parsed.reply).slice(0, 60)}`);
     parsed.reply = g.reply;
@@ -2459,7 +2545,7 @@ async function think(chatId, job) {
   try { r = await thinkOnce(chatId, job); } finally { jobCtl.delete(job.replyToken); }
   if (job.isCancelled?.()) return { replied: false, cancelled: true }; // 被合併後的那句取代：這則的回覆不用（也不拿來貼存著的答案，免得跟重想的那則搶順序）
   // 這次小帥沒開口：回覆還沒用掉，順便貼查好的答案（要交給 Luna 的話回覆留給 Luna）
-  if (!r?.replied && !r?.handoff && heldAnswers(chatId, 1).length) await deliverHeld(chatId, job.replyToken);
+  if (!r?.replied && !r?.handoff && pendingOut(chatId)) await deliverHeld(chatId, job.replyToken);
   return r;
 }
 
@@ -2739,12 +2825,9 @@ async function newTripCommand(match, ctx) {
     `✅ 新行程開好了，也綁到這個群：${r.url}`,
     '（網頁大約一分鐘後上線）',
     '',
-    '接下來直接叫小帥排，例如：',
-    '・小帥 新增 1/30（六）飛東京、1/31（日）岩原滑雪場',
-    '・小帥 D1 加 13:05 華航高雄出發，17:25 到成田',
-    '・小帥 住宿寫錦糸町 5 晚、青森屋 2 晚',
-    '・小帥 頁面日期寫 1/30—2/6・8 天',
-    '也可以把整份行程打成文字貼上，請小帥照著排（小帥目前看不懂圖片）；每次改都會先列出來，有人說「好」才改。',
+    '行程內容請 TED 在電腦上排；大家可以叫小帥在網頁某天底下留言，例如：',
+    '・小帥 1/30 留言：記得帶護照影本',
+    '・刪留言：小帥 刪掉 1/30 留言 1',
   ].join('\n');
 }
 
@@ -2765,9 +2848,8 @@ async function tripCommand(match, ctx) {
     if (!target) return `這個群綁了 ${names.length} 份，要取消哪一份？\n${list()}\n例如：/小帥 行程 取消 ${names[0]}`;
     if (!names.includes(target)) return `這個群沒有綁「${target}」`;
     db.run('DELETE FROM trip_binds WHERE chat_id = ? AND name = ?', chatId, target);
-    if (pendingOf(chatId)?.name === target) pendingEdits.delete(chatId);
     if (lastTrip.get(chatId)?.name === target) lastTrip.delete(chatId);
-    return `已取消綁定「${target}」，小帥不會再改這份行程網頁（網頁還在）`;
+    return `已取消綁定「${target}」，小帥不會再幫這份行程寫留言（網頁還在）`;
   }
   if (!trip.validName(arg)) return '名稱只能用小寫英文、數字和 -，例如 christmas-ski-trip';
   if (names.includes(arg)) return `這個群已經綁了「${arg}」`;
@@ -2794,7 +2876,7 @@ export default {
 /小帥 狀態 — 開了沒、記了幾條
 /小帥 記憶 — 看小帥在這群記得什麼
 /小帥 忘記 — 清掉這群的記憶
-/小帥 行程 — 看這群綁的行程網頁（綁了之後可以請小帥改行程）
+/小帥 行程 — 看這群綁的行程網頁；小帥 12/26 留言：內容 — 留言到網頁那天底下（小帥 刪掉 12/26 留言 2）
 /小帥 存 <分類> <網址> — 收藏連結（也可以叫小帥「幫我記錄運動用 <網址>」）
 /小帥 收藏 [分類] — 看收藏；/小帥 收藏 刪 #編號 — 刪掉一筆
 小帥 開投票 標題：選項A、選項B，明天中午截止 — 開投票（按按鈕投，再按改票）；小帥 開報名 標題 — 之後直接打「我家 2大1小」
@@ -2910,9 +2992,12 @@ export default {
     isAdmin = ctx.isAdmin;
     brain = createBrain({ cfg: { idleThreshold: 30 }, isEnabled: (id) => enabled.has(id), onFire: think, onObserve: saveLog,
       // 小帥這次沒輪到開口（冷場、還在想上一句）：回覆沒用到 → 拿來貼查好的答案
-      onSkip: (chatId, job) => { if (heldAnswers(chatId, 1).length) deliverHeld(chatId, job.replyToken).catch(() => {}); } });
+      onSkip: (chatId, job) => { if (pendingOut(chatId)) deliverHeld(chatId, job.replyToken).catch(() => {}); } });
     if (!db) { console.warn('[xiaoshuai] 沒有 db provider，小帥停用'); return; }
     initDb();
+    // 開了小帥的群、或有排著的 held_answers（查好的答案、7:00 後的今日行程）：沒人要的回覆由小帥送，
+    // 到期提醒（remind）由 core/reply-extras.js 併進同一次回覆，不另外搶 replyToken
+    lineApi?.addIdleOwner?.('xiaoshuai', (id) => enabled.has(id) || heldAnswers(id, 1).length > 0);
     links.initLinks(db, llm);
     nj.initNjEvent(db);
     share.initShare(db, {
@@ -2978,6 +3063,7 @@ export default {
     if (item) await resolveName(userId, userId, item);
     if (await kbIntercept({ chatId: userId, userId, text, replyToken, event, dm: true })) return true;
     if (await shareIntercept({ chatId: userId, userId, text, replyToken, dm: true, transcript: brain._state(userId).buf })) return true;
+    if (await remindIntercept({ chatId: userId, userId, text, replyToken, dm: true })) return true;
     if (await calendarIntercept({ chatId: userId, userId, text, replyToken, dm: true })) return true;
     const trigger = item || { text, userId, ts: Date.now() };
     const quoted = quotedSelf(event);
@@ -3030,7 +3116,7 @@ export default {
     const r = polls.vote(chatId, p.id, userId, await nameOf(chatId, userId), +m[2]);
     if (r.error) console.log(`[xiaoshuai-poll] ${chatId.slice(0, 8)} 投票沒算：${r.error}`);
     // 投票不回話；這則的免費回覆拿來貼查好的答案、截止的結果
-    if (heldAnswers(chatId, 1).length) await deliverHeld(chatId, replyToken);
+    if (pendingOut(chatId)) await deliverHeld(chatId, replyToken);
     return true;
   },
 
@@ -3046,12 +3132,14 @@ export default {
     const addr = addressOf(text, event, quoted);
     const isMention = addr === 'direct';
     const judge = addr === 'soft';
-    // 回小帥主動提議的「好／不要」（只認短句；改行程、開投票自己的確認優先）
+    // 回小帥主動提議的「好／不要」（只認短句；開投票自己的確認優先）
     if (enabled.has(chatId) && await nudgeAnswer({ chatId, userId, text, replyToken })) return true;
+    if (enabled.has(chatId) && userId && await commentIntercept({ chatId, userId, text, replyToken, mention: isMention })) return true;
     if (enabled.has(chatId) && userId && await drawIntercept({ chatId, userId, text, replyToken, dm: false, mention: isMention, event })) return true;
     if (enabled.has(chatId) && await kbIntercept({ chatId, userId, text, replyToken, event, mention: isMention, dm: false })) return true;
     if (enabled.has(chatId) && await shareIntercept({ chatId, userId, text, replyToken, mention: isMention, dm: false, transcript: brain._state(chatId).buf })) return true;
     if (enabled.has(chatId) && userId && await pollIntercept({ chatId, userId, text, replyToken, mention: isMention })) return true;
+    if (enabled.has(chatId) && userId && await remindIntercept({ chatId, userId, text, replyToken, mention: isMention, dm: false })) return true;
     if (enabled.has(chatId) && await calendarIntercept({ chatId, userId, text, replyToken, mention: isMention, dm: false })) return true;
     // 時段外被叫：回一句休息中（reply 免費），同一群 30 分鐘內只回一次
     if (isMention && enabled.has(chatId) && !brain.inHours()) {
@@ -3068,7 +3156,7 @@ export default {
     if (!isMention && !judge && enabled.has(chatId) && !brain.status(chatId).windowLeftMs
       && await nudgeMaybe({ chatId, userId, text, replyToken })) return true;
     // 沒叫小帥、也不在跟小帥對話中 → 直接用這則回覆貼查好的答案（對話中的話留給小帥判斷，例如有人回「好」確認改行程）
-    if (!isMention && enabled.has(chatId) && !brain.status(chatId).windowLeftMs && heldAnswers(chatId, 1).length
+    if (!isMention && enabled.has(chatId) && !brain.status(chatId).windowLeftMs && pendingOut(chatId)
       && await deliverHeld(chatId, replyToken)) return true; // 這則的回覆用掉了
     return brain.handle(chatId, { replyToken, isMention, judge, trigger });
   },

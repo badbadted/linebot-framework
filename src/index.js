@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import { createRouter } from './core/router.js';
 import { idleAllowed, idleEvent, runIdleHooks } from './core/idle-reply.js';
 import { createLineAPI } from './core/line-api.js';
+import { attachReplyExtras } from './core/reply-extras.js';
 import { createScheduler } from './core/scheduler.js';
 import { createWebhookHandler } from './core/webhook.js';
 import { createEventDedup } from './core/event-dedup.js';
@@ -88,7 +89,8 @@ async function main() {
   await registry.initFromConfig(config.providers);
 
   // 初始化核心
-  const lineApi = createLineAPI(config.line.channelAccessToken);
+  // 所有回覆都經過 reply-extras：到期提醒等排著的東西併進下一次免費回覆，不推播
+  const lineApi = attachReplyExtras(createLineAPI(config.line.channelAccessToken));
   const router = createRouter();
   const scheduler = createScheduler({ lineApi });
 

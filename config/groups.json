@@ -17,7 +17,8 @@
     "travel",
     "bike",
     "swim",
-    "_llm"
+    "_llm",
+    "remind"
   ],
   "_name:C4d42b6072ca86ea3596875949ad37675": "妞揪",
   "C4d42b6072ca86ea3596875949ad37675": [
@@ -26,6 +27,23 @@
   "C27524147a75c584c9fdfc28497722133": [
     "niujiu",
     "travel",
+    "bike",
+    "swim"
+  ],
+  "C060da5f69f9fcdf5dbb5ec66208feeb5": [
     "bike"
+  ],
+  "Ccd58668c37e4d21c9639392d47f2bbaa": [
+    "dept"
+  ],
+  "C26cd3ee2b5b95bb9b55f3a6a20a596e8": [
+    "niujiu",
+    "gate"
+  ],
+  "Cb64cafa4f35bd82fb8875ea2bb57cc87": [
+    "gate"
+  ],
+  "C1f22649c5c4584adf159d2dba2de9a27": [
+    "gate"
   ]
 }

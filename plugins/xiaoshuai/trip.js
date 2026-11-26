@@ -1,5 +1,7 @@
 /**
- * 小帥改行程網頁：呼叫行程網頁 repo（temp-reports）的 tools/trip.mjs，改完 commit＋push 到 GitHub Pages
+ * 小帥與行程網頁：呼叫行程網頁 repo（temp-reports）的 tools/trip.mjs。
+ * 2026-11-26 起小帥不改行程（行程由 TED 在電腦上改），只寫留言（add_comment／remove_comment），寫完 commit＋push 到 GitHub Pages；
+ * 開新行程（create）保留。
  *
  * repo 在 Mac mini 上的 clone（預設 ~/apps/temp-reports，可用 TRIP_REPO_DIR 覆寫），push 走本機 SSH 金鑰。
  * 所有寫入都排隊一個一個做；套用前先 pull，push 失敗會 rebase 後重試一次。
@@ -81,8 +83,11 @@ export function detailOf(name, fallbackYear = new Date().getFullYear(), repo = T
   });
   // 標題後面帶行程頁首的日期說明（例如「大部分 2/6 回，妞家留到 2/9」），AI 才知道哪幾天只剩部分的人
   const dates = strip(r.t.meta?.dates);
-  return { name, title: `${strip(r.t.meta?.title || r.t.title || name).slice(0, 60)}${dates ? `（${dates.slice(0, 80)}）` : ''}`, sig: createHash('sha1').update(r.raw).digest('hex').slice(0, 16), days };
+  return { name, title: `${strip(r.t.meta?.title || r.t.title || name).slice(0, 60)}${dates ? `（${dates.slice(0, 80)}）` : ''}`, sig: sigOf(r.t), days };
 }
+
+// 內容雜湊：拿掉留言再算（每留一則就讓行事曆重標一次太浪費）
+const sigOf = (t) => createHash('sha1').update(JSON.stringify({ ...t, days: (t.days || []).map(({ comments, ...d }) => d) })).digest('hex').slice(0, 16);
 
 let queue = Promise.resolve();
 function serial(fn) {
@@ -153,53 +158,28 @@ export async function outline(name) {
   }
 }
 
-// 第一道格式檢查（trip.mjs 會再完整驗一次並跳脫輸出）：只收已知的修改種類、D1～D20、整數編號、
-// 文字欄位不含 < >，避免 AI 產出的東西帶 HTML 進公開網頁
-const OPS = new Set(['update_item', 'add_item', 'remove_item', 'set_day', 'set_glance', 'set_more', 'remove_more',
-  // 通用版面才有（trip.mjs 會再擋手刻版面）
-  'set_meta', 'set_info', 'remove_info', 'add_link', 'remove_link', 'add_day', 'remove_day']);
-const NO_DAY = new Set(['set_meta', 'set_info', 'remove_info', 'add_link', 'remove_link', 'add_day']);
-const TEXT_KEYS = new Set(['when', 'title', 'text', 'sub', 'date', 'place', 'emoji', 'note', 'dates', 'subtitle', 'hint', 'weekday', 'label']);
-const URL_RE = /^https:\/\/[^\s"'<>\\]{1,290}$/;
-
-export function checkOps(ops) {
-  if (!Array.isArray(ops) || !ops.length || ops.length > 15) return '修改內容格式不對';
-  for (const op of ops) {
-    if (!op || typeof op !== 'object' || !OPS.has(op.op)) return '不認得的修改';
-    if (!NO_DAY.has(op.op) && !/^D(?:[1-9]|1\d|20)$/i.test(String(op.day || ''))) return '日期編號不對';
-    if (op.url !== undefined && (typeof op.url !== 'string' || !URL_RE.test(op.url))) return '連結要是 https:// 開頭的網址';
-    if (op.color !== undefined && !['fly', 'city', 'ski'].includes(op.color)) return '顏色不對';
-    for (const k of ['index', 'after']) {
-      if (op[k] !== undefined && op[k] !== null && !Number.isInteger(op[k])) return '項目編號不對';
-    }
-    if (op.lines !== undefined) {
-      if (!Array.isArray(op.lines) || op.lines.length > 12) return '補充資訊格式不對';
-      if (op.lines.some(l => typeof l !== 'string' || l.length > 120 || /[<>]/.test(l))) return '文字內容不合法';
-    }
-    const texts = [op, op.fields, op.item].filter(x => x && typeof x === 'object');
-    for (const obj of texts) {
-      for (const [k, v] of Object.entries(obj)) {
-        if (!TEXT_KEYS.has(k)) continue;
-        if (typeof v !== 'string' || v.length > 120 || /[<>]/.test(v)) return '文字內容不合法';
-      }
-    }
+// 留言的第一道格式檢查（trip.mjs 會再完整驗一次並跳脫輸出）：一次只收一個 add_comment／remove_comment、D1～D20、
+// 文字欄位不含 < >。2026-11-26 起小帥不改行程，其他修改種類一律不收
+const COMMENT_OPS = new Set(['add_comment', 'remove_comment']);
+export function checkCommentOps(ops) {
+  if (!Array.isArray(ops) || ops.length !== 1) return '留言格式不對';
+  const op = ops[0];
+  if (!op || typeof op !== 'object' || !COMMENT_OPS.has(op.op)) return '不認得的修改';
+  if (!/^D(?:[1-9]|1\d|20)$/.test(String(op.day || ''))) return '日期編號不對';
+  if (op.op === 'remove_comment') return Number.isInteger(op.index) && op.index >= 1 && op.index <= 999 ? null : '留言編號不對';
+  for (const k of ['text', 'by', 'at']) {
+    if (typeof op[k] !== 'string' || !op[k].trim() || Array.from(op[k]).length > 120 || /[<>]/.test(op[k])) return '留言內容不合法';
   }
   return null;
 }
 
-/** 檢查修改內容，回 { ok, changes, error }（不寫檔） */
-export async function describe(name, ops) {
-  if (!validName(name)) return { ok: false, error: '行程名稱不合法' };
-  const bad = checkOps(ops);
-  if (bad) return { ok: false, error: bad };
-  try { return JSON.parse(await tool(['describe', name], ops)); }
-  catch (err) { return { ok: false, error: err.message.split('\n')[0] }; }
-}
+/** 寫一則留言或刪一則留言（op 見 checkCommentOps）→ commit → push。回 { ok, changes, error } */
+export const comment = (name, op, who) => write(name, [op], who);
 
-/** 套用修改 → commit → push。回 { ok, changes, error } */
-export function apply(name, ops, who) {
+/** 套用留言 → commit → push。回 { ok, changes, error } */
+function write(name, ops, who) {
   if (!validName(name)) return Promise.resolve({ ok: false, error: '行程名稱不合法' });
-  const bad = checkOps(ops);
+  const bad = checkCommentOps(ops);
   if (bad) return Promise.resolve({ ok: false, error: bad });
   return serial(async () => {
     const files = [`trips/${name}.json`, `${name}.html`];
@@ -209,7 +189,7 @@ export function apply(name, ops, who) {
       const before = (await git('status', '--porcelain')).stdout.trim();
       if (before) {
         console.error(`[xiaoshuai-trip] repo 有未提交的變動，拒絕更新：\n${before}`);
-        return { ok: false, error: 'Mac 上的行程網頁資料夾有其他未提交的改動，先暫停更新，請 TED 看一下' };
+        return { ok: false, error: 'Mac 上的行程網頁資料夾有其他未提交的改動，先暫停寫入，請 TED 看一下' };
       }
       await git('pull', '-q', '--rebase');
       lastPull = Date.now();
@@ -225,7 +205,7 @@ export function apply(name, ops, who) {
         return { ok: false, error: '偵測到資料以外的檔案有變動，已取消，請 TED 看一下' };
       }
       await git('add', ...files);
-      const msg = `行程：${r.changes.join('；').slice(0, 200)}\n\n${who || '群組成員'} 在 LINE 群組確認，由小帥更新`;
+      const msg = `留言：${r.changes.join('；').slice(0, 200)}\n\n${who || '群組成員'} 在 LINE 群組留言，由小帥寫入`;
       await git('commit', '-q', '-m', msg);
       committed = true;
       try {

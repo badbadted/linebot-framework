@@ -5,8 +5,8 @@
 
 import assert from 'node:assert/strict';
 import { createBrain, taipeiMinutes } from '../plugins/xiaoshuai/brain.js';
-import xiaoshuai, { tripNamedInLastReply, addressOf, handlePhoto, socialUrlFor, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, shotKeysOf, aboutTrip, pickTrip, pickTripDetail } from '../plugins/xiaoshuai/index.js';
-import { checkOps } from '../plugins/xiaoshuai/trip.js';
+import xiaoshuai, { tripNamedInLastReply, addressOf, handlePhoto, socialUrlFor, cardMessages, SHOT_CMD_RE, addMemories, isTally, ownHistory, llmTimeout, recentResearch, heldAnswers, parseReply, buildPrompt, memoryAllowed, isAffirm, aboutTrip, pickTrip, pickTripDetail, parseComment, dayIdOf } from '../plugins/xiaoshuai/index.js';
+import { checkCommentOps, detailOf } from '../plugins/xiaoshuai/trip.js';
 import * as links from '../plugins/xiaoshuai/links.js';
 import * as learning from '../plugins/xiaoshuai/learning.js';
 import * as weekly from '../plugins/xiaoshuai/weekly.js';
@@ -276,13 +276,13 @@ await test('指令不進對話紀錄', () => {
 });
 
 await test('parseReply：正常 JSON、前後有雜字、壞掉', () => {
-  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null });
-  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null });
-  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null });
-  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null });
+  assert.deepEqual(parseReply('{"reply":"安安","remember":["週五出發"]}', 'idle'), { reply: '安安', remember: ['週五出發'], toMe: false, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null, calendar: null });
+  assert.deepEqual(parseReply('好的：\n{"reply":"","remember":[]}\n', 'window'), { reply: '', remember: [], toMe: false, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null, calendar: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'mention'), { reply: '嗨嗨我在', remember: [], toMe: false, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null, calendar: null });
+  assert.deepEqual(parseReply('嗨嗨我在', 'idle'), { reply: '', remember: [], toMe: false, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null, calendar: null });
+  assert.deepEqual(parseReply('{"reply": 壞掉', 'mention'), { reply: '', remember: [], toMe: false, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null, calendar: null });
   assert.equal(parseReply('{"to_me":true,"reply":"","remember":[]}', 'window').toMe, true);
-  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripEdit: null, tripConfirm: null, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null });
+  assert.deepEqual(parseReply('好啊', 'followup'), { reply: '好啊', remember: [], toMe: false, tripShot: null, saveLink: null, listLinks: null, njEvent: null, njConfirm: null, sticker: null, photo: null, shop: null, toLuna: false, fitness: null, tripCards: null, photoCaption: null, shops: null, cards: null, kb: null, kbCards: false, linkFound: true, draw: null, calendar: null });
 });
 
 await test('記憶過濾：擋網址、座標、地址、位置', () => {
@@ -308,35 +308,74 @@ await test('記憶過濾：擋網址、座標、地址、位置', () => {
   assert.ok(memoryAllowed('阿傑週五負責買飲料'));
 });
 
-await test('parseReply：行程修改與確認', () => {
-  const r = parseReply('{"reply":"要把 D4 晚餐改燒肉嗎？","trip_edit":{"ops":[{"op":"remove_item","day":"D4","index":3}]}}', 'mention');
-  assert.equal(r.tripEdit.length, 1);
-  assert.equal(r.tripConfirm, null);
-  assert.equal(parseReply('{"reply":"好","trip_confirm":true}', 'followup').tripConfirm, true);
-  assert.equal(parseReply('{"reply":"好","trip_confirm":false}', 'followup').tripConfirm, false);
-  assert.equal(parseReply('{"reply":"x","trip_edit":{"ops":[]}}', 'mention').tripEdit, null);
+await test('parseReply：不再收 trip_edit／trip_confirm（2026-11-26 小帥不改行程）', () => {
+  const r = parseReply('{"reply":"要把 D4 晚餐改燒肉嗎？","trip_edit":{"ops":[{"op":"remove_item","day":"D4","index":3}]},"trip_confirm":true}', 'mention');
+  assert.ok(!('tripEdit' in r) && !('tripConfirm' in r));
 });
 
-await test('改行程的「同意」由程式認定', () => {
+await test('「同意」由程式認定（小卡、開投票、分享用）', () => {
   for (const t of ['好', '好！', 'OK', 'ok', 'ＯＫ', '可以', '改吧', '小帥 好', '小帥，好啊', '沒問題～']) assert.ok(isAffirm(t), t);
   for (const t of ['好啊就這樣改謝謝', '不好', '好像不對', '把 D1 刪掉', '', '好 <script>']) assert.ok(!isAffirm(t), t);
 });
 
-await test('行程修改的格式第一道檢查', () => {
-  assert.equal(checkOps([{ op: 'remove_item', day: 'D4', index: 3 }]), null);
-  assert.equal(checkOps([{ op: 'add_item', day: 'D5', after: 2, item: { when: '15:00', title: '回飯店休息' } }]), null);
-  assert.ok(checkOps([{ op: 'add_item', day: 'D5', item: { title: '<img src=x onerror=alert(1)>' } }]));
-  assert.equal(checkOps([{ op: 'set_more', day: 'D2', title: '晴空塔聖誕市集資訊', lines: ['📍 晴空塔城'] }, { op: 'remove_more', day: 'D3' }]), null);
-  assert.ok(checkOps([{ op: 'set_more', day: 'D2', title: 'x', lines: ['<script>'] }]));
-  assert.ok(checkOps([{ op: 'set_more', day: 'D2', title: 'x', lines: 'abc' }]));
-  assert.ok(checkOps([{ op: 'exec', day: 'D1' }]));
-  assert.ok(checkOps([{ op: 'remove_item', day: 'D1; rm', index: 1 }]));
-  assert.ok(checkOps([{ op: 'remove_item', day: 'D1', index: '1' }]));
-  assert.ok(checkOps([{ op: 'set_glance', day: 'D1', note: 'x'.repeat(121) }]));
-  assert.ok(checkOps(Array(16).fill({ op: 'remove_item', day: 'D1', index: 1 })));
-  assert.equal(checkOps([{ op: 'add_item', day: 'D11', item: { title: '青森機場' } }]), null);
-  assert.ok(checkOps([{ op: 'add_item', day: 'D21', item: { title: 'x' } }]));
-  assert.ok(checkOps([]));
+await test('留言的格式第一道檢查（只收一則 add_comment／remove_comment）', () => {
+  const ok = { op: 'add_comment', day: 'D3', text: '神樂雪具記得帶手套', by: '葶', at: '2026-11-26 14:05' };
+  assert.equal(checkCommentOps([ok]), null);
+  assert.equal(checkCommentOps([{ op: 'remove_comment', day: 'D3', index: 2 }]), null);
+  assert.ok(checkCommentOps([ok, ok]));                                         // 一次只收一則
+  assert.ok(checkCommentOps([]));
+  assert.ok(checkCommentOps([{ op: 'add_item', day: 'D5', item: { title: 'x' } }])); // 改行程的 op 一律不收
+  assert.ok(checkCommentOps([{ op: 'remove_item', day: 'D4', index: 3 }]));
+  assert.ok(checkCommentOps([{ ...ok, day: 'D21' }]));
+  assert.ok(checkCommentOps([{ ...ok, day: 'd3' }]));
+  assert.ok(checkCommentOps([{ ...ok, text: '<script>' }]));
+  assert.ok(checkCommentOps([{ ...ok, by: '<b>' }]));
+  assert.ok(checkCommentOps([{ ...ok, by: undefined }]));
+  assert.ok(checkCommentOps([{ ...ok, text: 'x'.repeat(121) }]));
+  assert.equal(checkCommentOps([{ ...ok, text: '😀'.repeat(100) }]), null); // emoji 算 1 字
+  assert.ok(checkCommentOps([{ op: 'remove_comment', day: 'D3', index: '2' }]));
+  assert.ok(checkCommentOps([{ op: 'remove_comment', day: 'D3', index: 0 }]));
+});
+
+await test('留言指令解析', () => {
+  assert.deepEqual(parseComment('小帥 D3 留言：神樂雪具記得帶手套'), { kind: 'add', hint: '', day: 'D3', text: '神樂雪具記得帶手套' });
+  assert.deepEqual(parseComment('@小帥 12/26 留言 記得帶手套'), { kind: 'add', hint: '', day: '12/26', text: '記得帶手套' });
+  assert.deepEqual(parseComment('小帥 幫我在第3天留言:帶暖暖包'), { kind: 'add', hint: '', day: '第3天', text: '帶暖暖包' });
+  assert.deepEqual(parseComment('小帥 聖誕 D3 留言：帶手套（小孩的）'), { kind: 'add', hint: '聖誕', day: 'D3', text: '帶手套（小孩的）' }); // 內容全形字照原樣
+  assert.deepEqual(parseComment('小帥 １２／２６ 留言：Ａ'), { kind: 'add', hint: '', day: '12/26', text: 'Ａ' });
+  assert.deepEqual(parseComment('小帥 刪掉 D3 留言 2'), { kind: 'del', hint: '', day: 'D3', index: 2 });
+  assert.deepEqual(parseComment('小帥 刪掉 12/26 第 2 則留言'), { kind: 'del', hint: '', day: '12/26', index: 2 });
+  assert.deepEqual(parseComment('小帥 2026 聖誕 12/26 留言：帶手套'), { kind: 'add', hint: '2026 聖誕', day: '12/26', text: '帶手套' });
+  assert.deepEqual(parseComment('小帥 D3 留言：第一行\n第二行'), { kind: 'add', hint: '', day: 'D3', text: '第一行\n第二行' });
+  assert.deepEqual(parseComment('小帥 留言'), { kind: 'help' });
+  assert.deepEqual(parseComment('小帥 怎麼留言？'), { kind: 'help' });
+  for (const t of ['小帥 D3 改成 16:00', '大家記得留言', '小帥 12/26 晚上七點 家長會', '小帥 D3 留言', '小帥 刪掉 D3 第 2 項']) assert.equal(parseComment(t), null, t);
+});
+
+await test('留言：日期講法對到行程哪一天', () => {
+  const t = { days: [{ glance: { d: '12/24' } }, { glance: { d: '12/25' } }, { date: '12/26（六）' }] };
+  assert.equal(dayIdOf(t, '12/26'), 'D3');
+  assert.equal(dayIdOf(t, '12 / 25'), 'D2');
+  assert.equal(dayIdOf(t, 'D1'), 'D1');
+  assert.equal(dayIdOf(t, '第3天'), 'D3');
+  assert.equal(dayIdOf(t, 'D4'), null);
+  assert.equal(dayIdOf(t, '1/30'), null);
+  assert.equal(dayIdOf(null, 'D1'), null);
+});
+
+await test('行程內容雜湊不受留言影響（留言不觸發行事曆重標）', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+  const { tmpdir } = await import('os');
+  const { join } = await import('path');
+  const repo = mkdtempSync(join(tmpdir(), 'trip-sig-'));
+  mkdirSync(join(repo, 'trips'));
+  const base = { title: '2026 測試', days: [{ date: '12/26（六）', glance: { d: '12/26', place: '神樂' }, items: [{ when: '10:00', title: '滑雪' }] }] };
+  writeFileSync(join(repo, 'trips', 'x.json'), JSON.stringify(base));
+  const a = detailOf('x', 2026, repo).sig;
+  writeFileSync(join(repo, 'trips', 'x.json'), JSON.stringify({ ...base, days: [{ ...base.days[0], comments: [{ by: '葶', at: '2026-11-26 14:05', text: 'hi' }] }] }));
+  assert.equal(detailOf('x', 2026, repo).sig, a);
+  writeFileSync(join(repo, 'trips', 'x.json'), JSON.stringify({ ...base, days: [{ ...base.days[0], items: [{ when: '11:00', title: '滑雪' }] }] }));
+  assert.notEqual(detailOf('x', 2026, repo).sig, a);
 });
 
 await test('收藏連結：存、重複、分類、清單、刪除（網址要在原文裡）', async () => {
@@ -490,15 +529,15 @@ await test('parseReply：收藏連結欄位', () => {
   assert.equal(parseReply('{"reply":"x","save_link":{"category":"運動"}}', 'mention').saveLink, null);
 });
 
-await test('buildPrompt：綁了行程才帶行程表與待確認修改', () => {
+await test('buildPrompt：綁了行程才帶行程表；教留言、不教改行程', () => {
   const base = { mode: 'mention', nowTs: NOON, memories: [], transcript: [{ name: '阿庭', text: '小帥 D4 晚上改吃燒肉' }] };
   assert.ok(!buildPrompt(base).includes('行程表'));
-  const p = buildPrompt({ ...base, tripCtx: { url: 'https://x/trip.html', outline: 'D4 12/27｜木更津', pending: ['D4 新增「18:30 燒肉」'] } });
+  const p = buildPrompt({ ...base, tripCtx: { url: 'https://x/trip.html', outline: 'D4 12/27｜木更津' } });
   assert.ok(p.includes('【這個群的行程表】（網頁：https://x/trip.html；有人要網址、連結就直接貼這個網址'));
   assert.ok(p.includes('D4 12/27｜木更津'));
-  assert.ok(p.includes('"trip_edit"'));
-  assert.ok(p.includes('・D4 新增「18:30 燒肉」'));
-  assert.ok(p.includes('"trip_confirm": true'));
+  assert.ok(!p.includes('"trip_edit"') && !p.includes('"trip_confirm"'));
+  assert.ok(p.includes('行程請 TED 改'));
+  assert.ok(p.includes('小帥 12/26 留言：內容'));
 });
 
 await test('buildPrompt 帶記憶、對話與情況', () => {
@@ -600,17 +639,9 @@ await test('行程截圖：只收固定段落', () => {
   for (const bad of ['D0', 'd21', '#d4', 'body', 'https://evil.example', '']) assert.equal(shot.sectionOf(bad), null);
   assert.equal(parseReply('{"reply":"給你","trip_shot":"D2"}', 'mention').tripShot, 'D2');
   assert.equal(parseReply('{"reply":"給你","trip_shot":"script"}', 'mention').tripShot, null);
-  const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { url: 'https://x/t.html', outline: 'D1', pending: null } });
+  const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { url: 'https://x/t.html', outline: 'D1' } });
   assert.ok(p.includes('"trip_shot"'));
   assert.deepEqual(shot.imageMessage({ url: 'https://a/x.jpg' }), { type: 'image', originalContentUrl: 'https://a/x.jpg', previewImageUrl: 'https://a/x.jpg' });
-});
-
-await test('改完行程附圖：找出動到哪幾段', () => {
-  assert.deepEqual(shotKeysOf([
-    { op: 'add_item', day: 'D4' }, { op: 'update_item', day: 'd4' }, { op: 'set_day', day: 'D2' }, { op: 'set_glance', day: 'D2' },
-  ]), ['D4', 'D2', 'glance']);
-  assert.deepEqual(shotKeysOf([{ op: 'add_item', day: 'D1' }, { op: 'add_item', day: 'D2' }, { op: 'add_item', day: 'D3' }, { op: 'add_item', day: 'D5' }]), ['D1', 'D2', 'D3']);
-  assert.deepEqual(shotKeysOf([{ op: 'remove_item', day: 'body' }, null]), []);
 });
 
 await test('講到行程才帶整份行程（省 token）', () => {
@@ -620,22 +651,6 @@ await test('講到行程才帶整份行程（省 token）', () => {
   const p = buildPrompt({ mode: 'mention', nowTs: NOON, memories: [], transcript: [], tripCtx: { brief: true, all: [{ title: '聖誕滑雪', url: 'https://x/t.html' }] } });
   assert.ok(p.includes('【這個群有綁行程網頁】聖誕滑雪 https://x/t.html'));
   assert.ok(!p.includes('"trip_edit"'));
-});
-
-await test('通用版面的修改：第一道檢查與改完附圖', () => {
-  assert.equal(checkOps([
-    { op: 'add_day', date: '1/30', weekday: '六', place: '飛東京', color: 'fly' },
-    { op: 'set_meta', title: '2028 北海道', dates: '1/20—1/24' },
-    { op: 'set_info', title: '🏨 住宿', lines: ['札幌 2 晚'] },
-    { op: 'add_link', title: '雪況', url: 'https://www.niseko.ne.jp/' },
-    { op: 'remove_link', index: 1 }, { op: 'remove_info', title: '🏨 住宿' }, { op: 'remove_day', day: 'D2' },
-  ]), null);
-  assert.ok(checkOps([{ op: 'add_link', title: 'x', url: 'javascript:alert(1)' }]));
-  assert.ok(checkOps([{ op: 'add_link', title: 'x', url: 'https://a.com/"><script>' }]));
-  assert.ok(checkOps([{ op: 'add_day', date: '1/30', place: 'x', color: 'red' }]));
-  assert.ok(checkOps([{ op: 'remove_day' }]));
-  assert.ok(checkOps([{ op: 'set_meta', subtitle: '<b>x</b>' }]));
-  assert.deepEqual(shotKeysOf([{ op: 'add_day' }, { op: 'set_info' }, { op: 'add_link' }, { op: 'set_meta' }]), ['glance', 'info', 'links']);
 });
 
 await test('一個群綁多份行程：判斷在講哪一份', () => {
@@ -1636,6 +1651,14 @@ await test('投票：解析截止時間、開投票指令、報名句', () => {
   assert.equal(polls.parseSignup('品岑家兩大一小', '多媽').adults, 2);
   assert.equal(polls.parseSignup('大家不去了嗎', '多媽'), null);
   assert.equal(polls.parseSignup('今天好冷', '多媽'), null);
+  // 2026-11-26 實際誤判：報名開著時的閒聊不算
+  for (const s of ['我去年有買一大一小，但沒穿', '我選了一個一大一小的 (laughing hard)', '我只幫你卡到1大1小..', '我剛試4人的也沒有', '2 人的有', '我也還沒收到'])
+    assert.equal(polls.parseSignup(s, '多媽'), null, s);
+  // 真的報名照樣抓得到
+  assert.deepEqual(polls.parseSignup('我家 2大1小 填單完成', '多媽'), { label: '多家', self: true, adults: 2, kids: 1, going: true });
+  assert.equal(polls.parseSignup('我家完成 2大2小', '多媽').kids, 2);
+  assert.equal(polls.parseSignup('我 1 人', '多媽').adults, 1);
+  assert.equal(polls.parseSignup('我家不去', '多媽').going, false);
 });
 
 await test('投票：開投票→投票卡（postback 按鈕）→ 投票不回話、再按改票', async () => {
@@ -1697,6 +1720,8 @@ await test('報名：記一筆、同一家再講覆蓋、「不去」劃掉、�
   assert.equal((await say('U3', '恩家趕飛機不去了'))[0].text, '收到，恩家 不去（多媽登記）');
   assert.equal((await say('U1', '我們 1大1小'))[0].text, '收到，葶家 1大1小');
   assert.equal(await say('U1', '大家都要 6 點出發嗎'), null);                        // 不是報名
+  assert.equal(await say('U1', '我負責+1'), null);                                    // 附和的 +1 不算、也不問 AI
+  assert.equal(await say('U1', '我只幫你卡到1大1小..'), null);                        // 閒聊提到人數不算
   assert.equal(db.get('SELECT COUNT(*) n FROM poll_signups').n, 3);
   const card = (await say('U4', '目前幾個人'))[0].contents;
   const j = JSON.stringify(card);
@@ -1755,23 +1780,6 @@ await test('公告：排進免費回覆（不推播），下一個人講話時�
   // 過了等待時間就不貼
   await xiaoshuai.onAnnounce({ chatId: 'GPL', text: '過期的公告', keepMs: 3600_000 });
   assert.equal(heldAnswers('GPL', 3, Date.now() + 2 * 3600_000).length, 0);
-});
-
-await test('公告附圖：只收小帥自己 public/shots 的圖、最多 4 張，跟文字一起貼', async () => {
-  const { say } = await pollBot();
-  const base = new URL(process.env.BOT_PUBLIC_URL || 'https://bot.pushbike-training.app').origin + '/public/shots/';
-  const a = base + 'a'.repeat(32) + '.jpg', ap = base + 'a'.repeat(32) + '-p.jpg';
-  for (const bad of [[{ url: 'https://evil.example/x.jpg' }], [{ url: base + '../../src/index.js' }], [{ url: a, previewUrl: 'http://x/y.jpg' }], Array(5).fill({ url: a }), 'x']) {
-    assert.equal((await xiaoshuai.onAnnounce({ chatId: 'GPL', text: '公告', images: bad })).ok, false);
-  }
-  assert.equal(heldAnswers('GPL').length, 0);
-  assert.equal((await xiaoshuai.onAnnounce({ chatId: 'GPL', text: '📢 新功能', images: [{ url: a, previewUrl: ap }, { url: a }] })).ok, true);
-  const got = await say('U4', '大家晚安');
-  assert.equal(got[0].text, '📢 新功能');
-  assert.deepEqual(got.slice(1), [
-    { type: 'image', originalContentUrl: a, previewImageUrl: ap },
-    { type: 'image', originalContentUrl: a, previewImageUrl: a },
-  ]);
 });
 
 await test('判斷是不是在叫小帥：引用小帥的話給別人看、@別人、句中提到小帥，都先判斷', async () => {

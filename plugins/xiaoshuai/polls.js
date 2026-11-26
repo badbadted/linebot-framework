@@ -231,8 +231,19 @@ function parseSignupAt(s, speakerName) {
   if (!fam || (fam[2] && NOT_FAMILY.has(`${fam[2]}家`))) return null;
   const self = !!fam[1] || (fam[2] && `${fam[2]}家` === selfLabel(speakerName));
   const label = self ? selfLabel(speakerName) : `${cards.clean(fam[2], 6)}家`;
-  if (no) return { label, self, adults: 0, kids: 0, going: false };
+  // 2026-11-26：報名開著沒關時，閒聊「我去年有買一大一小」「我只幫你卡到1大1小」「我剛試4人的」都被當成報名、蓋掉真的人數。
+  // 改成：「我／X家」後面只能接「也、要、改、完成、報名…」這類連接字（最多 4 字）就是人數，人數後面最多再 10 字
+  const rest = s.slice(fam[0].length);
+  if (no) return Array.from(s).length <= 16 ? { label, self, adults: 0, kids: 0, going: false } : null;
   if (!a && !k && !p) return null;
+  const cnt = new RegExp(`${CNUM}\\s*(?:大|小|(?:個)?\\s*(?:人|位))`, 'g');
+  const hits = [...rest.matchAll(cnt)];
+  if (!hits.length) return null;
+  const gap = rest.slice(0, hits[0].index);
+  const last = hits.at(-1);
+  const tail = rest.slice(last.index + last[0].length);
+  if (Array.from(gap).length > 4 || !/^[\s:：,，、也要會改成共總報名完登記參加去都是有]*$/.test(gap)) return null;
+  if (Array.from(tail).length > 10) return null;
   return { label, self, adults: a ? toN(a[1]) : (p && !k ? toN(p[1]) : 0), kids: k ? toN(k[1]) : 0, going: true };
 }
 
