@@ -1,0 +1,15 @@
+{
+  "name": "公司文件查詢",
+  "short_name": "文件查詢",
+  "description": "自用本機：查公司開發規範與 KM 文件，Claude 整理答案並附出處",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#f8fafc",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

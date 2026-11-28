@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>公司文件查詢</title>
+<meta name="theme-color" content="#f8fafc">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<svg width="0" height="0" class="defs" aria-hidden="true">
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 7h7" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2-6-8-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l10 18H2L12 3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v5M12 18v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-del" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+  <symbol id="i-retry" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 12h6M9 16h6" stroke="currentColor" stroke-width="1.8"/></symbol>
+</svg>
+
+<div class="win">
+  <header class="title"><svg class="ic ac"><use href="#i-book"/></svg>公司文件查詢</header>
+  <div class="body">
+    <nav class="side" aria-label="查詢歷史"><div id="history"></div></nav>
+
+    <main class="main">
+      <form id="ask" class="ask" autocomplete="off">
+        <input id="q" class="in" maxlength="500" placeholder="輸入問題，按 Enter 送出" aria-label="問題">
+        <button id="go" class="btn" type="submit"><svg class="ic"><use href="#i-send"/></svg>查詢</button>
+      </form>
+      <label class="toggle"><input id="raw" type="checkbox" class="sr"><span class="sw" aria-hidden="true"></span>只看原文 <small>開啟後不產生整理答案，只列原文段落</small></label>
+      <div id="result"></div>
+    </main>
+
+    <aside class="panel" id="panel" aria-label="原文段落">
+      <h3><span>原文段落</span><span id="panel-count"></span></h3>
+      <div id="cards"><div class="empty-hint pad">送出問題後顯示</div></div>
+    </aside>
+  </div>
+  <footer class="status" id="status"><span>讀取狀態中</span></footer>
+  <div id="toast" class="toast" hidden></div>
+</div>
+</body>
+</html>
