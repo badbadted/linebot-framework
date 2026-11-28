@@ -166,6 +166,8 @@ check('DELETE 沒帶自訂標頭回 403', (await fetch(`${base}/api/history/1`, 
 
 const trav = await fetch(`${base}/..%2f..%2fpackage.json`);
 check('靜態檔不能跳出 public 資料夾', trav.status === 404);
+check('不合法的網址編碼回 400、伺服器不掛', (await fetch(`${base}/%E0%A4%A`)).status === 400 && (await fetch(`${base}/api/health`)).ok);
+check('同名前綴資料夾（public2）也不能讀', (await fetch(`${base}/..%2fpublic2%2fx`)).status === 404);
 const idx = await fetch(`${base}/`);
 check('首頁有 CSP 標頭', idx.headers.get('content-security-policy')?.includes("script-src 'self'"));
 

@@ -10,7 +10,7 @@
 
 import http from 'http';
 import { readFile } from 'fs/promises';
-import { resolve, dirname, extname, join, normalize as normPath } from 'path';
+import { resolve, dirname, extname, join, relative, isAbsolute, normalize as normPath } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRetriever } from '../../plugins/sop/retriever.js';
 import { embedText, OLLAMA_URL } from '../../plugins/sop/embed.js';
@@ -179,10 +179,12 @@ export function createApp({ retriever, llm, history, port = PORT, ollamaUrl = OL
   }
 
   async function serveStatic(req, res) {
-    const path = decodeURIComponent((req.url || '/').split('?')[0]);
+    let path;
+    try { path = decodeURIComponent((req.url || '/').split('?')[0]); } catch { return send(res, 400, 'bad request', 'text/plain; charset=utf-8'); }
     const rel = path === '/' ? 'index.html' : path.replace(/^\/+/, '');
     const file = normPath(join(PUBLIC, rel));
-    if (!file.startsWith(PUBLIC)) return send(res, 404, 'not found', 'text/plain; charset=utf-8');
+    const inside = relative(PUBLIC, file);
+    if (!inside || inside.startsWith('..') || isAbsolute(inside)) return send(res, 404, 'not found', 'text/plain; charset=utf-8');
     try {
       const data = await readFile(file);
       send(res, 200, data, TYPES[extname(file)] || 'application/octet-stream');
@@ -215,7 +217,7 @@ export function createApp({ retriever, llm, history, port = PORT, ollamaUrl = OL
         return Array.isArray(out) ? send(res, out[0], out[1]) : send(res, 200, out);
       }
       if (method !== 'GET') return send(res, 405, { error: 'method not allowed' });
-      return serveStatic(req, res);
+      return await serveStatic(req, res);
     } catch (err) {
       const status = err.status || 500;
       if (status === 500) console.error(`[sop-desk] ${err.message}`);
