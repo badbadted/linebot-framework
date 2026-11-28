@@ -1,0 +1,13 @@
+{
+  "_doc": "sop 文件問答設定。allowedGroupIds 要跟群組 /開通 sop 兩道都過才能問；線上版的群組 ID 只填在 Mac mini 上這份檔。",
+  "enabled": true,
+  "allowedGroupIds": [],
+  "perUserDaily": 20,
+  "perGroupDaily": 60,
+  "cooldownSec": 15,
+  "minCosine": 0.62,
+  "topK": 6,
+  "perDoc": 3,
+  "model": "haiku",
+  "maxTokens": 1500
+}
