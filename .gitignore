@@ -5,3 +5,4 @@ data/
 public/shots/
 public/drawings/
 public/cal/
+config/sop-exclude.json
